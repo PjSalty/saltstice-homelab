@@ -21,8 +21,10 @@ spec:
       data:
         AUTHENTIK_API_TOKEN: "{{ .authentik_api_token }}"
         AUTHENTIK_TOKEN: "{{ .authentik_api_token }}"
-        AUTHENTIK_AUTH_FLOW: "c9bc5867-090d-4ec2-a7ff-88479a40637f"
-        AUTHENTIK_INVAL_FLOW: "d2d68e2b-23b0-4aa0-9f14-2e0a6a518821"
+        # Authentik flow UUIDs are environment-specific; replace with the
+        # UUIDs from your own Authentik instance.
+        AUTHENTIK_AUTH_FLOW: "00000000-0000-0000-0000-000000000000"
+        AUTHENTIK_INVAL_FLOW: "00000000-0000-0000-0000-000000000000"
         MCP_AUTH_TOKEN: "{{ .authentik_api_token }}"
         SEMAPHORE_TOKEN: "{{ .semaphore_token }}"
         GITLAB_TOKEN: "{{ .gitlab_token }}"

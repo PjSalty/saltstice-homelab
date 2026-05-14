@@ -23,7 +23,10 @@ paths = [
   # Documentation may contain placeholder secrets in code blocks
   '''^docs/.*\.md$''',
   '''^incidents/.*\.md$''',
+  '''^runbooks/.*\.md$''',
   '''^README\.md$''',
+  # Structural example templates (placeholder ciphertext / recipients)
+  '''^templates/.*\.example\.(yaml|yml)$''',
 ]
 
 # Allow base64-encoded CA certificates (BEGIN CERTIFICATE blocks)
