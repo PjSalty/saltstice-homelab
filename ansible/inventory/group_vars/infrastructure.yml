@@ -1,0 +1,24 @@
+---
+# =============================================================================
+# Infrastructure VM Variables (GitLab, Harbor, NetBox)
+# =============================================================================
+
+# Docker
+docker_edition: ce
+
+# Firewall
+firewall_extra_ports:
+  - { port: 80, proto: tcp, comment: "HTTP" }
+  - { port: 443, proto: tcp, comment: "HTTPS" }
+  - { port: 2222, proto: tcp, comment: "GitLab SSH" }
+  - { port: 9100, proto: tcp, comment: "node_exporter" }
+
+# Sudo — Docker commands
+sudo_extra_commands:
+  - /usr/bin/docker *
+  - /usr/local/bin/docker-compose *
+  - /usr/bin/systemctl restart docker
+  - /usr/bin/systemctl stop docker
+  - /usr/bin/systemctl start docker
+  - /usr/sbin/ufw *
+  - /usr/bin/fail2ban-client *

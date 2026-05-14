@@ -1,0 +1,44 @@
+---
+# Phase 3: Infrastructure Services
+# Deploys Docker, GitLab, Harbor, and certificates on infrastructure VMs
+
+- name: Load SSOT credentials
+  ansible.builtin.import_playbook: ../includes/load-ssot.yml
+
+- name: Deploy infrastructure services
+  hosts: infrastructure
+  roles:
+    - docker
+    - certificates
+  tags:
+    - infrastructure
+
+- name: Deploy GitLab
+  hosts: gitlab
+  roles:
+    - gitlab
+  tags:
+    - gitlab
+
+- name: Deploy Harbor
+  hosts: harbor
+  roles:
+    - harbor
+  tags:
+    - harbor
+
+- name: Deploy AMP game server
+  hosts: amp_servers
+  roles:
+    - docker
+    - amp
+  tags:
+    - amp
+
+- name: Deploy VPN server
+  hosts: vpn_servers
+  roles:
+    - docker
+    - vpn
+  tags:
+    - vpn

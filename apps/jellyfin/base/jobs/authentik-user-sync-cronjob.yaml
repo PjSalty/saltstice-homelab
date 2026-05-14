@@ -1,0 +1,324 @@
+---
+# File: apps/jellyfin/base/jobs/authentik-user-sync-cronjob.yaml
+# Purpose: CronJob to sync users from Authentik groups to Jellyfin
+# Validates: kubectl get cronjob -n media jellyfin-authentik-user-sync
+#
+# How it works:
+# 1. Query Authentik API for members of jellyfin-users + jellyfin-admins groups
+# 2. Query Jellyfin for existing local users
+# 3. Create any Authentik users that don't exist in Jellyfin
+# 4. Set IsAdministrator=true for jellyfin-admins group members
+# 5. Generate random password for Jellyfin local accounts (SSO is primary login)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jellyfin-authentik-sync-script
+  namespace: media
+data:
+  sync-users.py: |
+    #!/usr/bin/env python3
+    """
+    Authentik to Jellyfin User Sync
+    ================================
+    Syncs users from Authentik groups (jellyfin-users, jellyfin-admins)
+    to Jellyfin local accounts. SSO is the primary login method; local
+    accounts ensure users exist for library access and profile settings.
+    """
+    import os
+    import sys
+    import json
+    import urllib.request
+    import urllib.error
+    import secrets
+    import string
+    import ssl
+
+    def http_request(url, method="GET", data=None, headers=None, timeout=30, ssl_ctx=None):
+        """Make HTTP request and return response"""
+        if headers is None:
+            headers = {}
+        if data and isinstance(data, dict):
+            data = json.dumps(data).encode('utf-8')
+            headers['Content-Type'] = 'application/json'
+
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as response:
+                return response.status, response.read().decode('utf-8')
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode('utf-8') if e.fp else ""
+        except Exception as e:
+            return 0, str(e)
+
+    def generate_password(length=20):
+        """Generate a random password for local Jellyfin accounts"""
+        chars = string.ascii_letters + string.digits + "!@#%^&*"
+        return ''.join(secrets.choice(chars) for _ in range(length))
+
+    def get_authentik_group_members(api_url, token, group_name):
+        """Get all members of an Authentik group"""
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json"
+        }
+        import urllib.parse
+        encoded = urllib.parse.quote(group_name)
+        status, body = http_request(
+            f"{api_url}/api/v3/core/groups/?name={encoded}",
+            headers=headers
+        )
+        if status != 200:
+            print(f"  ERROR: Failed to query Authentik groups (HTTP {status})")
+            return []
+
+        groups = json.loads(body).get("results", [])
+        target = None
+        for g in groups:
+            if g["name"] == group_name:
+                target = g
+                break
+        if not target:
+            print(f"  Group '{group_name}' not found in Authentik")
+            return []
+
+        # Use users_obj from group response (authoritative member list)
+        members = target.get("users_obj", [])
+        # Filter out service accounts (ak-* outpost/client_credentials accounts)
+        return [m for m in members if not m["username"].startswith("ak-") and m["username"] != "akadmin"]
+
+    # Configuration from environment
+    AUTHENTIK_URL = os.getenv('AUTHENTIK_URL', 'http://authentik-server.authentik.svc.cluster.local')
+    AUTHENTIK_TOKEN = os.getenv('AUTHENTIK_API_TOKEN', '')
+    JELLYFIN_URL = os.getenv('JELLYFIN_URL', 'http://jellyfin.media.svc.cluster.local:8096')
+    JELLYFIN_API_KEY = os.getenv('JELLYFIN_API_KEY', '')
+    DRY_RUN = os.getenv('DRY_RUN', 'false').lower() == 'true'
+    USER_GROUP = os.getenv('USER_GROUP', 'jellyfin-users')
+    ADMIN_GROUP = os.getenv('ADMIN_GROUP', 'jellyfin-admins')
+
+    if not AUTHENTIK_TOKEN:
+        print("ERROR: AUTHENTIK_API_TOKEN environment variable not set")
+        sys.exit(1)
+
+    if not JELLYFIN_API_KEY:
+        print("ERROR: JELLYFIN_API_KEY environment variable not set")
+        sys.exit(1)
+
+    print("=" * 60)
+    print("Authentik to Jellyfin User Sync")
+    print("=" * 60)
+    print(f"Authentik URL: {AUTHENTIK_URL}")
+    print(f"Jellyfin URL: {JELLYFIN_URL}")
+    print(f"Auth: API key")
+    print(f"User Group: {USER_GROUP}")
+    print(f"Admin Group: {ADMIN_GROUP}")
+    print(f"Dry Run: {DRY_RUN}")
+    print()
+
+    # Step 1: Verify Jellyfin API key
+    print("[1/5] Verifying Jellyfin API key...")
+    AUTH_HEADER = {"X-Emby-Token": JELLYFIN_API_KEY}
+    status, body = http_request(f"{JELLYFIN_URL}/System/Info", headers=AUTH_HEADER)
+
+    if status != 200:
+        print(f"ERROR: Jellyfin API key invalid (HTTP {status})")
+        sys.exit(1)
+
+    server_name = json.loads(body).get('ServerName', 'unknown')
+    print(f"  Connected to Jellyfin server: {server_name}")
+
+    # Step 2: Get members from Authentik groups
+    print(f"\n[2/5] Fetching Authentik group members...")
+    user_members = get_authentik_group_members(AUTHENTIK_URL, AUTHENTIK_TOKEN, USER_GROUP)
+    admin_members = get_authentik_group_members(AUTHENTIK_URL, AUTHENTIK_TOKEN, ADMIN_GROUP)
+
+    # Build user list: combine both groups, track admin status
+    admin_usernames = {m["username"].lower() for m in admin_members}
+    all_users = {}
+    for member in user_members + admin_members:
+        username = member["username"]
+        if username.lower() not in all_users:
+            all_users[username.lower()] = {
+                "username": username,
+                "name": member.get("name", username),
+                "is_admin": username.lower() in admin_usernames
+            }
+        elif username.lower() in admin_usernames:
+            all_users[username.lower()]["is_admin"] = True
+
+    print(f"  Found {len(all_users)} users across groups")
+    for u in all_users.values():
+        admin_tag = " [ADMIN]" if u["is_admin"] else ""
+        print(f"    - {u['username']} ({u['name']}){admin_tag}")
+
+    # Step 3: Get existing Jellyfin users
+    print("\n[3/5] Fetching existing Jellyfin users...")
+    status, body = http_request(f"{JELLYFIN_URL}/Users", headers=AUTH_HEADER)
+
+    if status != 200:
+        print(f"ERROR: Failed to fetch Jellyfin users (HTTP {status})")
+        sys.exit(1)
+
+    jellyfin_users = json.loads(body)
+    jellyfin_user_map = {u.get('Name', '').lower(): u for u in jellyfin_users}
+    print(f"  Found {len(jellyfin_users)} existing users")
+    for u in jellyfin_users:
+        print(f"    - {u.get('Name')}")
+
+    # Step 4: Create missing users in Jellyfin
+    print("\n[4/5] Creating missing users...")
+    created = 0
+    skipped = 0
+
+    for ukey, user in all_users.items():
+        username = user['username']
+
+        if ukey in jellyfin_user_map:
+            print(f"  SKIP: {username} (already exists)")
+            skipped += 1
+            continue
+
+        # Generate random password (SSO is primary auth, local password is fallback)
+        password = generate_password()
+
+        if DRY_RUN:
+            print(f"  DRY RUN: Would create user '{username}'")
+            continue
+
+        status, body = http_request(
+            f"{JELLYFIN_URL}/Users/New",
+            method="POST",
+            data={"Name": username, "Password": password},
+            headers=AUTH_HEADER
+        )
+
+        if status in [200, 204]:
+            print(f"  CREATE: {username}")
+            created += 1
+            # Add to map so admin step can find them
+            new_user = json.loads(body) if body else {}
+            if new_user:
+                jellyfin_user_map[ukey] = new_user
+        else:
+            print(f"  FAILED: {username} (HTTP {status}): {body[:100]}")
+
+    # Step 5: Set admin privileges for jellyfin-admins members
+    print("\n[5/5] Setting admin privileges...")
+    admin_updated = 0
+
+    # Refresh user list to include newly created users
+    status, body = http_request(f"{JELLYFIN_URL}/Users", headers=AUTH_HEADER)
+    if status == 200:
+        jellyfin_users = json.loads(body)
+        jellyfin_user_map = {u.get('Name', '').lower(): u for u in jellyfin_users}
+
+    for ukey, user in all_users.items():
+        if not user["is_admin"]:
+            continue
+
+        jf_user = jellyfin_user_map.get(ukey)
+        if not jf_user:
+            continue
+
+        policy = jf_user.get("Policy", {})
+        if policy.get("IsAdministrator"):
+            print(f"  SKIP: {user['username']} (already admin)")
+            continue
+
+        if DRY_RUN:
+            print(f"  DRY RUN: Would set admin for '{user['username']}'")
+            continue
+
+        policy["IsAdministrator"] = True
+        status, _ = http_request(
+            f"{JELLYFIN_URL}/Users/{jf_user['Id']}/Policy",
+            method="POST",
+            data=policy,
+            headers=AUTH_HEADER
+        )
+        if status in [200, 204]:
+            print(f"  ADMIN: {user['username']}")
+            admin_updated += 1
+        else:
+            print(f"  FAILED: {user['username']} admin policy (HTTP {status})")
+
+    print()
+    print("=" * 60)
+    print("User Sync Complete")
+    print("=" * 60)
+    print(f"Created: {created}")
+    print(f"Skipped: {skipped}")
+    print(f"Admin updated: {admin_updated}")
+    print(f"Total from Authentik: {len(all_users)}")
+    print(f"Total in Jellyfin: {len(jellyfin_user_map)}")
+    print("=" * 60)
+---
+# CronJob that runs every 15 minutes
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jellyfin-authentik-user-sync
+  namespace: media
+  labels:
+    app: jellyfin
+    component: user-sync
+spec:
+  schedule: "*/15 * * * *"
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: jellyfin
+            component: user-sync
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: ${IMAGE_PYTHON_SLIM}
+              command:
+                - python3
+                - /scripts/sync-users.py
+              env:
+                - name: AUTHENTIK_URL
+                  value: "http://authentik-server.authentik.svc.cluster.local"
+                - name: AUTHENTIK_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: sso-client-secrets
+                      key: AUTHENTIK_API_TOKEN
+                - name: JELLYFIN_URL
+                  value: "http://jellyfin.media.svc.cluster.local:8096"
+                - name: JELLYFIN_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: jellyfin-api-key
+                      key: key
+                - name: USER_GROUP
+                  value: "jellyfin-users"
+                - name: ADMIN_GROUP
+                  value: "jellyfin-admins"
+                - name: DRY_RUN
+                  value: "false"
+              volumeMounts:
+                - name: sync-script
+                  mountPath: /scripts
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+          volumes:
+            - name: sync-script
+              configMap:
+                name: jellyfin-authentik-sync-script
+                defaultMode: 0755

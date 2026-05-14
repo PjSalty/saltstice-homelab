@@ -1,0 +1,88 @@
+# ==============================================================================
+# DEPRECATED - DO NOT USE
+# ==============================================================================
+# This ConfigMap is DEPRECATED in favor of NetBox VM at <internal-ip>
+# Per automation.md, NetBox is the Source of Truth for device inventory.
+#
+# AP inventory is now managed in NetBox:
+#   - Devices with role: "Access Point"
+#   - Custom field: unifi_ap_group (values: "Local APs", "Remote AP")
+#   - MAC addresses stored via NetBox interfaces
+#
+# The UniFi automation sidecar now queries NetBox API directly.
+# This file is kept for reference only.
+# ==============================================================================
+# UniFi AP Inventory (DEPRECATED)
+# This ConfigMap defines all APs, their groups, and which SSIDs they broadcast
+# The automation sidecar reads this to configure AP groups and WLAN assignments
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unifi-ap-inventory
+  namespace: unifi
+data:
+  # AP Groups - define which APs belong to which broadcast group
+  ap-groups.json: |
+    {
+      "groups": [
+        {
+          "name": "Local APs",
+          "description": "APs at primary location",
+          "devices": [
+            {"mac": "02:00:00:00:00:02", "name": "ap-1", "model": "UAP-AC-LR", "location": "ap-1"},
+            {"mac": "02:00:00:00:00:03", "name": "ap-2", "model": "U6-Lite", "location": "ap-2"}
+          ]
+        },
+        {
+          "name": "Remote AP",
+          "description": "APs at remote location (6GHz capable)",
+          "devices": [
+            {"mac": "02:00:00:00:00:04", "name": "remote-ap", "model": "U7-Pro-XG", "location": "remote-ap"}
+          ]
+        }
+      ]
+    }
+
+  # SSID to AP Group mappings - which SSIDs broadcast on which groups
+  ssid-assignments.json: |
+    {
+      "ssids": [
+        {
+          "name": "homelab-wifi",
+          "vlan": 70,
+          "vlan_name": "Trusted",
+          "ap_groups": ["Local APs"],
+          "bands": ["2g", "5g"],
+          "security": "wpa2",
+          "is_guest": false
+        },
+        {
+          "name": "IoT Network",
+          "vlan": 80,
+          "vlan_name": "IoT",
+          "ap_groups": ["Local APs"],
+          "bands": ["2g", "5g"],
+          "security": "wpa2",
+          "is_guest": false
+        },
+        {
+          "name": "Guest Network",
+          "vlan": 100,
+          "vlan_name": "Guest",
+          "ap_groups": ["Local APs"],
+          "bands": ["2g", "5g"],
+          "security": "wpa2",
+          "is_guest": true
+        },
+        {
+          "name": "homelab-secure",
+          "vlan": 88,
+          "vlan_name": "homelab-secure",
+          "ap_groups": ["Remote AP"],
+          "bands": ["2g", "5g", "6g"],
+          "security": "wpa3",
+          "is_guest": false
+        }
+      ]
+    }

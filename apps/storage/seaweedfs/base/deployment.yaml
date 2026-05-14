@@ -1,0 +1,118 @@
+---
+# SeaweedFS Object Storage
+# Provides S3-compatible storage for:
+#   - GitLab Runner cache
+#   - AMP game server backups
+#   - Velero Kubernetes backups
+#   - General object storage
+#
+# Components (all-in-one mode):
+#   - Master: Volume management (port 9333)
+#   - Volume: Data storage (port 8080)
+#   - Filer: File system abstraction (port 8888)
+#   - S3: S3 API with embedded IAM (port 8333)
+#
+# S3 API: https://s3.${DOMAIN} or internal seaweedfs-s3.storage.svc:8333
+# Filer UI: https://seaweedfs.${DOMAIN}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seaweedfs
+  namespace: storage
+  labels:
+    app.kubernetes.io/name: seaweedfs
+    app.kubernetes.io/component: object-storage
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Required for volume data consistency
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: seaweedfs
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: seaweedfs
+          # SeaweedFS v4.07 - latest stable (Jan 2026)
+          image: harbor.example.com/dockerhub-proxy/chrislusf/seaweedfs:4.07
+          imagePullPolicy: IfNotPresent
+          args:
+            - server
+            - -dir=/data
+            - -master.port=9333
+            - -volume.port=8080
+            - -filer
+            - -filer.port=8888
+            - -s3
+            - -s3.port=8333
+            - -s3.config=/etc/seaweedfs/s3.json
+            # Enable metrics for Prometheus
+            - -metricsPort=9327
+          ports:
+            - name: master
+              containerPort: 9333
+              protocol: TCP
+            - name: volume
+              containerPort: 8080
+              protocol: TCP
+            - name: filer
+              containerPort: 8888
+              protocol: TCP
+            - name: s3
+              containerPort: 8333
+              protocol: TCP
+            - name: metrics
+              containerPort: 9327
+              protocol: TCP
+          env:
+            # Filer configuration
+            - name: WEED_FILER_OPTIONS_RECURSIVE_DELETE
+              value: "true"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9333
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /cluster/status
+              port: 9333
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: s3-config
+              mountPath: /etc/seaweedfs
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: seaweedfs-data
+        - name: s3-config
+          secret:
+            secretName: seaweedfs-s3-config

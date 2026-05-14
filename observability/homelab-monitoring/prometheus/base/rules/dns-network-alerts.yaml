@@ -1,0 +1,149 @@
+---
+# DNS and Network Infrastructure Alerts
+# Monitors AdGuard DNS (<internal-ip>), MikroTik network devices, and
+# CoreDNS within Kubernetes.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dns-network-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # AdGuard DNS Alerts
+    # =========================================================================
+    - name: adguard-dns
+      interval: 1m
+      rules:
+        - alert: AdGuardDown
+          expr: |
+            up{job="infrastructure-vms", instance="adguard"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: dns
+          annotations:
+            summary: "AdGuard DNS server is unreachable"
+            description: |
+              AdGuard Home (<internal-ip>) has been unreachable for 2 minutes.
+              All internal DNS resolution for *.example.com will fail,
+              affecting all services and SSO.
+            runbook_url: "https://grafana.example.com/d/dns"
+            action: "Check Proxmox VM status for AdGuard (<internal-ip>)"
+
+        - alert: AdGuardHighQueryRate
+          expr: |
+            rate(adguard_dns_queries_total[5m]) > 500
+          for: 10m
+          labels:
+            severity: warning
+            category: dns
+          annotations:
+            summary: "Unusually high DNS query rate on AdGuard"
+            description: |
+              AdGuard is processing {{ printf "%.0f" $value }} DNS queries/second,
+              which is above the expected baseline of 500/s.
+              This may indicate DNS amplification or a misconfigured client.
+            action: "Review AdGuard query log for high-volume clients"
+
+        - alert: AdGuardHighBlockRate
+          expr: |
+            rate(adguard_dns_queries_blocked_total[5m])
+            / rate(adguard_dns_queries_total[5m]) > 0.50
+          for: 15m
+          labels:
+            severity: warning
+            category: dns
+          annotations:
+            summary: "AdGuard blocking rate above 50%"
+            description: |
+              AdGuard is blocking {{ printf "%.1f" (mul $value 100) }}% of DNS queries.
+              A very high block rate may indicate blocklist over-blocking or
+              legitimate services being incorrectly filtered.
+            action: "Review AdGuard block log and adjust blocklists if needed"
+
+        - alert: AdGuardUpstreamLatencyHigh
+          expr: |
+            adguard_dns_upstream_avg_processing_time > 0.5
+          for: 10m
+          labels:
+            severity: warning
+            category: dns
+          annotations:
+            summary: "AdGuard upstream DNS latency is high"
+            description: |
+              AdGuard upstream DNS processing time is {{ printf "%.0f" (mul $value 1000) }}ms,
+              which exceeds the 500ms threshold. This will slow all DNS lookups.
+            action: "Check upstream DNS servers configured in AdGuard settings"
+
+    # =========================================================================
+    # CoreDNS Kubernetes Alerts
+    # =========================================================================
+    - name: coredns
+      interval: 1m
+      rules:
+        - alert: CoreDNSDown
+          expr: |
+            up{job="coredns"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: dns
+          annotations:
+            summary: "CoreDNS is down in Kubernetes"
+            description: |
+              CoreDNS has been unreachable for 2 minutes.
+              Kubernetes service discovery and pod DNS resolution will fail.
+            action: "Check CoreDNS pods: kubectl get pods -n kube-system -l k8s-app=kube-dns"
+
+        - alert: CoreDNSHighErrorRate
+          expr: |
+            rate(coredns_dns_responses_total{rcode="SERVFAIL"}[5m])
+            / rate(coredns_dns_responses_total[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            category: dns
+          annotations:
+            summary: "CoreDNS SERVFAIL rate above 5%"
+            description: |
+              CoreDNS is returning SERVFAIL for {{ printf "%.1f" (mul $value 100) }}% of
+              queries. This may indicate upstream resolver issues or misconfigured zones.
+            action: "Check CoreDNS logs: kubectl logs -n kube-system -l k8s-app=kube-dns"
+
+        - alert: CoreDNSHighLatency
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(coredns_dns_request_duration_seconds_bucket[5m])) by (le)
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+            category: dns
+          annotations:
+            summary: "CoreDNS p99 latency above 1 second"
+            description: |
+              CoreDNS p99 query latency is {{ printf "%.2f" $value }}s, exceeding the
+              1 second SLO threshold. Pod startup and service lookups will be slow.
+            action: "Review CoreDNS configuration and upstream forwarder health"
+
+    # =========================================================================
+    # Network Connectivity Recording Rules
+    # =========================================================================
+    - name: network-recording
+      interval: 1m
+      rules:
+        # DNS query rate per instance
+        - record: instance:adguard_dns_queries:rate5m
+          expr: |
+            rate(adguard_dns_queries_total[5m])
+
+        # CoreDNS error ratio
+        - record: instance:coredns_error_ratio:rate5m
+          expr: |
+            rate(coredns_dns_responses_total{rcode="SERVFAIL"}[5m])
+            / rate(coredns_dns_responses_total[5m])

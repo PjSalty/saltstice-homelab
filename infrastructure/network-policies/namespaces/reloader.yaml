@@ -1,0 +1,29 @@
+---
+# Reloader — watches Secrets/ConfigMaps, restarts pods on changes
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-reloader
+  namespace: reloader
+spec:
+  description: "Allow Reloader to watch K8s API for Secret/ConfigMap changes"
+  endpointSelector: {}
+  egress:
+    # K8s API access (watch Secrets, ConfigMaps, Deployments, StatefulSets)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

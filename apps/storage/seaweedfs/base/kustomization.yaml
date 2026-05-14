@@ -1,0 +1,31 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: storage
+
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+  - bucket-init-job.yaml
+  - servicemonitor.yaml
+  - networkpolicy.yaml
+  - backup-cronjob.yaml
+  - autoscaling
+
+# Required Secrets (from infrastructure/secrets repo)
+# See README.md for secret format and setup instructions
+#
+# storage namespace:
+#   - seaweedfs-s3-config: S3 IAM configuration (s3.json)
+#
+# gitlab-runner namespace:
+#   - seaweedfs-s3-credentials: GitLab runner S3 cache credentials
+
+# Common labels
+commonLabels:
+  app.kubernetes.io/part-of: storage
+  app.kubernetes.io/managed-by: flux

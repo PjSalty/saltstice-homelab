@@ -1,0 +1,522 @@
+---
+# Semaphore Tasks and Schedules Configuration
+# Creates task templates and weekly schedules for automation
+# NOTE: All shell variables use $$ escaping to prevent Flux postBuild substitution
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: semaphore-setup-tasks
+  namespace: semaphore
+spec:
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: configure-tasks
+        image: ${IMAGE_POSTGRES_15}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+
+          echo "=== Semaphore Tasks and Schedules Setup ==="
+          echo ""
+
+          export PGPASSWORD="$${POSTGRES_PASSWORD}"
+
+          # Wait for postgres
+          until pg_isready -h postgres -U semaphore > /dev/null 2>&1; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
+          echo "Postgres ready"
+
+          # Step 0: Clean up any malformed JSON data
+          # Semaphore expects NULL or JSON objects {}, not arrays [] for these fields
+          echo "Step 0: Cleaning up malformed JSON data..."
+
+          # Fix arguments column - must be NULL or JSON object, not array
+          FIXED=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "UPDATE project__template SET arguments = NULL WHERE arguments = '[]';" 2>&1)
+          echo "   Fixed template arguments"
+
+          # Fix survey_vars column
+          FIXED=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "UPDATE project__template SET survey_vars = NULL WHERE survey_vars = '[]';" 2>&1)
+          echo "   Fixed template survey_vars"
+
+          # Fix task_params column
+          FIXED=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "UPDATE project__template SET task_params = NULL WHERE task_params = '{}';" 2>&1)
+          echo "   Fixed template task_params"
+
+          # Fix environment env column - must be NULL or JSON object, not array
+          FIXED=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "UPDATE project__environment SET env = NULL WHERE env = '[]';" 2>&1)
+          echo "   Fixed environment env"
+          echo ""
+
+          # Get project and repository IDs
+          PROJECT_ID=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "SELECT id FROM project LIMIT 1;" | tr -d ' ')
+
+          REPO_ID=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "SELECT id FROM project__repository WHERE project_id=$${PROJECT_ID} LIMIT 1;" | tr -d ' ')
+
+          echo "Project ID: $${PROJECT_ID}"
+          echo "Repository ID: $${REPO_ID}"
+          echo ""
+
+          # Create Inventory
+          echo "Step 1: Creating inventory..."
+          INV_ID=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "SELECT id FROM project__inventory WHERE project_id=$${PROJECT_ID} AND name='Homelab Inventory' LIMIT 1;" | tr -d ' ')
+
+          if [ -n "$$INV_ID" ] && [ "$$INV_ID" != "" ]; then
+            echo "Inventory already exists (ID: $${INV_ID})"
+          else
+            psql -h postgres -U semaphore -d semaphore -c \
+              "INSERT INTO project__inventory (project_id, name, type, inventory, repository_id, become_key_id) \
+               VALUES ($${PROJECT_ID}, 'Homelab Inventory', 'file', 'inventory/hosts.yml', $${REPO_ID}, NULL) \
+               RETURNING id;" | grep -o '[0-9]*' | head -1 > /tmp/inv_id
+            INV_ID=$$(cat /tmp/inv_id)
+            echo "Created inventory (ID: $${INV_ID})"
+          fi
+
+          # Update inventory path if it's stale (from old homelab.git monorepo)
+          psql -h postgres -U semaphore -d semaphore -c \
+            "UPDATE project__inventory SET inventory = 'inventory/hosts.yml' \
+             WHERE project_id=$${PROJECT_ID} AND inventory LIKE 'ansible/%';" 2>/dev/null
+          echo "Inventory path verified"
+
+          # Create Environment (for common variables)
+          echo ""
+          echo "Step 2: Creating environment..."
+          ENV_ID=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "SELECT id FROM project__environment WHERE project_id=$${PROJECT_ID} AND name='Production' LIMIT 1;" | tr -d ' ')
+
+          if [ -n "$$ENV_ID" ] && [ "$$ENV_ID" != "" ]; then
+            echo "Environment already exists (ID: $${ENV_ID})"
+          else
+            ENV_JSON='{"ansible_python_interpreter":"/usr/bin/python3"}'
+            psql -h postgres -U semaphore -d semaphore -c \
+              "INSERT INTO project__environment (project_id, name, json, env) \
+               VALUES ($${PROJECT_ID}, 'Production', '$${ENV_JSON}', NULL) \
+               RETURNING id;" | grep -o '[0-9]*' | head -1 > /tmp/env_id
+            ENV_ID=$$(cat /tmp/env_id)
+            echo "Created environment (ID: $${ENV_ID})"
+          fi
+
+          # Function to create or update task template.
+          #
+          # Args:
+          #   $1 name        — template name (UI label, also the upsert key)
+          #   $2 playbook    — repo-relative playbook path
+          #   $3 description — short blurb shown under the template
+          #   $4 survey_vars — SQL fragment for survey_vars column. Either the
+          #                    literal "NULL" (no survey) or a single-quoted
+          #                    JSON array string with the Semaphore survey
+          #                    schema, e.g.
+          #                      '[{"name":"cycle_host","title":"Cycle Host",
+          #                         "description":"Reboot after kernel update",
+          #                         "type":"","required":false,
+          #                         "default_value":"false"}]'
+          #                    Pass "NULL" if omitted (back-compat).
+          create_template() {
+            local name="$$1"
+            local playbook="$$2"
+            local description="$$3"
+            local survey_vars="$${4:-NULL}"
+
+            TMPL_ID=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+              "SELECT id FROM project__template WHERE project_id=$${PROJECT_ID} AND name='$${name}' LIMIT 1;" | tr -d ' ')
+
+            if [ -n "$$TMPL_ID" ] && [ "$$TMPL_ID" != "" ]; then
+              # Update playbook + description + survey_vars in case they
+              # changed. survey_vars is owned by this Job — operator UI edits
+              # to the survey schema get reset on re-run by design.
+              psql -h postgres -U semaphore -d semaphore -c \
+                "UPDATE project__template SET playbook='$${playbook}', description='$${description}', survey_vars=$${survey_vars}, app='ansible' WHERE id=$${TMPL_ID};" 2>/dev/null
+              echo "   Template '$${name}' updated (ID: $${TMPL_ID})"
+            else
+              psql -h postgres -U semaphore -d semaphore -c \
+                "INSERT INTO project__template (project_id, inventory_id, repository_id, environment_id, name, playbook, arguments, description, type, app, allow_override_args_in_task, survey_vars) \
+                 VALUES ($${PROJECT_ID}, $${INV_ID}, $${REPO_ID}, $${ENV_ID}, '$${name}', '$${playbook}', NULL, '$${description}', '', 'ansible', false, $${survey_vars}) \
+                 RETURNING id;" | grep -o '[0-9]*' | head -1 > /tmp/tmpl_id
+              TMPL_ID=$$(cat /tmp/tmpl_id)
+              echo "   Created template '$${name}' (ID: $${TMPL_ID})"
+            fi
+            echo "$$TMPL_ID" > /tmp/last_tmpl_id
+          }
+
+          echo ""
+          echo "Step 3: Creating task templates..."
+
+          # =====================================================================
+          # Survey-var schema (Semaphore project__template.survey_vars) is a
+          # JSON array of objects:
+          #   name          — variable name passed as -e <name>=<value>
+          #   title         — UI label
+          #   description   — UI help text below the field
+          #   type          — "" (string), "int", "secret", "enum"
+          #   required      — bool
+          #   default_value — string (Ansible coerces booleans/ints from text)
+          #   values        — for enum: [{"name":"label","value":"value"}, ...]
+          #
+          # Single quotes inside the JSON would break SQL escaping (the column
+          # is interpolated as a SQL literal), so descriptions deliberately
+          # avoid contractions.
+          # =====================================================================
+
+          # Day-2 convergence — the most important template
+          # Tag-based scoping (proxmox / base / infrastructure / load-balancers
+          # / k8s) lives in Extra CLI Arguments as `--tags <name>`, not as a
+          # survey var, since survey vars only become -e VAR=VAL.
+          create_template \
+            "Converge All" \
+            "playbooks/site.yml" \
+            "Full idempotent convergence of all hosts to desired state"
+
+          # System Patching (all VMs except Proxmox/storage)
+          # bash adjacent-string concatenation keeps each line under the
+          # yamllint 200-char ceiling without changing the rendered JSON.
+          PATCH_SYSTEMS_SURVEY='[{"name":"reboot","title":"Reboot After Patches",'\
+          '"description":"Reboot every host after kernel or initramfs updates land. '\
+          'Default leaves the new kernel staged until the next planned cycle. '\
+          'Set true when staging a kernel CVE fix that must be live immediately.",'\
+          '"type":"","required":false,"default_value":"false"}]'
+          create_template \
+            "Patch Systems" \
+            "playbooks/operations/patch-systems.yml" \
+            "Apply OS patches to all infrastructure servers" \
+            "'$${PATCH_SYSTEMS_SURVEY}'"
+
+          # Proxmox host patching (separate from Patch Systems — host downtime
+          # cycles every guest VM, so cycle is gated behind cycle_host=true)
+          PATCH_PROXMOX_SURVEY='[{"name":"cycle_host","title":"Cycle Host After Patch",'\
+          '"description":"Reboot the Proxmox VE host after a kernel update. '\
+          'WARNING: this cycles every guest VM. Schedule a maintenance window. '\
+          'Default leaves the new kernel staged for a planned cycle.",'\
+          '"type":"","required":false,"default_value":"false"}]'
+          create_template \
+            "Patch Proxmox" \
+            "playbooks/operations/patch-proxmox.yml" \
+            "Apply OS patches to the Proxmox VE host" \
+            "'$${PATCH_PROXMOX_SURVEY}'"
+
+          # Deploy TLS Certificates
+          create_template \
+            "Deploy VM Certificates" \
+            "playbooks/operations/deploy-certificates.yml" \
+            "Deploy TLS certificates from cert-manager to VMs"
+
+          # Deploy iDRAC Certificate. Idempotent — short-circuits unless the
+          # iDRAC server cert is within `force_renewal_days` of expiry. Operator
+          # can pass force_renewal_days=365 to force an immediate rotation.
+          IDRAC_CERT_SURVEY='[{"name":"idrac_cert_renewal_threshold_days",'\
+          '"title":"Force Renewal If Cert Expires Within N Days",'\
+          '"description":"Renewal threshold in days. Default 30 means the role '\
+          'short-circuits unless the iDRAC server cert is within 30 days of '\
+          'expiry. Set 365 to force an immediate rotation regardless of the '\
+          'current cert state. Set higher to force unconditionally.",'\
+          '"type":"int","required":false,"default_value":"30"}]'
+          create_template \
+            "Deploy iDRAC Certificate" \
+            "playbooks/operations/deploy-idrac-cert.yml" \
+            "Push wildcard cert from cert-manager to Dell iDRAC web interface (idempotent)" \
+            "'$${IDRAC_CERT_SURVEY}'"
+
+          # Credential rotation moved to homelab-cli (Go) in commit bda9927;
+          # the rotate-credentials.yml playbook was deleted alongside the
+          # role rewrite. The 3 "Credential Rotation - *" Semaphore
+          # templates that used to live here pointed at a now-missing
+          # playbook and would fail with "playbook not found" if run.
+          # Explicit DELETE below cleans them out of any prod project that
+          # still has the rows.
+
+          # Backup Verification
+          create_template \
+            "Backup Verify" \
+            "playbooks/operations/backup-verify.yml" \
+            "Verify backup health: etcd snapshots, Velero backups, ZFS snapshots"
+
+          # Config Drift Audit
+          create_template \
+            "Audit Config Drift" \
+            "playbooks/operations/audit-config-drift.yml" \
+            "Compare live host state against expected Ansible configuration"
+
+          # Scale Cluster
+          SCALE_CLUSTER_SURVEY='[{"name":"action","title":"Action",'\
+          '"description":"Operation to perform. join (default) prepares any new hosts '\
+          'in the inventory and runs the RKE2 join role. drain cordons + drains the '\
+          'named node so it can be removed safely.",'\
+          '"type":"enum","required":false,"default_value":"join",'\
+          '"values":[{"name":"join (add new nodes)","value":"join"},'\
+          '{"name":"drain (remove a node)","value":"drain"}]},'\
+          '{"name":"node","title":"Node Hostname",'\
+          '"description":"Required when action=drain. '\
+          'Kubernetes node name (e.g. k8s-worker-3). Ignored when action=join.",'\
+          '"type":"","required":false,"default_value":""}]'
+          create_template \
+            "Scale Cluster" \
+            "playbooks/operations/scale-cluster.yml" \
+            "Add or remove Kubernetes nodes" \
+            "'$${SCALE_CLUSTER_SURVEY}'"
+
+          # Full Bootstrap
+          create_template \
+            "Bootstrap (Full)" \
+            "playbooks/bootstrap.yml" \
+            "Full bootstrap from bare Proxmox to production (phases 0-7)"
+
+          # Phase templates intentionally omitted. site.yml ("Converge All")
+          # is a complete superset organized with the same tags
+          # (base / proxmox / infrastructure / load-balancers / k8s). For
+          # surgical re-runs, trigger Converge All with `--tags <name>`
+          # in Extra CLI Arguments. The phase playbooks remain in the
+          # repo and are still invoked by Bootstrap (Full); they're just
+          # not exposed as standalone Semaphore templates because they
+          # were redundant noise (most carried no run history; the
+          # exceptions were old failures from before site.yml stabilized).
+          # If a phase-targeted template is ever needed, prefer extending
+          # Converge All's tags rather than adding back the standalone
+          # phase entry.
+
+          # =====================================================================
+          # Templates previously created via the Semaphore UI — bringing under
+          # declarative ownership. The UPDATE branch of create_template only
+          # touches playbook + description + app, so any operator-set
+          # `arguments` / `inventory_id` / `repository_id` on the existing
+          # rows is preserved on first run.
+          # =====================================================================
+
+          # Fleet-wide rolling kernel cycle (post-patch). Drains K8s
+          # workers one at a time; tolerates HAProxy VRRP failover.
+          ROLLING_REBOOT_SURVEY='[{"name":"skip_infra","title":"Skip Infrastructure VMs",'\
+          '"description":"Skip the infrastructure / DNS / AMP / VPN tier and the '\
+          'HAProxy load balancers. Useful when only the K8s cluster needs cycling. '\
+          'Default cycles the full fleet in this order: infrastructure, '\
+          'load balancers, K8s workers, K8s masters.",'\
+          '"type":"","required":false,"default_value":"false"}]'
+          create_template \
+            "Rolling VM Reboot" \
+            "playbooks/operations/rolling-reboot.yml" \
+            "Rolling kernel cycle of infrastructure VMs, load balancers, and K8s workers (drain-aware)" \
+            "'$${ROLLING_REBOOT_SURVEY}'"
+
+          # Containerd registry-mirror config push to all K8s nodes.
+          # Used after a Harbor proxy-cache config change.
+          create_template \
+            "Deploy Registry Mirrors" \
+            "playbooks/operations/deploy-registry-mirrors.yml" \
+            "Push containerd /etc/rancher/rke2/registries.yaml to all K8s nodes"
+
+          # TrueNAS SCALE update — default flow downloads but stops at the
+          # human gate; operator re-runs with approve=yes to apply.
+          # Sibling "TrueNAS Update Check" template stays UI-managed
+          # because its `-t check` argument differentiates it from this
+          # one, and create_template doesn't manage `arguments` today.
+          TRUENAS_UPDATE_SURVEY='[{"name":"approve","title":"Approve and Apply",'\
+          '"description":"Set yes to actually apply the staged update (cycles TrueNAS). '\
+          'Default no runs the check + download flow only and stops at the human gate. '\
+          'Schedule a maintenance window before approving.",'\
+          '"type":"enum","required":false,"default_value":"no",'\
+          '"values":[{"name":"no (download only)","value":"no"},'\
+          '{"name":"yes (apply and cycle)","value":"yes"}]},'\
+          '{"name":"skip_preflight","title":"Skip Preflight Checks",'\
+          '"description":"Skip the dataset / pool / replication / scrub safety checks. '\
+          'Set true only if a preflight check is known-broken and the operator has '\
+          'manually verified the host is healthy. Default false.",'\
+          '"type":"","required":false,"default_value":"false"}]'
+          create_template \
+            "TrueNAS Update (Check + Download)" \
+            "playbooks/operations/truenas-update.yml" \
+            "Check + download TrueNAS SCALE updates; stops at human gate (set approve=yes to apply)" \
+            "'$${TRUENAS_UPDATE_SURVEY}'"
+
+          # Clean up old templates that reference non-existent playbooks
+          echo ""
+          echo "Step 3b: Cleaning stale templates..."
+          STALE=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "SELECT name FROM project__template WHERE project_id=$${PROJECT_ID} AND playbook LIKE 'ansible/playbooks/%';" 2>/dev/null)
+          if [ -n "$$STALE" ]; then
+            echo "   Removing templates with old 'ansible/playbooks/' paths..."
+            psql -h postgres -U semaphore -d semaphore -c \
+              "DELETE FROM project__template WHERE project_id=$${PROJECT_ID} AND playbook LIKE 'ansible/playbooks/%';" 2>/dev/null
+            echo "   Cleaned stale templates"
+          else
+            echo "   No stale templates found"
+          fi
+
+          # Remove templates pointing at playbooks that no longer exist
+          # in the homelab-ansible repo OR templates we've intentionally
+          # retired in favour of Converge All + tags. Listed by exact
+          # playbook path so we don't accidentally nuke a UI-created
+          # template that happens to share a name.
+          #
+          # rotate-credentials.yml: deleted in bda9927 when credential
+          #   rotation moved to homelab-cli.
+          # phases/0[02-5]-*.yml: retired as standalone templates;
+          #   covered by Converge All --tags <name>. Playbook files
+          #   remain in the repo (Bootstrap (Full) still invokes them)
+          #   but the Semaphore template entries are unnecessary noise.
+          echo ""
+          echo "Step 3b2: Removing templates with orphaned/retired playbook paths..."
+          ORPHANS=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "SELECT name FROM project__template WHERE project_id=$${PROJECT_ID} \
+             AND playbook IN ( \
+               'playbooks/operations/rotate-credentials.yml', \
+               'playbooks/phases/00-proxmox-config.yml', \
+               'playbooks/phases/02-base-config.yml', \
+               'playbooks/phases/03-infrastructure.yml', \
+               'playbooks/phases/04-load-balancers.yml', \
+               'playbooks/phases/05-kubernetes.yml' \
+             );" 2>/dev/null)
+          if [ -n "$$ORPHANS" ]; then
+            echo "   Removing:"
+            echo "$$ORPHANS" | sed 's/^/     /'
+            psql -h postgres -U semaphore -d semaphore -c \
+              "DELETE FROM project__template WHERE project_id=$${PROJECT_ID} \
+               AND playbook IN ( \
+                 'playbooks/operations/rotate-credentials.yml', \
+                 'playbooks/phases/00-proxmox-config.yml', \
+                 'playbooks/phases/02-base-config.yml', \
+                 'playbooks/phases/03-infrastructure.yml', \
+                 'playbooks/phases/04-load-balancers.yml', \
+                 'playbooks/phases/05-kubernetes.yml' \
+               );" 2>/dev/null
+            echo "   Removed orphaned/retired templates"
+          else
+            echo "   No orphaned/retired-playbook templates found"
+          fi
+
+          # Step 3c: Deduplicate templates by name. The create_template
+          # UPSERT keys on name, so a template created earlier via the UI
+          # with the same name is invisible to the function — both rows
+          # coexist. Keep the lowest-ID row per name (typically the one
+          # with run history; new UI-created dupes get higher IDs) and
+          # delete the rest. Schedules cascade-delete via Semaphore's FK
+          # on project__schedule.template_id.
+          echo ""
+          echo "Step 3c: Deduplicating templates by name..."
+          DUPS=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+            "SELECT name || ' (x' || COUNT(*) || ')' \
+             FROM project__template WHERE project_id=$${PROJECT_ID} \
+             GROUP BY name HAVING COUNT(*) > 1;" 2>/dev/null)
+          if [ -n "$$DUPS" ]; then
+            echo "   Duplicates found:"
+            echo "$$DUPS" | sed 's/^/     /'
+            psql -h postgres -U semaphore -d semaphore -c \
+              "DELETE FROM project__template WHERE id IN ( \
+                 SELECT id FROM ( \
+                   SELECT id, ROW_NUMBER() OVER (PARTITION BY name ORDER BY id) AS rn \
+                   FROM project__template WHERE project_id=$${PROJECT_ID} \
+                 ) sub WHERE rn > 1 \
+               );" 2>/dev/null
+            echo "   Duplicates removed (kept lowest-ID per name)"
+          else
+            echo "   No duplicate template names found"
+          fi
+
+          # Function to create schedule
+          create_schedule() {
+            local template_name="$$1"
+            local cron_format="$$2"
+            local schedule_name="$$3"
+
+            # Get template ID by name
+            TMPL_ID=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+              "SELECT id FROM project__template WHERE project_id=$${PROJECT_ID} AND name='$${template_name}' LIMIT 1;" | tr -d ' ')
+
+            if [ -z "$$TMPL_ID" ] || [ "$$TMPL_ID" = "" ]; then
+              echo "   Template '$${template_name}' not found, skipping schedule"
+              return
+            fi
+
+            SCHED_ID=$$(psql -h postgres -U semaphore -d semaphore -t -c \
+              "SELECT id FROM project__schedule WHERE project_id=$${PROJECT_ID} AND template_id=$${TMPL_ID} LIMIT 1;" | tr -d ' ')
+
+            if [ -n "$$SCHED_ID" ] && [ "$$SCHED_ID" != "" ]; then
+              # Update cron and name in case they changed
+              psql -h postgres -U semaphore -d semaphore -c \
+                "UPDATE project__schedule SET cron_format='$${cron_format}', name='$${schedule_name}', active=true WHERE id=$${SCHED_ID};" 2>/dev/null
+              echo "   Schedule '$${schedule_name}' updated (ID: $${SCHED_ID})"
+            else
+              psql -h postgres -U semaphore -d semaphore -c \
+                "INSERT INTO project__schedule (project_id, template_id, cron_format, name, active) \
+                 VALUES ($${PROJECT_ID}, $${TMPL_ID}, '$${cron_format}', '$${schedule_name}', true) \
+                 RETURNING id;" | grep -o '[0-9]*' | head -1 > /tmp/sched_id
+              SCHED_ID=$$(cat /tmp/sched_id)
+              echo "   Created schedule '$${schedule_name}' (ID: $${SCHED_ID})"
+            fi
+          }
+
+          echo ""
+          echo "Step 4: Creating schedules..."
+
+          # Weekly patching - Sunday 2 AM
+          create_schedule \
+            "Patch Systems" \
+            "0 2 * * 0" \
+            "Weekly System Patching"
+
+          # Weekly certificate deployment - Friday 1 AM
+          create_schedule \
+            "Deploy VM Certificates" \
+            "0 1 * * 5" \
+            "Weekly Certificate Deployment"
+
+          # Daily backup verification - 6 AM
+          create_schedule \
+            "Backup Verify" \
+            "0 6 * * *" \
+            "Daily Backup Verification"
+
+          # Weekly config drift audit - Saturday 4 AM
+          create_schedule \
+            "Audit Config Drift" \
+            "0 4 * * 6" \
+            "Weekly Config Drift Audit"
+
+          # Weekly iDRAC cert check - Friday 1:30 AM (after VM cert deploy at 1 AM)
+          create_schedule \
+            "Deploy iDRAC Certificate" \
+            "30 1 * * 5" \
+            "Weekly iDRAC Certificate Check"
+
+          echo ""
+          echo "=== Configuration Complete ==="
+          echo ""
+          echo "Task Templates: 13 playbook templates"
+          echo "Schedules: 5 automated tasks"
+          echo ""
+          echo "Schedule:"
+          echo "  - Daily   6:00 AM:  Backup Verification"
+          echo "  - Friday  1:00 AM:  Certificate Deployment"
+          echo "  - Friday  1:30 AM:  iDRAC Certificate Check"
+          echo "  - Saturday 4:00 AM: Config Drift Audit"
+          echo "  - Sunday  2:00 AM:  System Patching"
+          echo ""
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: semaphore-secrets
+              key: postgres-password
+        volumeMounts:
+        - name: config
+          mountPath: /etc/semaphore
+      volumes:
+      - name: config
+        configMap:
+          name: semaphore-config

@@ -1,0 +1,34 @@
+# Semaphore config - Non-sensitive settings only
+# Sensitive values (secrets, OIDC) are injected via environment variables
+# from SOPS-encrypted secrets
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: semaphore-config
+  namespace: semaphore
+data:
+  # Base config - secrets injected at runtime via environment variables
+  # Semaphore reads SEMAPHORE_* environment variables and merges with config.json
+  config.json: |
+    {
+      "postgres": {
+        "host": "postgres",
+        "user": "semaphore",
+        "pass": "",
+        "name": "semaphore",
+        "options": {
+          "sslmode": "disable"
+        }
+      },
+      "port": "3000",
+      "tmp_path": "/tmp/semaphore",
+      "web_host": "/",
+      "web_root": "/",
+      "ldap_enable": false,
+      "email_alert": false,
+      "telegram_alert": false,
+      "slack_alert": false,
+      "rocketchat_alert": false,
+      "microsoft_teams_alert": false
+    }

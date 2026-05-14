@@ -1,0 +1,32 @@
+---
+# Monitoring stack custom resources
+# Core stack (Prometheus, Grafana, AlertManager, node_exporter) deployed via
+# kube-prometheus-stack HelmRelease
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # kube-prometheus-stack HelmRelease (main monitoring stack)
+  - monitoring-release.yaml
+  # TLS certificates for monitoring stack Ingresses
+  - certificates.yaml
+  # MKTXP - MikroTik Prometheus Exporter (custom deployment)
+  - mktxp/base
+  # Additional ServiceMonitors for applications
+  - servicemonitors
+  # Custom Grafana dashboards
+  - grafana/dashboards/mikrotik-dashboard.yaml
+  - grafana/dashboards/security-overview-dashboard.yaml
+  - grafana/dashboards/kubernetes-audit-dashboard.yaml
+  - grafana/dashboards/trivy-vulnerability-dashboard.yaml
+  # Custom PrometheusRules for infrastructure alerts
+  # NOTE: using the rules sub-kustomization to pick up all rules including slo-alerts.yaml
+  - prometheus/base/rules
+  # AlertManager credentials (SOPS encrypted)
+  - alertmanager-secret.yaml
+  # AlertManager Pushover credentials (SOPS encrypted)
+  - alertmanager-pushover-secret.yaml
+
+labels:
+  - pairs:
+      monitoring.homelab.example.com/stack: "true"

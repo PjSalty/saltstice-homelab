@@ -1,0 +1,48 @@
+---
+# Velero backup system — needs access to storage and K8s API
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-velero
+  namespace: velero
+spec:
+  description: "Allow Velero backup operations"
+  endpointSelector: {}
+  egress:
+    # Allow access to TrueNAS S3/NFS for backup storage
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "9000"
+              protocol: TCP
+            - port: "2049"
+              protocol: TCP
+    # Allow access to SeaweedFS S3 for backup storage
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: storage
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+    # Allow Kubernetes API for snapshot operations
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

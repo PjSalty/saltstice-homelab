@@ -1,0 +1,71 @@
+---
+# Patch all systems — OS updates, fleet-wide
+#
+# Usage:
+#   ansible-playbook playbooks/operations/patch-systems.yml
+#   ansible-playbook playbooks/operations/patch-systems.yml --limit infrastructure
+#   ansible-playbook playbooks/operations/patch-systems.yml -e reboot=true
+
+- name: Patch systems
+  serial: "30%"
+  tasks:
+    - name: Apply CVE-2026-31431 mitigation (algif_aead blacklist)
+      ansible.builtin.import_role:
+        name: cve-2026-31431-mitigation
+      tags:
+        - patch
+        - cve-2026-31431
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+      become: true
+      tags:
+        - patch
+
+    # dist-upgrade (not safe-upgrade) so kernel ABI bumps that pull new
+    # firmware-* deps don't get silently held back. Within trixie this
+    # is effectively the same as safe-upgrade for routine updates, but
+    # on the rare obsolete-package-removal day, dist-upgrade is the
+    # correct verb for a fleet sweep.
+    - name: Upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
+      become: true
+      register: upgrade_result
+      tags:
+        - patch
+
+    - name: Display upgraded packages # noqa: no-handler
+      ansible.builtin.debug:
+        var: upgrade_result.stdout_lines
+      when: upgrade_result.changed
+      tags:
+        - patch
+
+    - name: Check if reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+      tags:
+        - patch
+
+    - name: Reboot if required and allowed
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+      become: true
+      when:
+        - reboot_required.stat.exists
+        - reboot | default(false) | bool
+      tags:
+        - patch
+
+    - name: Notify if reboot needed but not performed
+      ansible.builtin.debug:
+        msg: "Reboot required on {{ inventory_hostname }} — run with -e reboot=true to reboot"
+      when:
+        - reboot_required.stat.exists
+        - not (reboot | default(false) | bool)
+      tags:
+        - patch

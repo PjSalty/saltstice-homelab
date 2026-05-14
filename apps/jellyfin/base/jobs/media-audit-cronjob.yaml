@@ -1,0 +1,105 @@
+---
+# Nightly library audit CronJob.
+#
+# Runs `homelab-cli media audit` against /media. The audit:
+#   - Cleans up bad naming (double parens, trailing spaces).
+#   - Removes empty dirs, merges duplicate show folders.
+#   - Cross-library check (TV in movies, anime mis-classified, etc.).
+#   - Loose-file relocation (file in show root → Season N).
+#   - Season-dupe removal (clean + scene release of same episode).
+#   - Wrong-season relocation: re-parses every file in Season N/, moves
+#     to correct Season X/ if classifier disagrees. This is what
+#     replaces the old one-shot rename Jobs — once a new classifier
+#     rule lands (absolute numbering, sequel-as-season, etc.), the
+#     next audit run picks up everything previously misfiled and moves
+#     it home, no per-show Job ever again.
+#
+# Schedule: 03:00 daily (after most ingest activity has settled).
+# Concurrency Forbid prevents overlap if a previous run is still moving
+# files. successfulJobsHistoryLimit=3 keeps the last few runs visible
+# for inspection without wasting etcd.
+#
+# Dry-run override: set DRY_RUN=true on the CronJob's env to preview
+# decisions without executing moves. Useful before bumping the
+# classifier with a new mapping.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: media-library-audit
+  namespace: media
+  labels:
+    app.kubernetes.io/name: media-library-audit
+    app.kubernetes.io/component: automation
+spec:
+  schedule: "0 3 * * *"
+  # Resumed 2026-04-20 after the 2026-04-19 incident was remediated:
+  # - cli v1.5.53-v1.5.63 added parser fixes, SeasonExplicit guard,
+  #   nonJunkWordsLost defense gate, edition-word protection, version-
+  #   dot preservation, and Evangelion classifier updates.
+  # - 921 wrong-season moves and 282 folder renames rolled back.
+  # - v1.5.63 real audit ran cleanly: 398/401 issues fixed, 14 dangerous
+  #   renames correctly refused by the defense gate.
+  # If this job misbehaves again, suspend via Git (NOT kubectl patch —
+  # Flux reverts kubectl-only changes). See incident_media_audit_2026_04_19.md
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400
+      backoffLimit: 1
+      activeDeadlineSeconds: 7200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: media-library-audit
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 568
+            runAsGroup: 568
+            fsGroup: 568
+            fsGroupChangePolicy: OnRootMismatch
+            supplementalGroups: [3000]
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: audit
+              image: ${IMAGE_HOMELAB_CLI_MEDIA}
+              imagePullPolicy: IfNotPresent
+              command:
+                - /usr/local/bin/homelab-cli
+                - media
+                - audit
+                - --media-dir=/media
+              env:
+                - name: DRY_RUN
+                  value: "false"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: media
+                  mountPath: /media
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+          volumes:
+            - name: media
+              nfs:
+                server: ${NFS_SERVER}
+                path: /mnt/tank/media
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi

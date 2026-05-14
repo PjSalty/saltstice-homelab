@@ -1,0 +1,79 @@
+---
+# MCP Server Alerts
+# Monitors the homelab-cli MCP server that provides Claude Code infrastructure tools
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mcp-server-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    - name: mcp-server
+      interval: 1m
+      rules:
+        # Pod not running
+        - alert: MCPServerDown
+          expr: |
+            absent(kube_deployment_status_replicas_available{namespace="mcp-server", deployment="mcp-server"})
+            or kube_deployment_status_replicas_available{namespace="mcp-server", deployment="mcp-server"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "MCP server is down"
+            description: |
+              MCP server deployment has 0 available replicas for > 2 minutes.
+              Claude Code infrastructure tools are unavailable.
+            action: "kubectl get pods -n mcp-server && kubectl describe deployment mcp-server -n mcp-server"
+
+        # CrashLooping
+        - alert: MCPServerCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{namespace="mcp-server", container="mcp-server"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "MCP server is crash-looping"
+            description: |
+              MCP server container has been restarting repeatedly.
+              Claude Code tool calls may be failing mid-execution.
+            action: "kubectl logs -n mcp-server -l app.kubernetes.io/name=mcp-server --previous"
+
+        # High memory usage (approaching VPA max)
+        - alert: MCPServerHighMemory
+          expr: |
+            container_memory_working_set_bytes{namespace="mcp-server", container="mcp-server"}
+            / on(namespace, pod) kube_pod_container_resource_limits{namespace="mcp-server", container="mcp-server", resource="memory"}
+            > 0.85
+          for: 5m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "MCP server memory usage > 85% of limit"
+            description: |
+              MCP server is using {{ $value | humanizePercentage }} of its memory limit.
+              OOM kill risk — VPA should increase limits on next restart.
+            action: "kubectl top pod -n mcp-server && kubectl describe vpa mcp-server -n mcp-server"
+
+        # Healthz probe failing (blackbox)
+        - alert: MCPServerUnhealthy
+          expr: |
+            probe_success{job="blackbox-http", instance=~".*mcp\\.salt\\.saltstice\\.com.*"} == 0
+          for: 3m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "MCP server healthz probe failing"
+            description: |
+              MCP server at mcp.example.com is not responding to health checks
+              for > 3 minutes. Full path (DNS → Traefik → pod → /healthz) is broken.
+            action: "curl -v https://mcp.example.com/healthz && kubectl get pods -n mcp-server"

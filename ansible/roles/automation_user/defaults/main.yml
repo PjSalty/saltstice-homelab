@@ -1,0 +1,12 @@
+---
+# automation-user role defaults
+
+# User account
+automation_user_name: automation
+automation_user_comment: "Ansible CI/CD automation"
+automation_user_shell: /bin/bash
+automation_user_home: /home/automation
+
+# SSH public key (must match the private key in K8s secret automation-ssh-key)
+# Override in group_vars or host_vars as needed
+automation_user_ssh_pubkey: "ssh-ed25519 <ssh-ed25519-public-key> automation@example.com"

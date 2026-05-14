@@ -1,0 +1,157 @@
+---
+# Trivy Security Alerts
+# Monitors vulnerability reports and alerts on critical/high severity findings
+# Researched: 2025-12-08
+# Source: https://aquasecurity.github.io/trivy-operator/latest/docs/metrics/
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: trivy-security-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # Vulnerability Severity Alerts
+    # =========================================================================
+    - name: trivy-vulnerabilities
+      interval: 15m
+      rules:
+        # Critical vulnerabilities detected - immediate action required
+        - alert: TrivyCriticalVulnerabilityDetected
+          expr: |
+            trivy_image_vulnerabilities{severity="Critical"} > 0
+          for: 1h
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "Critical vulnerability in {{ $labels.image_repository }}:{{ $labels.image_tag }}"
+            description: |
+              Image {{ $labels.image_repository }}:{{ $labels.image_tag }} in namespace {{ $labels.namespace }}
+              has {{ $value }} CRITICAL vulnerabilities detected by Trivy.
+              Immediate remediation required.
+            runbook_url: "https://grafana.example.com/d/trivy-vulnerabilities"
+            action: "kubectl get vulnerabilityreport -n {{ $labels.namespace }} -l trivy-operator.resource.name={{ $labels.resource_name }} -o yaml"
+
+        # High severity vulnerabilities - should be addressed soon
+        - alert: TrivyHighVulnerabilityDetected
+          expr: |
+            trivy_image_vulnerabilities{severity="High"} > 5
+          for: 4h
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Multiple HIGH vulnerabilities in {{ $labels.image_repository }}:{{ $labels.image_tag }}"
+            description: |
+              Image {{ $labels.image_repository }}:{{ $labels.image_tag }} in namespace {{ $labels.namespace }}
+              has {{ $value }} HIGH severity vulnerabilities.
+              Plan remediation within 7 days.
+            action: "Review Trivy dashboard and consider image update"
+
+        # Total vulnerability count threshold
+        - alert: TrivyExcessiveVulnerabilities
+          expr: |
+            sum by (namespace, image_repository) (trivy_image_vulnerabilities) > 50
+          for: 24h
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Image {{ $labels.image_repository }} has excessive vulnerabilities"
+            description: |
+              Image {{ $labels.image_repository }} in namespace {{ $labels.namespace }}
+              has {{ $value }} total vulnerabilities across all severities.
+              Consider updating to a newer image version.
+            action: "Check for newer image versions or base image updates"
+
+    # =========================================================================
+    # Scan Health Alerts
+    # =========================================================================
+    - name: trivy-operator-health
+      interval: 5m
+      rules:
+        # Trivy operator not running
+        - alert: TrivyOperatorDown
+          expr: |
+            up{job="trivy-operator"} == 0
+          for: 15m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Trivy Operator is down"
+            description: |
+              Trivy Operator is not responding. New images will not be scanned
+              for vulnerabilities until it recovers.
+            action: "kubectl get pods -n security -l app.kubernetes.io/name=trivy-operator"
+
+        # No vulnerability reports generated recently
+        - alert: TrivyNoRecentScans
+          expr: |
+            time() - max(trivy_image_vulnerabilities_last_scan_timestamp) > 86400
+          for: 1h
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "No Trivy scans in 24 hours"
+            description: |
+              Trivy has not generated any vulnerability reports in the last 24 hours.
+              Automatic scanning may be disabled or failing.
+            action: "Check Trivy Operator logs: kubectl logs -n security -l app.kubernetes.io/name=trivy-operator"
+
+        # Scan job failures
+        - alert: TrivyScanJobFailed
+          expr: |
+            increase(trivy_operator_scan_job_failures_total[1h]) > 0
+          for: 30m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Trivy scan jobs are failing"
+            description: |
+              {{ $value }} Trivy scan jobs have failed in the last hour.
+              Some images may not have current vulnerability data.
+            action: "Check scan job logs and Trivy Operator status"
+
+    # =========================================================================
+    # Compliance Alerts
+    # =========================================================================
+    - name: trivy-compliance
+      interval: 30m
+      rules:
+        # Images without vulnerability scans
+        - alert: TrivyUnscannedImages
+          expr: |
+            count(kube_pod_container_info) - count(trivy_image_vulnerabilities) > 5
+          for: 6h
+          labels:
+            severity: info
+            category: security
+          annotations:
+            summary: "Multiple container images not scanned by Trivy"
+            description: |
+              There are {{ $value }} container images running that have not been
+              scanned by Trivy. This may indicate scan failures or new deployments.
+            action: "Review unscanned images and trigger manual scans if needed"
+
+        # Config audit failures (if enabled)
+        - alert: TrivyConfigAuditFailure
+          expr: |
+            trivy_config_audit_severity_count{severity="CRITICAL"} > 0
+          for: 1h
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Critical config audit finding in {{ $labels.namespace }}"
+            description: |
+              Trivy config audit found {{ $value }} CRITICAL configuration issues
+              in namespace {{ $labels.namespace }}.
+            action: "Review ConfigAuditReport: kubectl get configauditreports -n {{ $labels.namespace }}"

@@ -1,0 +1,62 @@
+---
+# cert-manager + trust-manager — ACME challenges, webhooks, CA bundle distribution
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-cert-manager
+  namespace: cert-manager
+spec:
+  description: "Allow cert-manager and trust-manager operations"
+  endpointSelector: {}
+  ingress:
+    # Allow webhook calls from API server (cert-manager + trust-manager)
+    - fromEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "10250"
+              protocol: TCP
+            # trust-manager webhook
+            - port: "8443"
+              protocol: TCP
+    # Allow Prometheus to scrape metrics
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9402"
+              protocol: TCP
+  egress:
+    # Allow ACME (Let's Encrypt), acme-dns, and DNS-01 propagation checks
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            # DNS-01 propagation check — cert-manager queries authoritative
+            # nameservers to verify TXT records before marking challenges valid
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow Kubernetes API for certificate injection
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

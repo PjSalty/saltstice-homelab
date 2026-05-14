@@ -1,0 +1,61 @@
+# semaphore-secrets: Semaphore application credentials
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: semaphore-secrets
+  namespace: semaphore
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: semaphore-secrets
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        admin-password: "{{ .admin_password }}"
+        cookie-encryption: "{{ .cookie_encryption }}"
+        cookie-hash: "{{ .cookie_hash }}"
+        encryption-key: "{{ .encryption_key }}"
+        oidc-client-id: "semaphore-sso"
+        oidc-client-secret: "{{ .oidc_client_secret }}"
+        postgres-password: "{{ .postgres_password }}"
+        gitlab-token: "{{ .gitlab_token }}"
+  data:
+  - secretKey: admin_password
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_SEMAPHORE_ADMIN_PASSWORD
+  - secretKey: cookie_encryption
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_SEMAPHORE_COOKIE_ENCRYPTION
+  - secretKey: cookie_hash
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_SEMAPHORE_COOKIE_HASH
+  - secretKey: encryption_key
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_SEMAPHORE_ENCRYPTION_KEY
+  - secretKey: oidc_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_SEMAPHORE_OIDC_CLIENT_SECRET
+  - secretKey: postgres_password
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_SEMAPHORE_POSTGRES_PASSWORD
+  - secretKey: gitlab_token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTOMATION_GITLAB_TOKEN
+---
+# SKIPPED: sops-age
+# The SOPS Age encryption key is NOT a credential from the SSOT.
+# It must remain as a standalone SOPS-encrypted secret because:
+# 1. It's a bootstrap dependency — ESO needs the cluster running first
+# 2. It's the decryption key for SOPS itself — circular dependency
+# Keep in: secrets/kubernetes/semaphore/sops-age.yaml

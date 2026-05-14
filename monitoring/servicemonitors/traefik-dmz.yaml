@@ -1,0 +1,26 @@
+# Traefik DMZ ServiceMonitor
+# DMZ Traefik instance exposes Prometheus metrics on port 9100
+# but does NOT expose them externally (expose.default: false)
+# This ServiceMonitor scrapes metrics internally via the ClusterIP service
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: traefik-dmz
+  namespace: monitoring
+  labels:
+    app: traefik-dmz
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - traefik-dmz
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+      app.kubernetes.io/instance: traefik-dmz
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

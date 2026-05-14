@@ -1,0 +1,289 @@
+---
+# TrueNAS SCALE — Semi-automated update with human gate
+#
+# Checks for updates, verifies health, downloads, and optionally applies.
+# Applies ONLY with explicit approval (approve=yes).
+#
+# Usage:
+#   # Check + notify only (safe, run on schedule)
+#   ansible-playbook playbooks/operations/truenas-update.yml
+#
+#   # Check + download + apply (requires approval)
+#   ansible-playbook playbooks/operations/truenas-update.yml -e approve=yes
+#
+#   # Skip health checks (emergency)
+#   ansible-playbook playbooks/operations/truenas-update.yml -e approve=yes -e skip_preflight=true
+
+- name: TrueNAS SCALE update
+  hosts: truenas
+  gather_facts: false
+  vars:
+    approve: "no"
+    skip_preflight: false
+    # Notification hook — override with your preferred method
+    # Options: "webhook" (generic), "script" (custom)
+    notify_method: "webhook"
+    notify_webhook_url: "{{ lookup('env', 'NOTIFY_WEBHOOK_URL') | default('', true) }}"
+
+  tasks:
+    # =========================================================================
+    # Phase 1: Check for available updates
+    # =========================================================================
+
+    - name: Check for available updates
+      ansible.builtin.command:
+        cmd: midclt call update.check_available
+      register: update_check
+      changed_when: false
+      tags:
+        - check
+
+    - name: Parse update availability
+      ansible.builtin.set_fact:
+        update_available: "{{ (update_check.stdout | from_json).status == 'AVAILABLE' }}"
+        update_info: "{{ update_check.stdout | from_json }}"
+      tags:
+        - check
+
+    - name: Get current version
+      ansible.builtin.command:
+        cmd: midclt call system.version
+      register: current_version
+      changed_when: false
+      tags:
+        - check
+
+    - name: No updates available
+      ansible.builtin.debug:
+        msg: "TrueNAS {{ current_version.stdout | from_json }} is up to date. No action needed."
+      when: not update_available
+      tags:
+        - check
+
+    - name: End play if no updates
+      ansible.builtin.meta: end_play
+      when: not update_available
+      tags:
+        - check
+
+    - name: Display available update
+      ansible.builtin.debug:
+        msg: >-
+          Update available: {{ current_version.stdout | from_json }} →
+          {{ update_info.version | default('newer version') }}
+          ({{ update_info.changelog | default('no changelog') | truncate(200) }})
+      tags:
+        - check
+
+    # =========================================================================
+    # Phase 2: Pre-flight health checks
+    # =========================================================================
+
+    - name: Check ZFS pool health
+      ansible.builtin.command:
+        cmd: midclt call pool.query
+      register: pool_health
+      changed_when: false
+      when: not skip_preflight
+      tags:
+        - preflight
+
+    - name: Verify all pools are ONLINE
+      ansible.builtin.assert:
+        that:
+          - item.status == 'ONLINE'
+        fail_msg: "Pool {{ item.name }} is {{ item.status }} — aborting update"
+        success_msg: "Pool {{ item.name }} is ONLINE"
+      loop: "{{ pool_health.stdout | from_json }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: not skip_preflight
+      tags:
+        - preflight
+
+    - name: Check for active iSCSI sessions
+      ansible.builtin.command:
+        cmd: midclt call iscsi.global.sessions
+      register: iscsi_sessions
+      changed_when: false
+      when: not skip_preflight
+      tags:
+        - preflight
+
+    - name: Report active iSCSI sessions
+      ansible.builtin.debug:
+        msg: "{{ (iscsi_sessions.stdout | from_json) | length }} active iSCSI sessions — will be disrupted during reboot (~2-5 min)"
+      when: not skip_preflight
+      tags:
+        - preflight
+
+    - name: Check NFS service health
+      ansible.builtin.command:
+        cmd: midclt call service.query '[["service", "=", "nfs"]]'
+      register: nfs_service
+      changed_when: false
+      when: not skip_preflight
+      tags:
+        - preflight
+
+    - name: Verify NFS is running
+      ansible.builtin.assert:
+        that:
+          - (nfs_service.stdout | from_json)[0].state == 'RUNNING'
+        fail_msg: "NFS service is not running — aborting"
+        success_msg: "NFS service is running"
+      when: not skip_preflight
+      tags:
+        - preflight
+
+    - name: List boot environments
+      ansible.builtin.command:
+        cmd: midclt call bootenv.query
+      register: boot_envs
+      changed_when: false
+      tags:
+        - preflight
+
+    - name: Report boot environments
+      ansible.builtin.debug:
+        msg: "{{ (boot_envs.stdout | from_json) | length }} boot environments available for rollback"
+      tags:
+        - preflight
+
+    # =========================================================================
+    # Phase 3: Create safety snapshot
+    # =========================================================================
+
+    - name: Create pre-update ZFS snapshot
+      ansible.builtin.command:
+        argv:
+          - midclt
+          - call
+          - zfs.snapshot.create
+          - '{"dataset": "tank", "name": "pre-update-{{ ansible_date_time.iso8601_basic_short }}", "recursive": true}'
+      register: snapshot_result
+      changed_when: true
+      tags:
+        - snapshot
+
+    - name: Snapshot created
+      ansible.builtin.debug:
+        msg: "Pre-update snapshot created: tank@pre-update-{{ ansible_date_time.iso8601_basic_short }}"
+      tags:
+        - snapshot
+
+    # =========================================================================
+    # Phase 4: Download update
+    # =========================================================================
+
+    - name: Download update
+      ansible.builtin.command:
+        cmd: midclt call update.download
+      register: download_result
+      changed_when: true
+      tags:
+        - download
+
+    - name: Download complete
+      ansible.builtin.debug:
+        msg: "Update downloaded successfully"
+      tags:
+        - download
+
+    # =========================================================================
+    # Phase 5: Human gate — apply only with explicit approval
+    # =========================================================================
+
+    - name: HUMAN GATE — approval required to apply
+      ansible.builtin.debug:
+        msg: >-
+          UPDATE READY TO APPLY.
+          Current: {{ current_version.stdout | from_json }}.
+          Re-run with -e approve=yes to apply and reboot.
+          Rollback: select previous boot environment in TrueNAS UI.
+      when: approve != "yes"
+      tags:
+        - apply
+
+    - name: End play without approval
+      ansible.builtin.meta: end_play
+      when: approve != "yes"
+      tags:
+        - apply
+
+    - name: Apply update and reboot
+      ansible.builtin.command:
+        argv:
+          - midclt
+          - call
+          - update.update
+          - '{"reboot": true}'
+      register: update_result
+      changed_when: true
+      tags:
+        - apply
+
+    # =========================================================================
+    # Phase 6: Post-update verification (runs after reboot)
+    # =========================================================================
+
+    - name: Wait for TrueNAS to come back online
+      ansible.builtin.wait_for_connection:
+        delay: 30
+        timeout: 600
+      tags:
+        - verify
+
+    - name: Verify new version
+      ansible.builtin.command:
+        cmd: midclt call system.version
+      register: new_version
+      changed_when: false
+      tags:
+        - verify
+
+    - name: Verify pool health after update
+      ansible.builtin.command:
+        cmd: midclt call pool.query
+      register: pool_post
+      changed_when: false
+      tags:
+        - verify
+
+    - name: Assert pools still ONLINE
+      ansible.builtin.assert:
+        that:
+          - item.status == 'ONLINE'
+        fail_msg: "CRITICAL: Pool {{ item.name }} is {{ item.status }} after update!"
+        success_msg: "Pool {{ item.name }} is ONLINE after update"
+      loop: "{{ pool_post.stdout | from_json }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags:
+        - verify
+
+    - name: Verify NFS service after update
+      ansible.builtin.command:
+        cmd: midclt call service.query '[["service", "=", "nfs"]]'
+      register: nfs_post
+      changed_when: false
+      tags:
+        - verify
+
+    - name: Assert NFS running
+      ansible.builtin.assert:
+        that:
+          - (nfs_post.stdout | from_json)[0].state == 'RUNNING'
+        fail_msg: "CRITICAL: NFS service not running after update!"
+        success_msg: "NFS service running after update"
+      tags:
+        - verify
+
+    - name: Update complete
+      ansible.builtin.debug:
+        msg: >-
+          TrueNAS updated successfully.
+          {{ current_version.stdout | from_json }} → {{ new_version.stdout | from_json }}.
+          All pools ONLINE, NFS running.
+      tags:
+        - verify

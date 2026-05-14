@@ -1,0 +1,27 @@
+---
+# Phase 1: Terraform VM Provisioning
+# Orchestrates terraform apply to create all VMs
+# Typically triggered by CI pipeline, not run directly
+
+- name: Provision VMs via Terraform
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run terraform apply
+      ansible.builtin.command:
+        cmd: terraform apply -auto-approve
+        chdir: "{{ lookup('env', 'TERRAFORM_DIR') | default('../homelab-terraform', true) }}"
+      register: terraform_result
+      changed_when: "'Apply complete' in terraform_result.stdout"
+      tags:
+        - terraform
+
+    - name: Wait for VMs to become reachable
+      ansible.builtin.wait_for:
+        host: "{{ item }}"
+        port: 22
+        timeout: 300
+      loop: "{{ groups['all'] | difference(groups['proxmox']) | difference(groups['storage']) }}"
+      tags:
+        - terraform

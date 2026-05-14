@@ -1,0 +1,307 @@
+# Kubernetes Audit Dashboard - K8s events and issues
+# Queries Loki for RBAC denials, crashes, image pull failures
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-kubernetes-audit
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: grafana
+  annotations:
+    grafana_folder: "Security"
+data:
+  kubernetes-audit-dashboard.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": "-- Grafana --",
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "gnetId": null,
+      "graphTooltip": 0,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "datasource": "Loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 10},
+                  {"color": "red", "value": 50}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "id": 1,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false},
+            "textMode": "auto"
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "sum(count_over_time({namespace=~\".+\"} |~ \"(?i)forbidden|cannot|not allowed\" [$__range]))",
+              "legendFormat": "RBAC Denials",
+              "refId": "A"
+            }
+          ],
+          "title": "RBAC Denials",
+          "type": "stat"
+        },
+        {
+          "datasource": "Loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "orange", "value": 5},
+                  {"color": "red", "value": 20}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "id": 2,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false},
+            "textMode": "auto"
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "sum(count_over_time({namespace=~\".+\"} |~ \"(?i)crashloopbackoff\" [$__range]))",
+              "legendFormat": "CrashLoopBackOff",
+              "refId": "A"
+            }
+          ],
+          "title": "CrashLoopBackOff",
+          "type": "stat"
+        },
+        {
+          "datasource": "Loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 5},
+                  {"color": "red", "value": 20}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "id": 3,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false},
+            "textMode": "auto"
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "sum(count_over_time({namespace=~\".+\"} |~ \"(?i)imagepullbackoff|failed to pull\" [$__range]))",
+              "legendFormat": "Image Pull Failures",
+              "refId": "A"
+            }
+          ],
+          "title": "Image Pull Failures",
+          "type": "stat"
+        },
+        {
+          "datasource": "Loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "red", "value": 1}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "id": 4,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false},
+            "textMode": "auto"
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "sum(count_over_time({namespace=~\".+\"} |~ \"(?i)oomkilled|out of memory\" [$__range]))",
+              "legendFormat": "OOM Kills",
+              "refId": "A"
+            }
+          ],
+          "title": "OOM Kills",
+          "type": "stat"
+        },
+        {
+          "datasource": "Loki",
+          "gridPos": {"h": 10, "w": 12, "x": 0, "y": 4},
+          "id": 5,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "{namespace=~\".+\"} |~ \"(?i)forbidden|cannot|is forbidden|not allowed|RBAC\"",
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "RBAC / Authorization Failures",
+          "type": "logs"
+        },
+        {
+          "datasource": "Loki",
+          "gridPos": {"h": 10, "w": 12, "x": 12, "y": 4},
+          "id": 6,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "{namespace=~\".+\"} |~ \"(?i)crashloopbackoff|back-off restarting\"",
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "CrashLoopBackOff Pods",
+          "type": "logs"
+        },
+        {
+          "datasource": "Loki",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+          "id": 7,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "{namespace=~\".+\"} |~ \"(?i)failed to pull|imagepullbackoff|repository does not exist\"",
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "Image Pull Failures",
+          "type": "logs"
+        },
+        {
+          "datasource": "Loki",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+          "id": 8,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "{namespace=~\".+\"} |~ \"(?i)oomkilled|out of memory|memory cgroup\"",
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "OOM Killed Events",
+          "type": "logs"
+        }
+      ],
+      "refresh": "5m",
+      "schemaVersion": 38,
+      "style": "dark",
+      "tags": ["kubernetes", "audit", "security", "loki"],
+      "templating": {"list": []},
+      "time": {"from": "now-24h", "to": "now"},
+      "timepicker": {},
+      "timezone": "",
+      "title": "Kubernetes Audit",
+      "uid": "kubernetes-audit",
+      "version": 1
+    }

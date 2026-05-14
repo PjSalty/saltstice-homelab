@@ -1,0 +1,10 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: storage
+  labels:
+    app.kubernetes.io/name: storage
+    app.kubernetes.io/component: object-storage
+    tls.example.com/wildcard: "true"
+    goldilocks.fairwinds.com/enabled: "true"

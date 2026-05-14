@@ -1,0 +1,102 @@
+---
+# =============================================================================
+# Harbor Installation & Configuration
+# =============================================================================
+
+- name: Create Harbor directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ harbor_data_dir }}"
+    - "{{ harbor_install_dir }}"
+    - "{{ harbor_data_storage }}"
+    - "{{ harbor_log_dir }}"
+    - "{{ harbor_cert_dir }}"
+  become: true
+  tags:
+    - harbor
+
+- name: Download Harbor offline installer
+  ansible.builtin.get_url:
+    url: "https://github.com/goharbor/harbor/releases/download/v{{ harbor_version }}/harbor-offline-installer-v{{ harbor_version }}.tgz"
+    dest: "{{ harbor_install_dir }}/harbor-offline-installer-v{{ harbor_version }}.tgz"
+    mode: "0644"
+  become: true
+  tags:
+    - harbor
+
+- name: Extract Harbor installer
+  ansible.builtin.unarchive:
+    src: "{{ harbor_install_dir }}/harbor-offline-installer-v{{ harbor_version }}.tgz"
+    dest: "{{ harbor_install_dir }}"
+    remote_src: true
+    creates: "{{ harbor_install_dir }}/harbor/install.sh"
+  become: true
+  tags:
+    - harbor
+
+- name: Deploy Harbor configuration
+  ansible.builtin.template:
+    src: harbor.yml.j2
+    dest: "{{ harbor_install_dir }}/harbor/harbor.yml"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  notify: Reconfigure Harbor
+  tags:
+    - harbor
+    - config
+
+- name: Check if Harbor containers are running
+  community.docker.docker_container_info:
+    name: harbor-core
+  register: harbor_container
+  become: true
+  tags:
+    - harbor
+
+- name: Run Harbor installer (first install only)
+  ansible.builtin.command:
+    cmd: ./install.sh
+    chdir: "{{ harbor_install_dir }}/harbor"
+  become: true
+  when: not (harbor_container.exists | default(false))
+  changed_when: true
+  environment:
+    TERM: dumb
+  tags:
+    - harbor
+
+- name: Check if Harbor compose file exists
+  ansible.builtin.stat:
+    path: "{{ harbor_install_dir }}/harbor/docker-compose.yml"
+  register: harbor_compose_file
+  tags:
+    - harbor
+
+- name: Ensure Harbor is running
+  community.docker.docker_compose_v2:
+    project_src: "{{ harbor_install_dir }}/harbor"
+    state: present
+    pull: missing
+  become: true
+  when: harbor_compose_file.stat.exists
+  tags:
+    - harbor
+
+- name: Reconcile admin password to match SSOT
+  ansible.builtin.import_tasks: admin-password-reconcile.yml
+  tags:
+    - harbor
+    - admin-password
+
+# =============================================================================
+# Harbor API configuration (registries, projects, robot accounts, OIDC,
+# scanning) is now managed by Terraform (homelab-terraform/harbor/).
+# Removed 350+ lines of API tasks in favor of declarative IaC.
+# =============================================================================

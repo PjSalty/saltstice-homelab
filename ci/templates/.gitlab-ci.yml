@@ -1,0 +1,577 @@
+# CI/CD Templates Repository Pipeline
+# Validates template syntax, builds runner images, and syncs configs to other repos
+# Version: 2026-02-04 - Migrated to BuildKit from Kaniko
+#
+# Scheduled Jobs:
+#   - Renovate: Mondays 5am (RENOVATE_RUN=true)
+
+include:
+  - local: 'sync-config.yml'
+  - local: 'renovate.yml'
+  - local: 'notify.yml'
+  - local: 'security.yml'
+
+# Prevent duplicate pipelines (branch + MR for same commit)
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+stages:
+  - validate
+  - security
+  - build
+  - plan
+  - test
+  - renovate
+  - verify
+  - deploy
+
+variables:
+  HARBOR_REGISTRY: harbor.example.com
+  DOCKER_BUILDKIT: "1"
+
+validate:yaml:
+  stage: validate
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/python:3.11-alpine
+  interruptible: true
+  timeout: 5 minutes
+  script:
+    # Use --user for non-root runner
+    - pip install --user yamllint==1.37.0
+    - export PATH="$HOME/.local/bin:$PATH"
+    - yamllint -d relaxed *.yml
+  rules:
+    # Run on push to any branch with yml changes
+    - changes:
+        - "*.yml"
+
+# =============================================================================
+# GitLab CI Lint — validate templates as valid CI config
+# =============================================================================
+# Structural validation of CI template files. Catches invalid job keys,
+# missing script/extends, broken extends references, and stage mismatches.
+validate:ci-lint:
+  stage: validate
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/python:3.11-alpine
+  interruptible: true
+  timeout: 5 minutes
+  script:
+    - pip install --user pyyaml==6.0.2 >/dev/null 2>&1
+    - export PATH="$HOME/.local/bin:$PATH"
+    - |
+      python3 << 'PYEOF'
+      import yaml, sys, glob
+
+      VALID_JOB_KEYS = {
+          'script', 'before_script', 'after_script', 'stage', 'image',
+          'services', 'variables', 'rules', 'only', 'except', 'tags',
+          'when', 'environment', 'cache', 'artifacts', 'needs',
+          'dependencies', 'retry', 'timeout', 'interruptible',
+          'resource_group', 'extends', 'allow_failure', 'parallel',
+          'trigger', 'coverage', 'release', 'secrets', 'inherit',
+          'id_tokens', 'identity', 'hooks', 'pages',
+      }
+      VALID_TOP_KEYS = {
+          'stages', 'variables', 'include', 'default', 'workflow',
+          'image', 'before_script', 'after_script', 'services', 'cache',
+      }
+      failed = 0
+      total = 0
+
+      for f in sorted(glob.glob('*.yml')):
+          total += 1
+          errors = []
+          try:
+              with open(f) as fh:
+                  doc = yaml.safe_load(fh)
+              if not isinstance(doc, dict):
+                  errors.append('Not a valid YAML mapping')
+              else:
+                  for key, val in doc.items():
+                      if key in VALID_TOP_KEYS:
+                          continue
+                      if not isinstance(val, dict):
+                          continue
+                      unknown = set(val.keys()) - VALID_JOB_KEYS
+                      if unknown:
+                          errors.append('Job "{}": unknown keys {}'.format(key, unknown))
+                      if not any(k in val for k in ('script', 'trigger', 'extends')):
+                          if not key.startswith('.'):
+                              errors.append('Job "{}": missing script/trigger/extends'.format(key))
+                      if 'extends' in val:
+                          ext = val['extends']
+                          refs = [ext] if isinstance(ext, str) else ext
+                          for ref in refs:
+                              if ref not in doc and not ref.startswith('.'):
+                                  errors.append('Job "{}": extends "{}" not found'.format(key, ref))
+          except yaml.YAMLError as e:
+              errors.append('YAML parse error: {}'.format(e))
+
+          status = 'OK' if not errors else 'FAIL'
+          print('{:30s} {}'.format(f, status))
+          for err in errors:
+              print('  - {}'.format(err))
+          if errors:
+              failed += 1
+
+      print('')
+      print('=== {} files validated, {} failed ==='.format(total, failed))
+      sys.exit(1 if failed else 0)
+      PYEOF
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "*.yml"
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - "*.yml"
+
+security:gitleaks:
+  extends: .security:gitleaks
+  stage: security
+
+# =============================================================================
+# Shared build template — DinD + BuildKit
+# MR pipelines: build only (validates Dockerfile compiles)
+# Main/schedule: build + push to Harbor (requires protected registry creds)
+# =============================================================================
+.build-image:
+  stage: build
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29
+  services:
+    - name: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29-dind
+      alias: docker
+  variables:
+    # TLS disabled — DinD sidecar and build container share the same pod
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_BUILDKIT: "1"
+  before_script:
+    - until docker info; do sleep 1; done
+    # Drop the runner-level DOCKER_AUTH_CONFIG so the per-job logins below
+    # actually take effect. When DOCKER_AUTH_CONFIG is set in the env, docker
+    # uses it in preference to ~/.docker/config.json — so a fresh `docker
+    # login` writes the file but `docker push` keeps reading the (potentially
+    # stale) env value, producing 401 on push. The runner has already pulled
+    # job images by this point, so unsetting it here is safe.
+    - unset DOCKER_AUTH_CONFIG
+    # Docker Hub login (optional — higher rate limits)
+    - |
+      if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+        echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+        echo "Logged in to Docker Hub (200 pulls/6h rate limit)"
+      fi
+    # Harbor login (only available on protected branches via protected variables)
+    - |
+      if [ -n "${HARBOR_USERNAME:-}" ] && [ -n "${HARBOR_PASSWORD:-}" ]; then
+        echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_REGISTRY} -u "${HARBOR_USERNAME}" --password-stdin
+        echo "Logged in to Harbor"
+      else
+        echo "No Harbor credentials (MR branch) — build-only mode"
+      fi
+  script:
+    - cd ${CI_PROJECT_DIR}/images/${IMAGE_DIR}
+    # Build with :sha tag only — :stable is set by promote job after scan passes
+    - |
+      docker build \
+        --no-cache \
+        --tag "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}" \
+        --file Dockerfile \
+        .
+    # Push only on protected branches (main, schedule, manual)
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "main" ] || [ "$CI_PIPELINE_SOURCE" = "schedule" ] || [ "$CI_PIPELINE_SOURCE" = "web" ]; then
+        if [ -n "${HARBOR_USERNAME:-}" ]; then
+          docker push "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+          echo "Pushed ${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+        else
+          echo "ERROR: Cannot push — HARBOR_USERNAME not set"
+          exit 1
+        fi
+      else
+        echo "MR pipeline — build validated, skipping push"
+      fi
+
+# =============================================================================
+# Build ansible-runner image
+# =============================================================================
+build:ansible-runner:
+  extends: .build-image
+  variables:
+    IMAGE_NAME: ${HARBOR_REGISTRY}/tools/ansible-runner
+    IMAGE_DIR: ansible-runner
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - images/ansible-runner/**/*
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/ansible-runner/**/*
+    # Weekly rebuild only (skip Renovate schedule)
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+
+# =============================================================================
+# Sanity check the ansible-runner image after build
+# =============================================================================
+# Test and scan jobs only run when the image was pushed (main/schedule/manual)
+test:ansible-runner:
+  stage: test
+  image: ${HARBOR_REGISTRY}/tools/ansible-runner:${CI_COMMIT_SHORT_SHA}
+  interruptible: true
+  needs:
+    - job: build:ansible-runner
+  script:
+    - echo "=== Sanity Check for ansible-runner image ==="
+    - ansible --version
+    - ansible-lint --version
+    - sops --version
+    - ssh -V
+    - pip list | grep -E "ansible|pynetbox|jmespath|netaddr"
+    - ansible-galaxy collection list
+    - |
+      cat > /tmp/test.yml << 'PLAYBOOK'
+      - hosts: localhost
+        connection: local
+        gather_facts: false
+        tasks:
+          - name: Test task
+            debug:
+              msg: "ansible-runner image works!"
+      PLAYBOOK
+    - ansible-playbook /tmp/test.yml
+    - echo "=== All sanity checks passed ==="
+  rules:
+    # Only test when image was pushed (not on MR — image isn't in registry)
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/ansible-runner/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+
+# =============================================================================
+# Build homelab-tooling image
+# =============================================================================
+# Shared base for K8s CronJobs/Jobs that talk to remote services. Bundles
+# python3, requests, kubectl, openssh, openssl, curl. Replaces the runtime
+# `apk add` / `pip install` patterns that blocked Kyverno's
+# require-run-as-non-root policy.
+build:homelab-tooling:
+  extends: .build-image
+  variables:
+    IMAGE_NAME: ${HARBOR_REGISTRY}/tools/homelab-tooling
+    IMAGE_DIR: homelab-tooling
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - images/homelab-tooling/**/*
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/homelab-tooling/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+
+# =============================================================================
+# Sanity check the homelab-tooling image after build
+# =============================================================================
+test:homelab-tooling:
+  stage: test
+  image: ${HARBOR_REGISTRY}/tools/homelab-tooling:${CI_COMMIT_SHORT_SHA}
+  interruptible: true
+  needs:
+    - job: build:homelab-tooling
+  script:
+    - |
+      set -e
+      echo "=== Sanity check for homelab-tooling image ==="
+      id
+      python3 --version
+      python3 -c 'import requests; print("requests", requests.__version__)'
+      kubectl version --client=true
+      ssh -V
+      openssl version
+      curl --version | head -1
+      test "$(id -u)" = "65534" || { echo "ERROR: not running as UID 65534"; exit 1; }
+      test -w "$HOME" || { echo "ERROR: HOME=$HOME not writable"; exit 1; }
+      echo "=== All sanity checks passed ==="
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/homelab-tooling/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+
+# =============================================================================
+# Build media-drop-watcher image
+# =============================================================================
+build:media-drop-watcher:
+  extends: .build-image
+  variables:
+    IMAGE_NAME: ${HARBOR_REGISTRY}/homelab/media-drop-watcher
+    IMAGE_DIR: media-drop-watcher
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - images/media-drop-watcher/**/*
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/media-drop-watcher/**/*
+    # Weekly rebuild only (skip Renovate schedule)
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+
+# =============================================================================
+# Trivy vulnerability scan on media-drop-watcher image
+# Blocks on CRITICAL vulnerabilities only (internal tooling image)
+# =============================================================================
+scan:media-drop-watcher:
+  stage: test
+  image:
+    name: ${HARBOR_REGISTRY}/dockerhub-proxy/aquasec/trivy:0.69.1
+    entrypoint: [""]
+  interruptible: true
+  needs:
+    - job: build:media-drop-watcher
+  variables:
+    TRIVY_USERNAME: "${HARBOR_USERNAME}"
+    TRIVY_PASSWORD: "${HARBOR_PASSWORD}"
+    TRIVY_NON_SSL: "false"
+  before_script:
+    - |
+      if [ -n "${DOCKER_AUTH_CONFIG:-}" ]; then
+        mkdir -p "${HOME}/.docker"
+        echo "${DOCKER_AUTH_CONFIG}" > "${HOME}/.docker/config.json"
+      fi
+  script:
+    - trivy image --severity CRITICAL --exit-code 1
+        ${HARBOR_REGISTRY}/homelab/media-drop-watcher:${CI_COMMIT_SHORT_SHA}
+  rules:
+    # Only scan when image was pushed (not on MR — image isn't in registry)
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/media-drop-watcher/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+  allow_failure: false
+
+# =============================================================================
+# Sanity check the media-drop-watcher image after build
+# =============================================================================
+test:media-drop-watcher:
+  stage: test
+  image: ${HARBOR_REGISTRY}/homelab/media-drop-watcher:${CI_COMMIT_SHORT_SHA}
+  interruptible: true
+  needs:
+    - job: build:media-drop-watcher
+  script:
+    - echo "=== Sanity Check for media-drop-watcher image ==="
+    - python3 -c "from guessit import guessit; print('GuessIt OK')"
+    - ffprobe -version 2>&1 | head -1 || true
+    - id
+    - echo "=== All sanity checks passed ==="
+  rules:
+    # Only test when image was pushed (not on MR — image isn't in registry)
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/media-drop-watcher/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+
+# =============================================================================
+# Trivy vulnerability scan on ansible-runner image
+# =============================================================================
+scan:homelab-tooling:
+  stage: test
+  image:
+    name: ${HARBOR_REGISTRY}/dockerhub-proxy/aquasec/trivy:0.69.1
+    entrypoint: [""]
+  interruptible: true
+  needs:
+    - job: build:homelab-tooling
+  variables:
+    TRIVY_USERNAME: "${HARBOR_USERNAME}"
+    TRIVY_PASSWORD: "${HARBOR_PASSWORD}"
+    TRIVY_NON_SSL: "false"
+  before_script:
+    - |
+      if [ -n "${DOCKER_AUTH_CONFIG:-}" ]; then
+        mkdir -p "${HOME}/.docker"
+        echo "${DOCKER_AUTH_CONFIG}" > "${HOME}/.docker/config.json"
+      fi
+  script:
+    - trivy image --severity CRITICAL --exit-code 1
+        ${HARBOR_REGISTRY}/tools/homelab-tooling:${CI_COMMIT_SHORT_SHA}
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/homelab-tooling/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+  allow_failure: false
+
+scan:ansible-runner:
+  stage: test
+  image:
+    name: ${HARBOR_REGISTRY}/dockerhub-proxy/aquasec/trivy:0.69.1
+    entrypoint: [""]
+  interruptible: true
+  needs:
+    - job: build:ansible-runner
+  variables:
+    TRIVY_USERNAME: "${HARBOR_USERNAME}"
+    TRIVY_PASSWORD: "${HARBOR_PASSWORD}"
+    TRIVY_NON_SSL: "false"
+  before_script:
+    - |
+      if [ -n "${DOCKER_AUTH_CONFIG:-}" ]; then
+        mkdir -p "${HOME}/.docker"
+        echo "${DOCKER_AUTH_CONFIG}" > "${HOME}/.docker/config.json"
+      fi
+  script:
+    # CRITICAL only — internal tooling image, HIGH OS CVEs are tracked separately
+    - trivy image --severity CRITICAL --exit-code 1
+        ${HARBOR_REGISTRY}/tools/ansible-runner:${CI_COMMIT_SHORT_SHA}
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/ansible-runner/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+  allow_failure: false
+
+# =============================================================================
+# Promote images: SHA → stable (only after scan + test pass)
+# =============================================================================
+promote:homelab-tooling:
+  stage: deploy
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29
+  services:
+    - name: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  needs:
+    - job: scan:homelab-tooling
+    - job: test:homelab-tooling
+  before_script:
+    - until docker info >/dev/null 2>&1; do sleep 1; done
+    - echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_REGISTRY} -u "${HARBOR_USERNAME}" --password-stdin
+  script:
+    - docker pull "${HARBOR_REGISTRY}/tools/homelab-tooling:${CI_COMMIT_SHORT_SHA}"
+    - docker tag "${HARBOR_REGISTRY}/tools/homelab-tooling:${CI_COMMIT_SHORT_SHA}" "${HARBOR_REGISTRY}/tools/homelab-tooling:stable"
+    - docker push "${HARBOR_REGISTRY}/tools/homelab-tooling:stable"
+    - echo "Promoted homelab-tooling:${CI_COMMIT_SHORT_SHA} → :stable"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/homelab-tooling/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+
+promote:ansible-runner:
+  stage: deploy
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29
+  services:
+    - name: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  needs:
+    - job: scan:ansible-runner
+    - job: test:ansible-runner
+  before_script:
+    - until docker info >/dev/null 2>&1; do sleep 1; done
+    - echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_REGISTRY} -u "${HARBOR_USERNAME}" --password-stdin
+  script:
+    - docker pull "${HARBOR_REGISTRY}/tools/ansible-runner:${CI_COMMIT_SHORT_SHA}"
+    - docker tag "${HARBOR_REGISTRY}/tools/ansible-runner:${CI_COMMIT_SHORT_SHA}" "${HARBOR_REGISTRY}/tools/ansible-runner:stable"
+    - docker push "${HARBOR_REGISTRY}/tools/ansible-runner:stable"
+    - echo "Promoted ansible-runner:${CI_COMMIT_SHORT_SHA} → :stable"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/ansible-runner/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+
+promote:media-drop-watcher:
+  stage: deploy
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29
+  services:
+    - name: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  needs:
+    - job: scan:media-drop-watcher
+    - job: test:media-drop-watcher
+  before_script:
+    - until docker info >/dev/null 2>&1; do sleep 1; done
+    - echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_REGISTRY} -u "${HARBOR_USERNAME}" --password-stdin
+  script:
+    - docker pull "${HARBOR_REGISTRY}/homelab/media-drop-watcher:${CI_COMMIT_SHORT_SHA}"
+    - docker tag "${HARBOR_REGISTRY}/homelab/media-drop-watcher:${CI_COMMIT_SHORT_SHA}" "${HARBOR_REGISTRY}/homelab/media-drop-watcher:stable"
+    - docker push "${HARBOR_REGISTRY}/homelab/media-drop-watcher:stable"
+    - echo "Promoted media-drop-watcher:${CI_COMMIT_SHORT_SHA} → :stable"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/media-drop-watcher/**/*
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN != "true"
+
+# =============================================================================
+# Pipeline failure notification
+# =============================================================================
+notify:failure:
+  extends: .notify:ntfy
+
+# Sync shared configs to all repos when pre-commit or yamllint changes
+sync:configs:
+  extends: .sync:config
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - .pre-commit-config.yaml
+        - .yamllint
+
+# =============================================================================
+# Renovate Bot - Scans all infrastructure repos for dependency updates
+# =============================================================================
+# Schedule: Every 6 hours (set via GitLab pipeline schedule)
+# Trigger variable: RENOVATE_RUN=true
+#
+# Auto-merges patch/minor updates across all repos.
+# Major versions create MRs requiring manual review.
+#
+renovate:scan:
+  extends: .renovate:multi-repo
+  stage: renovate
+  needs: []
+  variables:
+    LOG_LEVEL: info
+    RENOVATE_DRY_RUN: "false"
+  rules:
+    # Scheduled or API-triggered with RENOVATE_RUN
+    - if: $RENOVATE_RUN == "true"
+    # Manual trigger
+    - when: manual
+      allow_failure: true
+
+# Dry-run scan to preview updates without creating MRs
+renovate:preview:
+  extends: .renovate:multi-repo
+  stage: renovate
+  needs: []
+  variables:
+    LOG_LEVEL: info
+    RENOVATE_DRY_RUN: "full"
+  rules:
+    - when: manual
+      allow_failure: true

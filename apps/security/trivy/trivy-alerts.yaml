@@ -1,0 +1,106 @@
+---
+# PrometheusRule for Trivy vulnerability alerting
+# These rules trigger alerts based on vulnerability scan results
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: trivy-vulnerability-alerts
+  namespace: security
+  labels:
+    app: trivy-operator
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    - name: trivy.vulnerabilities
+      interval: 5m
+      rules:
+        # Critical vulnerability detected - fire immediately
+        - alert: TrivyCriticalVulnerability
+          expr: sum by (namespace, image_repository, image_tag) (trivy_image_vulnerabilities{severity="Critical"}) > 0
+          for: 1h
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "Critical vulnerability detected in {{ $labels.namespace }}"
+            description: |
+              Image {{ $labels.image_repository }}:{{ $labels.image_tag }} in namespace {{ $labels.namespace }}
+              has {{ $value }} critical vulnerabilities that require immediate attention.
+            runbook_url: "https://grafana.example.com/d/trivy-vulnerabilities/trivy-vulnerability-dashboard"
+            action: "Review vulnerability details and update to a patched image version"
+
+        # High vulnerability count threshold
+        - alert: TrivyHighVulnerabilityCount
+          expr: sum by (namespace, image_repository, image_tag) (trivy_image_vulnerabilities{severity="High"}) > 10
+          for: 4h
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "High vulnerability count in {{ $labels.namespace }}"
+            description: |
+              Image {{ $labels.image_repository }}:{{ $labels.image_tag }} in namespace {{ $labels.namespace }}
+              has {{ $value }} high severity vulnerabilities.
+            runbook_url: "https://grafana.example.com/d/trivy-vulnerabilities/trivy-vulnerability-dashboard"
+            action: "Schedule image update to address high vulnerabilities"
+
+        # Total vulnerabilities across cluster
+        - alert: TrivyClusterVulnerabilityThreshold
+          expr: sum(trivy_image_vulnerabilities{severity=~"Critical|High"}) > 50
+          for: 6h
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Cluster has high number of Critical+High vulnerabilities"
+            description: |
+              The cluster has {{ $value }} critical and high severity vulnerabilities combined.
+              Review the Trivy dashboard for details on affected images.
+            runbook_url: "https://grafana.example.com/d/trivy-vulnerabilities/trivy-vulnerability-dashboard"
+            action: "Review cluster-wide vulnerability posture and prioritize updates"
+
+        # New image with vulnerabilities detected (based on count changes)
+        - alert: TrivyNewVulnerableImage
+          expr: changes(count(trivy_image_vulnerabilities{severity=~"Critical|High"})[1h:]) > 0
+          for: 5m
+          labels:
+            severity: info
+            category: security
+          annotations:
+            summary: "New vulnerable image detected in cluster"
+            description: |
+              A new image scan has detected vulnerabilities. Check the Trivy dashboard
+              to identify newly deployed vulnerable images.
+            runbook_url: "https://grafana.example.com/d/trivy-vulnerabilities/trivy-vulnerability-dashboard"
+
+    - name: trivy.operator
+      interval: 5m
+      rules:
+        # Trivy operator not running
+        - alert: TrivyOperatorDown
+          expr: absent(up{job="trivy-operator"})
+          for: 15m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "Trivy operator is not running"
+            description: |
+              The Trivy vulnerability scanner operator has been down for more than 15 minutes.
+              Security scanning is not operational.
+            action: "Check trivy-operator deployment in security namespace"
+
+        # Scan jobs failing
+        - alert: TrivyScanJobsFailing
+          expr: increase(kube_job_status_failed{namespace="security", job_name=~"trivy-.*"}[1h]) > 3
+          for: 30m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "Multiple Trivy scan jobs failing"
+            description: |
+              More than 3 Trivy scan jobs have failed in the last hour.
+              Vulnerability scanning may not be completing successfully.
+            action: "Check failed jobs in security namespace and trivy-operator logs"

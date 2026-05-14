@@ -1,0 +1,149 @@
+# Loki HelmRelease - Centralized Log Aggregation
+# Researched: 2025-12-06
+# Source: https://artifacthub.io/packages/helm/grafana/loki
+# Mode: Monolithic (recommended for small deployments)
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: loki
+  namespace: loki
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: loki
+      version: ${HELM_LOKI}
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+  install:
+    crds: Create
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    # Deploy in monolithic mode for homelab
+    deploymentMode: SingleBinary
+
+    loki:
+      # Authentication disabled for internal use
+      auth_enabled: false
+
+      # Common config
+      commonConfig:
+        replication_factor: 1
+        path_prefix: /var/loki
+
+      # Schema config for log storage
+      schemaConfig:
+        configs:
+          - from: "2024-01-01"
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+              prefix: index_
+              period: 24h
+
+      # Storage config - filesystem for monolithic mode
+      storage:
+        type: filesystem
+
+      # Limits config
+      limits_config:
+        retention_period: 720h  # 30 days
+        max_query_lookback: 720h
+        ingestion_rate_mb: 4
+        ingestion_burst_size_mb: 6
+        max_entries_limit_per_query: 5000
+        max_streams_per_user: 10000
+
+      # Query frontend config
+      query_scheduler:
+        max_outstanding_requests_per_tenant: 2048
+
+      # Querier config
+      querier:
+        max_concurrent: 4
+
+      # Ruler config for LogQL alerting
+      ruler:
+        enable_api: true
+        enable_alertmanager_v2: true
+        alertmanager_url: http://monitoring-kube-prometheus-alertmanager.monitoring.svc.cluster.local:9093
+        storage:
+          type: local
+          local:
+            directory: /var/loki/rules
+        rule_path: /var/loki/rules-temp
+        ring:
+          kvstore:
+            store: inmemory
+        evaluation_interval: 1m
+        poll_interval: 2m
+
+    # Single binary deployment
+    singleBinary:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+      persistence:
+        enabled: true
+        storageClass: nfs-client
+        size: 50Gi
+
+    # Disable other deployment modes
+    backend:
+      replicas: 0
+    read:
+      replicas: 0
+    write:
+      replicas: 0
+
+    # Gateway disabled - access via singleBinary
+    gateway:
+      enabled: false
+
+    # Chunksache disabled in monolithic mode
+    chunksCache:
+      enabled: false
+    resultsCache:
+      enabled: false
+
+    # Monitoring
+    monitoring:
+      selfMonitoring:
+        enabled: false
+      lokiCanary:
+        enabled: false
+      # Chart dashboards disabled — they query microservices job labels
+      # (loki-read, loki-write) that don't exist in SingleBinary mode
+      dashboards:
+        enabled: false
+      serviceMonitor:
+        enabled: true
+
+    # Sidecar resources (rules sidecar)
+    # Increased memory for k8s-sidecar watching ConfigMaps/Secrets
+    sidecar:
+      resources:
+        requests:
+          cpu: 25m
+          memory: 128Mi
+        limits:
+          cpu: 100m
+          memory: 256Mi
+
+    # Test disabled
+    test:
+      enabled: false

@@ -1,0 +1,16 @@
+# PodDisruptionBudget for Vaultwarden
+# Ensures password manager availability during node maintenance
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vaultwarden-pdb
+  namespace: vaultwarden
+  labels:
+    app: vaultwarden
+spec:
+  # Single-replica password manager; drain restart is acceptable.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: vaultwarden

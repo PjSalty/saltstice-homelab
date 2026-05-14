@@ -1,0 +1,288 @@
+# ============================================================================
+# WARNING: DO NOT USE - NetBox runs as a VM, NOT in Kubernetes!
+# ============================================================================
+# NetBox is deployed on VM <internal-ip> (netbox.example.com)
+# Use Ansible playbook: ansible/playbooks/07-deploy-netbox.yml
+# Plugin installation: ansible/playbooks/28-netbox-install-dns-plugin.yml
+#
+# This file is UNUSED and kept only for reference/historical purposes.
+# Any changes here will have NO EFFECT on the actual NetBox deployment.
+# ============================================================================
+#
+# Application: base
+# Version: v4.4.6 with netbox-plugin-dns v1.4.4
+# Updated: 2025-12-03
+# Source: https://github.com/netbox-community/netbox/releases
+# Plugin: https://github.com/peteeckel/netbox-plugin-dns
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-netbox
+  namespace: netbox
+spec:
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: postgres-netbox
+  clusterIP: None
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-netbox
+  namespace: netbox
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: redis-netbox
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netbox
+  namespace: netbox
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    name: http
+  selector:
+    app: netbox
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-netbox
+  namespace: netbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-netbox
+  template:
+    metadata:
+      labels:
+        app: redis-netbox
+    spec:
+      containers:
+      - name: redis
+        image: ${IMAGE_REDIS}
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: 500m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netbox
+  namespace: netbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netbox
+  template:
+    metadata:
+      labels:
+        app: netbox
+    spec:
+      initContainers:
+      - name: init-db
+        image: harbor.example.com/homelab/netbox:v4.4.6-dns
+        command:
+        - /bin/sh
+        - -c
+        - '/opt/netbox/netbox/manage.py migrate --noinput
+
+          /opt/netbox/netbox/manage.py collectstatic --noinput
+
+          '
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secret
+              key: db-password
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secret
+              key: secret-key
+        - name: SUPERUSER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secret
+              key: superuser-password
+        - name: SUPERUSER_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secret
+              key: superuser-api-token
+        envFrom:
+        - configMapRef:
+            name: netbox-config
+      containers:
+      - name: netbox
+        image: harbor.example.com/homelab/netbox:v4.4.6-dns
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secret
+              key: db-password
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secret
+              key: secret-key
+        envFrom:
+        - configMapRef:
+            name: netbox-config
+        livenessProbe:
+          httpGet:
+            path: /login/
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /login/
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 500m
+          limits:
+            memory: 2Gi
+            cpu: 2000m
+        volumeMounts:
+        - name: netbox-media
+          mountPath: /opt/netbox/netbox/media
+        - name: netbox-reports
+          mountPath: /opt/netbox/netbox/reports
+        - name: netbox-scripts
+          mountPath: /opt/netbox/netbox/scripts
+        - name: netbox-extra-config
+          mountPath: /etc/netbox/config/extra.py
+          subPath: extra.py
+      volumes:
+      - name: netbox-media
+        emptyDir: {}
+      - name: netbox-reports
+        emptyDir: {}
+      - name: netbox-scripts
+        emptyDir: {}
+      - name: netbox-extra-config
+        configMap:
+          name: netbox-extra-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netbox-worker
+  namespace: netbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netbox-worker
+  template:
+    metadata:
+      labels:
+        app: netbox-worker
+    spec:
+      containers:
+      - name: netbox-worker
+        image: harbor.example.com/homelab/netbox:v4.4.6-dns
+        command:
+        - /opt/netbox/venv/bin/python
+        - /opt/netbox/netbox/manage.py
+        - rqworker
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secret
+              key: db-password
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secret
+              key: secret-key
+        envFrom:
+        - configMapRef:
+            name: netbox-config
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+          limits:
+            memory: 1Gi
+            cpu: 1000m
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-netbox
+  namespace: netbox
+spec:
+  serviceName: postgres-netbox
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-netbox
+  template:
+    metadata:
+      labels:
+        app: postgres-netbox
+    spec:
+      containers:
+      - name: postgres
+        image: ${IMAGE_POSTGRES_16}
+        env:
+        - name: POSTGRES_DB
+          value: netbox
+        - name: POSTGRES_USER
+          value: netbox
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secret
+              key: db-password
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+          limits:
+            memory: 1Gi
+            cpu: 1000m
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      storageClassName: nfs-client
+      resources:
+        requests:
+          storage: 10Gi

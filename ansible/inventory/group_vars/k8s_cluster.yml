@@ -1,0 +1,128 @@
+---
+# =============================================================================
+# Kubernetes Cluster Variables (RKE2 via lablabs.rke2)
+# =============================================================================
+
+# Monitoring — disable host-level node-exporter on K8s nodes.
+# kube-prometheus-stack DaemonSet handles node metrics via hostNetwork on port 9100.
+# Having both causes port conflict and 2000+ CrashLoopBackOff events.
+node_exporter_enabled: false
+
+# RKE2 Version
+rke2_version: v1.35.4+rke2r1
+
+# RKE2 rolling-upgrade orchestration (playbooks/operations/upgrade-rke2.yml)
+# Workers upgraded in batches of this size; masters always serial=1 (etcd quorum).
+# Pre-flight guard rejects values > 50% of worker count.
+rke2_worker_batch_size: 1
+# Abort upgrade if newest Completed Velero backup exceeds this age (hours).
+rke2_require_recent_backup: true
+rke2_require_backup_max_age_hours: 24
+# Drain timeout per node (respects PDBs — longer timeouts accommodate slow PV detach).
+rke2_drain_timeout: 10m
+
+# High Availability
+rke2_ha_mode: true
+rke2_ha_mode_keepalived: false
+
+# API Endpoint (HAProxy VIP from all.yml)
+rke2_api_ip: "{{ haproxy_vip }}"
+
+# Cluster Token
+rke2_token: "{{ lookup('env', 'K8S_TOKEN') | default(creds.infrastructure.rke2.token | default(''), true) }}"
+
+# CNI
+rke2_cni: cilium
+
+# Disable bundled ingress (using Traefik).
+# NOTE: The lablabs.rke2 role reads `rke2_disable` (list) — `rke2_disable_components`
+# was a dead variable never consumed, which is why rke2-ingress-nginx kept deploying
+# despite our intent. Pair with `rke2_ingress_controller: none` to prevent RKE2 from
+# defaulting `ingress-controller: ingress-nginx` in the server config.
+rke2_disable:
+  - rke2-ingress-nginx
+rke2_ingress_controller: none
+
+# Network CIDRs
+rke2_cluster_cidr:
+  - 10.42.0.0/16
+rke2_service_cidr:
+  - 10.43.0.0/16
+rke2_cluster_dns: 10.43.0.10
+
+# Kubelet
+rke2_kubelet_args:
+  - "max-pods=150"
+  - "pod-pids-limit=4096"
+  - "image-gc-high-threshold=85"
+  - "image-gc-low-threshold=80"
+
+# TLS SANs
+rke2_tls_san:
+  - "{{ haproxy_vip }}"
+  - "k8s-api.{{ domain }}"
+
+# =============================================================================
+# Container Registry Mirrors (Harbor Proxy Caches)
+# All upstream pulls route through Harbor for scanning, caching, and rate-limit protection.
+# Auth via robot$<pull-account> (pull-only) from credentials SSOT.
+# =============================================================================
+rke2_custom_registry_mirrors:
+  - name: "docker.io"
+    endpoint:
+      - "https://harbor.example.com"
+    rewrite: '"^(.*)$": "dockerhub-proxy/$1"'
+  - name: "ghcr.io"
+    endpoint:
+      - "https://harbor.example.com"
+    rewrite: '"^(.*)$": "ghcr-proxy/$1"'
+  - name: "quay.io"
+    endpoint:
+      - "https://harbor.example.com"
+    rewrite: '"^(.*)$": "quay-proxy/$1"'
+  - name: "registry.k8s.io"
+    endpoint:
+      - "https://harbor.example.com"
+    rewrite: '"^(.*)$": "k8s-proxy/$1"'
+  - name: "nvcr.io"
+    endpoint:
+      - "https://harbor.example.com"
+    rewrite: '"^(.*)$": "nvcr-proxy/$1"'
+  - name: "reg.kyverno.io"
+    endpoint:
+      - "https://harbor.example.com"
+    rewrite: '"^(.*)$": "kyverno-proxy/$1"'
+  - name: "us-docker.pkg.dev"
+    endpoint:
+      - "https://harbor.example.com"
+    rewrite: '"^(.*)$": "gcp-proxy/$1"'
+
+rke2_custom_registry_configs:
+  - endpoint: "harbor.example.com"
+    config:
+      auth:
+        username: "robot$<pull-account>"
+        password: "{{ creds.infrastructure.harbor.k8s_pull_robot_password }}"
+      tls:
+        insecure_skip_verify: false
+
+# Kubeconfig
+rke2_write_kubeconfig_mode: "0644"
+rke2_download_kubeconf: true
+rke2_download_kubeconf_path: "{{ lookup('env', 'HOME') }}/.kube"
+
+# Paths
+rke2_server_config_location: /etc/rancher/rke2
+rke2_config_file: "{{ rke2_server_config_location }}/config.yaml"
+rke2_data_path: /var/lib/rancher/rke2
+
+# Sudo — K8s node commands
+sudo_extra_commands:
+  - /usr/local/bin/crictl *
+  - /usr/local/bin/ctr *
+  - /usr/local/bin/rke2 *
+  - /usr/bin/systemctl restart rke2-*
+  - /usr/bin/systemctl stop rke2-*
+  - /usr/bin/systemctl start rke2-*
+  - /usr/sbin/ufw *
+  - /usr/bin/fail2ban-client *

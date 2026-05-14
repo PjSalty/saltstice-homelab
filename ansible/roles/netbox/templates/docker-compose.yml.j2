@@ -1,0 +1,66 @@
+---
+services:
+  netbox:
+    image: netboxcommunity/netbox:v{{ netbox_version }}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    ports:
+      - "443:8443"
+      - "80:8080"
+    volumes:
+      - {{ netbox_data_dir }}/media:/opt/netbox/netbox/media:z
+      - {{ netbox_data_dir }}/reports:/opt/netbox/netbox/reports:z
+      - {{ netbox_data_dir }}/scripts:/opt/netbox/netbox/scripts:z
+
+  netbox-worker:
+    image: netboxcommunity/netbox:v{{ netbox_version }}
+    restart: unless-stopped
+    depends_on:
+      netbox:
+        condition: service_started
+    env_file:
+      - .env
+    command: /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
+
+  netbox-housekeeping:
+    image: netboxcommunity/netbox:v{{ netbox_version }}
+    restart: unless-stopped
+    depends_on:
+      netbox:
+        condition: service_started
+    env_file:
+      - .env
+    command: /opt/netbox/housekeeping.sh
+
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {{ netbox_db_name }}
+      POSTGRES_USER: {{ netbox_db_user }}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - {{ netbox_data_dir }}/postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ netbox_db_user }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-bookworm
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - {{ netbox_data_dir }}/redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

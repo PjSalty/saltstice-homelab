@@ -1,0 +1,198 @@
+---
+- name: Find all Grafana APT source files
+  ansible.builtin.find:
+    paths: /etc/apt/sources.list.d/
+    patterns: '*'
+    contains: 'apt.grafana.com'
+  register: promtail_grafana_sources_found
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Remove all Grafana APT source files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ promtail_grafana_sources_found.files | default([]) }}"
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Remove Grafana keys from all locations
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/share/keyrings/grafana.gpg
+    - /etc/apt/keyrings/grafana.gpg
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Remove Grafana entries from main sources.list
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list
+    regexp: 'apt\.grafana\.com'
+    state: absent
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Download Grafana GPG key
+  ansible.builtin.get_url:
+    url: "{{ promtail_apt_key }}"
+    dest: /tmp/grafana-gpg-key.asc
+    mode: "0644"
+    force: true
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Dearmor Grafana GPG key to binary format
+  ansible.builtin.command:
+    cmd: gpg --batch --yes --dearmor -o /etc/apt/keyrings/grafana.gpg /tmp/grafana-gpg-key.asc
+  when: promtail_enabled
+  become: true
+  changed_when: true
+  tags:
+    - promtail
+    - packages
+
+- name: Set Grafana GPG key permissions
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/grafana.gpg
+    mode: "0644"
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Configure Grafana APT repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/grafana.list
+    content: "deb [signed-by=/etc/apt/keyrings/grafana.gpg] {{ promtail_apt_repo }} stable main\n"
+    mode: "0644"
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Install promtail
+  ansible.builtin.apt:
+    name: promtail
+    state: present
+    update_cache: true
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Ensure promtail system group exists
+  ansible.builtin.group:
+    name: promtail
+    system: true
+    state: present
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Ensure promtail system user exists
+  ansible.builtin.user:
+    name: promtail
+    group: promtail
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+    state: present
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - packages
+
+- name: Create promtail positions directory
+  ansible.builtin.file:
+    path: "{{ promtail_positions_path | dirname }}"
+    state: directory
+    owner: promtail
+    group: promtail
+    mode: "0750"
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail
+    - config
+
+- name: Add promtail user to systemd-journal group
+  ansible.builtin.user:
+    name: promtail
+    groups: systemd-journal
+    append: true
+  when: promtail_enabled and promtail_scrape_journald
+  notify: Restart promtail
+  become: true
+  tags:
+    - promtail
+    - config
+
+- name: Add promtail user to docker group
+  ansible.builtin.user:
+    name: promtail
+    groups: docker
+    append: true
+  when: promtail_enabled and promtail_scrape_docker
+  notify: Restart promtail
+  become: true
+  tags:
+    - promtail
+    - config
+
+- name: Deploy promtail config
+  ansible.builtin.template:
+    src: promtail.yml.j2
+    dest: /etc/promtail/config.yml
+    owner: promtail
+    group: promtail
+    mode: "0640"
+  when: promtail_enabled
+  notify: Restart promtail
+  become: true
+  tags:
+    - promtail
+    - config
+
+- name: Enable promtail service
+  ansible.builtin.systemd:
+    name: promtail
+    enabled: true
+    state: started
+  when: promtail_enabled
+  become: true
+  tags:
+    - promtail

@@ -1,0 +1,15 @@
+---
+# Phase 2: Base OS Configuration
+# Applies security hardening, firewall, SSH, and base packages to all VMs
+
+- name: Base OS configuration
+  roles:
+    - common
+    - ssh
+    - firewall
+    - fail2ban
+    - sudo
+    - auto-updates
+    - qemu-guest-agent
+  tags:
+    - base

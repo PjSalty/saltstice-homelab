@@ -1,0 +1,157 @@
+---
+# UniFi Bootstrap Job - Creates admin user via MongoDB injection
+# This runs after UniFi deployment to create the automation user
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: unifi-bootstrap
+  namespace: unifi
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-unifi
+          image: ${IMAGE_BUSYBOX}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for UniFi MongoDB to be ready..."
+              # Wait for the UniFi pod to be running and MongoDB to accept connections
+              for i in $(seq 1 120); do
+                if nc -z unifi.unifi.svc.cluster.local 27117 2>/dev/null; then
+                  echo "MongoDB port is open"
+                  sleep 30  # Give UniFi time to fully initialize
+                  exit 0
+                fi
+                echo "Attempt $i/120 - waiting 5s..."
+                sleep 5
+              done
+              echo "Timeout waiting for MongoDB"
+              exit 1
+      containers:
+        - name: bootstrap
+          # Version managed by config/versions.yaml via Flux substituteFrom
+          image: ${IMAGE_UNIFI_MONGODB}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          env:
+            - name: UNIFI_USER
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: UNIFI_USER
+            - name: UNIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: UNIFI_PASS
+            - name: UNIFI_EMAIL
+              value: "automation@example.com"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "=== UniFi Bootstrap - MongoDB User Injection ==="
+              echo "Username: ${UNIFI_USER}"
+
+              # Generate SHA-512 password hash
+              # Using openssl which is available in mongo:4.4 image
+              SALT=$(openssl rand -base64 8 | tr -dc 'a-zA-Z0-9' | head -c 8)
+              X_SHADOW=$(openssl passwd -6 -salt "${SALT}" "${UNIFI_PASS}")
+              echo "Password hash generated"
+
+              # Connect to UniFi MongoDB
+              MONGO_HOST="unifi.unifi.svc.cluster.local"
+              MONGO_PORT="27117"
+
+              echo "Connecting to MongoDB at ${MONGO_HOST}:${MONGO_PORT}..."
+
+              # Check if user already exists
+              EXISTING=$(mongo --quiet --host ${MONGO_HOST} --port ${MONGO_PORT} ace --eval "db.admin.count({name: '${UNIFI_USER}'})")
+
+              if [ "$EXISTING" -gt 0 ]; then
+                echo "User '${UNIFI_USER}' already exists, updating password..."
+                mongo --quiet --host ${MONGO_HOST} --port ${MONGO_PORT} ace --eval "
+                  db.admin.updateOne(
+                    {name: '${UNIFI_USER}'},
+                    {\$set: {x_shadow: '${X_SHADOW}'}}
+                  );
+                  print('Password updated');
+                "
+              else
+                echo "Creating new admin user..."
+                mongo --quiet --host ${MONGO_HOST} --port ${MONGO_PORT} ace --eval "
+                  var result = db.admin.insertOne({
+                    email: '${UNIFI_EMAIL}',
+                    name: '${UNIFI_USER}',
+                    x_shadow: '${X_SHADOW}',
+                    last_site_name: 'default',
+                    time_created: NumberLong($(date +%s)),
+                    requires_new_password: false,
+                    ui_settings: {}
+                  });
+                  print('Admin created with ID: ' + result.insertedId);
+                "
+              fi
+
+              # Get admin ID
+              ADMIN_ID=$(mongo --quiet --host ${MONGO_HOST} --port ${MONGO_PORT} ace --eval "
+                var admin = db.admin.findOne({name: '${UNIFI_USER}'});
+                if (admin) print(admin._id.str);
+              " | tail -1)
+
+              echo "Admin ID: ${ADMIN_ID}"
+
+              # Create privileges for all sites
+              echo "Creating site privileges..."
+              mongo --quiet --host ${MONGO_HOST} --port ${MONGO_PORT} ace --eval "
+                var adminId = '${ADMIN_ID}';
+                var sites = db.site.find().toArray();
+
+                sites.forEach(function(site) {
+                  var existing = db.privilege.findOne({
+                    admin_id: adminId,
+                    site_id: site._id.str
+                  });
+
+                  if (!existing) {
+                    db.privilege.insertOne({
+                      admin_id: adminId,
+                      site_id: site._id.str,
+                      role: 'admin',
+                      permissions: []
+                    });
+                    print('Created privilege for site: ' + site.name);
+                  } else {
+                    // Update to admin role if exists
+                    db.privilege.updateOne(
+                      {admin_id: adminId, site_id: site._id.str},
+                      {\$set: {role: 'admin'}}
+                    );
+                    print('Updated privilege for site: ' + site.name);
+                  }
+                });
+              "
+
+              echo ""
+              echo "=== Bootstrap Complete ==="
+              echo "UniFi admin user ready:"
+              echo "  Username: ${UNIFI_USER}"
+              echo "  Password: (from secret)"

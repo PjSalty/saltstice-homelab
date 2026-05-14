@@ -1,0 +1,74 @@
+---
+# Cloud-init template for Karpenter-provisioned worker nodes.
+#
+# Design: SSOT-driven RKE2 version — no VM-template rebuild per version bump.
+#
+#   SSOT: infrastructure/configs/ssot/image-versions.yaml → RKE2_VERSION
+#     ↓ (generates the image-versions ConfigMap in flux-system)
+#     ↓ (Flux postBuild substituteFrom renders ${RKE2_VERSION} into THIS Secret)
+#   karpenter-cloud-init Secret (rendered with literal version string)
+#     ↓ (Karpenter attaches as userData when provisioning a VM)
+#   VM boots → cloud-init runcmd → downloads + installs RKE2 at pinned version
+#
+# VM template (VMID 9001) provides only:
+#   - Debian 13 base, kernel modules, sysctls (iSCSI, NFS, bridge-nf)
+#   - open-iscsi, nfs-common, Harbor robot pull secret
+#   - Does NOT include RKE2 (SSOT-driven, installed at boot)
+#
+# Template build: ansible-playbook playbooks/operations/build-karpenter-template.yml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: karpenter-cloud-init
+  namespace: karpenter
+stringData:
+  user-data: |
+    #cloud-config
+    # RKE2 version is SSOT-pinned (${RKE2_VERSION}) via Flux postBuild substitution.
+    # Template has pre-reqs baked in — cloud-init installs + starts rke2-agent.
+
+    write_files:
+      - path: /etc/rancher/rke2/config.yaml
+        content: |
+          server: {{ .Values.rke2_server }}
+          token: {{ .Values.rke2_token }}
+          node-name: {{ .Metadata.Hostname }}
+          node-label:
+            - "homelab.example.com/provisioner=karpenter"
+          kubelet-arg:
+            - "max-pods=150"
+            - "image-gc-high-threshold=85"
+            - "image-gc-low-threshold=80"
+            - "kube-reserved=cpu=100m,memory=256Mi"
+            - "system-reserved=cpu=100m,memory=256Mi"
+        permissions: '0600'
+
+    runcmd:
+      # Inject provider-id from cloud-init instance-id (set via meta-data)
+      - |
+        set -e
+        VMID=$$(cat /var/lib/cloud/data/instance-id 2>/dev/null || echo "0")
+        sed -i '/kubelet-arg:/a\  - "provider-id=proxmox://homelab/'"$${VMID}"'"' /etc/rancher/rke2/config.yaml
+
+      # Install RKE2 agent at the SSOT-pinned version.
+      # ${RKE2_VERSION} is substituted by Flux postBuild at reconcile time —
+      # by the time this userData reaches a VM, it is a literal string.
+      - |
+        set -e
+        curl -sfL https://get.rke2.io -o /tmp/install-rke2.sh
+        chmod +x /tmp/install-rke2.sh
+        INSTALL_RKE2_VERSION="${RKE2_VERSION}" INSTALL_RKE2_TYPE=agent /tmp/install-rke2.sh
+
+      - systemctl enable rke2-agent.service
+      - systemctl start rke2-agent.service
+
+  network-config: |
+    version: 2
+    ethernets:
+      ens18:
+        dhcp4: true
+        dhcp6: false
+
+  meta-data: |
+    hostname: {{ .Hostname }}
+    instance-id: {{ .InstanceID }}

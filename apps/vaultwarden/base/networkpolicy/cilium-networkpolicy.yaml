@@ -1,0 +1,69 @@
+---
+# CiliumNetworkPolicy for Vaultwarden
+# Restricts traffic to only necessary communication:
+#   Ingress: Traefik (web UI), credential-sync jobs
+#   Egress: DNS, PostgreSQL (if external), SMTP (email notifications)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: vaultwarden
+  namespace: vaultwarden
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: vaultwarden
+  ingress:
+    # Allow web traffic from Traefik ingress
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "3012"
+              protocol: TCP
+    # Allow credential-sync jobs within the namespace
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: vaultwarden
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    # Allow Prometheus metrics scraping
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+  egress:
+    # Allow DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow PostgreSQL on storage VLAN (democratic-csi iSCSI)
+    - toCIDR:
+        - <vlan-cidr>
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # Allow SMTP for email notifications
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "587"
+              protocol: TCP
+            - port: "465"
+              protocol: TCP

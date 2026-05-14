@@ -1,0 +1,89 @@
+---
+# Flux requires access for GitOps reconciliation
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-flux-controllers
+  namespace: flux-system
+spec:
+  description: "Allow Flux controllers to manage cluster resources"
+  endpointSelector: {}
+  ingress:
+    # Allow webhook receivers from Traefik
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+    # Allow intra-namespace Flux controller communication (ingress side).
+    # endpointSelector: {} applies default-deny to ALL flux-system pods, so
+    # source-controller would refuse port 80 from kustomize/helm-controller
+    # without an explicit ingress allow — the egress allow alone is not
+    # sufficient when both sides are governed by this CNP.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: flux-system
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "9090"
+              protocol: TCP
+  egress:
+    # Allow intra-namespace Flux controller communication.
+    # - kustomize-controller / helm-controller / image-automation-controller
+    #   fetch artifacts from source-controller on port 80
+    # - controllers emit events to notification-controller on port 9090
+    # Without this rule, Cilium default-deny returns EPERM on connect, causing
+    # kustomize-controller to fail every reconciliation against source-controller.svc
+    # (observed symptom: 127-190 pod restarts over 15 days on otherwise healthy Flux pods).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: flux-system
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "9090"
+              protocol: TCP
+    # Allow Git operations (GitLab — IP for direct access)
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "2222"
+              protocol: TCP
+    # Allow Git operations (GitLab — FQDN for TLS validation)
+    - toFQDNs:
+        - matchName: "gitlab.example.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "2222"
+              protocol: TCP
+    # Allow Helm repository access
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

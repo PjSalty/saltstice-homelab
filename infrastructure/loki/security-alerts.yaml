@@ -1,0 +1,163 @@
+---
+# PrometheusRule for Loki-based security alerting
+# These rules use Loki's metric endpoint to convert log patterns to alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: loki-security-alerts
+  namespace: loki
+  labels:
+    app: loki
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    - name: loki.security.authentication
+      interval: 5m
+      rules:
+        # Multiple failed authentication attempts (potential brute force)
+        - alert: LokiAuthenticationBruteForce
+          # This alert fires based on Loki log metrics
+          # Using loki_request_duration_seconds as a proxy for Loki health
+          # Actual log analysis should be done in Grafana dashboards
+          expr: |
+            increase(loki_request_duration_seconds_count{route="loki_api_v1_query_range"}[5m]) > 0
+          for: 1m
+          labels:
+            severity: info
+            category: monitoring
+          annotations:
+            summary: "Loki is receiving queries"
+            description: |
+              Loki query activity detected. Security log analysis is available
+              in the Security Overview dashboard.
+            dashboard_url: "https://grafana.example.com/d/security-overview"
+
+    - name: loki.health
+      interval: 1m
+      rules:
+        # Loki not ingesting logs
+        - alert: LokiNotReceivingLogs
+          expr: |
+            sum(rate(loki_distributor_lines_received_total[5m])) == 0
+          for: 15m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "Loki not receiving log lines"
+            description: |
+              Loki has not received any log lines in the last 15 minutes.
+              Check Alloy daemonset and Loki distributor health.
+            action: "Check Alloy pods: kubectl get pods -n loki -l app.kubernetes.io/name=alloy"
+
+        # Loki ingester not ready
+        - alert: LokiIngesterNotReady
+          expr: |
+            kube_statefulset_status_replicas_ready{namespace="loki", statefulset=~".*loki.*"}
+            < kube_statefulset_status_replicas{namespace="loki", statefulset=~".*loki.*"}
+          for: 10m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "Loki ingester replicas not ready"
+            description: |
+              Loki StatefulSet has replicas that are not ready.
+              This may affect log ingestion and querying.
+            action: "Check Loki pods: kubectl get pods -n loki"
+
+        # Loki high latency
+        - alert: LokiHighLatency
+          expr: |
+            histogram_quantile(0.99, sum(rate(loki_request_duration_seconds_bucket{route=~"loki_api_v1_query.*"}[5m])) by (le, route)) > 30
+          for: 10m
+          labels:
+            severity: warning
+            category: performance
+          annotations:
+            summary: "Loki query latency is high"
+            description: |
+              Loki P99 query latency is above 30 seconds.
+              This may indicate storage performance issues or query complexity.
+            action: "Review Loki resource utilization and storage performance"
+
+        # Alloy not running on all nodes
+        - alert: AlloyNotOnAllNodes
+          expr: |
+            count(kube_pod_info{namespace="loki", pod=~"alloy.*"})
+            < count(kube_node_info)
+          for: 15m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "Alloy not running on all nodes"
+            description: |
+              Some Kubernetes nodes are not running Alloy.
+              Logs from these nodes are not being collected.
+            action: "Check DaemonSet: kubectl get ds -n loki alloy"
+
+    - name: loki.errors
+      interval: 5m
+      rules:
+        # High error rate in Loki
+        - alert: LokiHighErrorRate
+          expr: |
+            sum(rate(loki_request_duration_seconds_count{status_code=~"5.."}[5m]))
+            / sum(rate(loki_request_duration_seconds_count[5m])) > 0.1
+          for: 10m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "Loki error rate is high"
+            description: |
+              More than 10% of Loki requests are failing.
+              Check Loki logs for details.
+            action: "kubectl logs -n loki -l app.kubernetes.io/name=loki"
+
+        # Alloy dropping logs
+        - alert: AlloyDroppingLogs
+          expr: |
+            sum(rate(loki_source_file_entries_dropped_total[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            category: logging
+          annotations:
+            summary: "Alloy is dropping log entries"
+            description: |
+              Alloy is dropping logs, which may indicate configuration issues
+              or resource constraints.
+            action: "Check Alloy logs: kubectl logs -n loki -l app.kubernetes.io/name=alloy"
+---
+# ConfigMap with Loki recording rules for security metrics
+# These rules pre-compute security event counts for faster querying
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-rules
+  namespace: loki
+  labels:
+    app: loki
+data:
+  security-rules.yaml: |
+    groups:
+      - name: security_recording_rules
+        interval: 5m
+        rules:
+          # Count of failed auth attempts per source
+          - record: security:auth_failures:5m
+            expr: |
+              count_over_time({job=~".*"} |~ "(?i)failed password|authentication failure" [5m])
+
+          # Count of sudo commands
+          - record: security:sudo_commands:5m
+            expr: |
+              count_over_time({job=~".*"} |~ "(?i)sudo:.*COMMAND" [5m])
+
+          # Count of permission denied events
+          - record: security:permission_denied:5m
+            expr: |
+              count_over_time({job=~".*"} |~ "(?i)permission denied|access denied" [5m])

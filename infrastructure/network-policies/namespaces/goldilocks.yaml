@@ -1,0 +1,38 @@
+---
+# Goldilocks resource recommendation dashboard
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-goldilocks
+  namespace: goldilocks
+spec:
+  description: "Allow Goldilocks resource recommendations"
+  endpointSelector: {}
+  ingress:
+    # Allow Traefik for web UI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Allow VPA API access (reads VPA objects cluster-wide)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

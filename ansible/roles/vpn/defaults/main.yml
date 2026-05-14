@@ -1,0 +1,18 @@
+---
+# vpn role defaults
+
+# Pin wg-easy version — check https://github.com/wg-easy/wg-easy/releases
+vpn_wgeasy_version: "15"
+
+vpn_data_dir: /data/wireguard
+vpn_wg_port: 51820
+vpn_ui_port: 51821
+vpn_fqdn: "vpn.{{ domain }}"
+vpn_password_hash: "{{ creds.infrastructure.vpn.password_hash | default('') }}"
+
+# WireGuard network
+vpn_address_range: <vlan-cidr>
+vpn_dns: "{{ adguard_ip }}"
+
+# Allowed IPs for clients (what traffic goes through VPN)
+vpn_allowed_ips: "<internal-ip>/16, <mgmt-ip>/24"

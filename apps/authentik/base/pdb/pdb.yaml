@@ -1,0 +1,36 @@
+# PodDisruptionBudgets for Authentik
+# Ensures SSO availability during node maintenance
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: authentik-server-pdb
+  namespace: authentik
+  labels:
+    app: authentik-server
+spec:
+  # See external-dns PDB rationale: single-replica Deployment + minAvailable: 1
+  # = perpetually-blocked drain. Authentik should eventually run replicas: 2
+  # with a tuned minAvailable, but right now both server and worker are
+  # single-replica; allow eviction with a brief auth-flap window.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: authentik-server
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: authentik-worker-pdb
+  namespace: authentik
+  labels:
+    app: authentik-worker
+spec:
+  # See external-dns PDB rationale: single-replica Deployment + minAvailable: 1
+  # = perpetually-blocked drain. Authentik should eventually run replicas: 2
+  # with a tuned minAvailable, but right now both server and worker are
+  # single-replica; allow eviction with a brief auth-flap window.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: authentik-worker

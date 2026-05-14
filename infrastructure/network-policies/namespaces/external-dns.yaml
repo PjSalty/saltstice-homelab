@@ -1,0 +1,38 @@
+---
+# External-DNS and Cloudflare DNS sync
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-external-dns
+  namespace: external-dns
+spec:
+  description: "Allow external-dns and Cloudflare sync CronJob"
+  endpointSelector: {}
+  egress:
+    # Allow Cloudflare API and external IP check
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Allow AdGuard webhook for DNS updates (API on port 80)
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

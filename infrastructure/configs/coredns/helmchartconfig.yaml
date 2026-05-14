@@ -1,0 +1,121 @@
+# CoreDNS HelmChartConfig for RKE2
+# Split-horizon DNS: example.com zone isolated from public DNS
+# Layer 1 (hosts): Static entries - resolves without external dependency
+# Layer 2 (forward): AdGuard-only for new services not yet in hosts
+# VMs serve Let's Encrypt certs, pods use default system trust store
+#
+# ADDING A NEW SERVICE:
+#   1. Add "<internal-ip> <app>.example.com" to the K8s Services
+#      hosts block below (Layer 1 redundancy)
+#   2. If the service should be publicly accessible, add the
+#      dns.example.com/public=true label to its Ingress/IngressRoute
+#      (see apps/jellyfin/base/ingress/ingress.yaml for the pattern)
+#   3. The cloudflare-dns-sync CronJob auto-creates Cloudflare A records
+#      for public services. Internal services get no Cloudflare record.
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-coredns
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    servers:
+      # ZONE 1: example.com - NEVER leaves internal network
+      # Prevents public DNS poisoning (No-IP wildcard / Cloudflare WAN IP)
+      - zones:
+          - zone: example.com
+        port: 53
+        plugins:
+          - name: errors
+          # Layer 1: Static entries - resolves without ANY external dependency
+          # VM-direct IPs bypass Traefik (git clone, docker pull, API calls)
+          # All K8s services resolve to Traefik VIP (<internal-ip>)
+          - name: hosts
+            configBlock: |-
+              # --- VM Direct Access (bypass Traefik) ---
+              <internal-ip> gitlab.example.com
+              <internal-ip> harbor.example.com
+              <internal-ip> netbox.example.com
+              <internal-ip> adguard.example.com
+              <internal-ip> truenas.example.com
+              10.x0.100 proxmox.example.com
+              # --- K8s Services (via Traefik VIP) ---
+              <internal-ip> auth.example.com
+              <internal-ip> jellyfin.example.com
+              <internal-ip> vault.example.com
+              <internal-ip> k8s.example.com
+              <internal-ip> semaphore.example.com
+              <internal-ip> docs.example.com
+              <internal-ip> grafana.example.com
+              <internal-ip> prometheus.example.com
+              <internal-ip> alerts.example.com
+              <internal-ip> traefik.example.com
+              <internal-ip> amp.example.com
+              <internal-ip> vpn.example.com
+              <internal-ip> unifi.example.com
+              <internal-ip> goldilocks.example.com
+              <internal-ip> ntfy.example.com
+              <internal-ip> haproxy.example.com
+              <internal-ip> s3.example.com
+              <internal-ip> seaweedfs.example.com
+              # --- Community Services (DMZ VLAN 60, via DMZ Traefik) ---
+              <internal-ip> example.com
+              <internal-ip> matrix.example.com
+              <internal-ip> synapse-admin.example.com
+              <internal-ip> livekit.example.com
+              <internal-ip> livekit-sfu.example.com
+              <internal-ip> mas.example.com
+              <internal-ip> rendezvous.example.com
+              <internal-ip> turn.example.com
+              <internal-ip> livekit-turn.example.com
+              fallthrough
+          # Layer 2: Forward to AdGuard for any service NOT in hosts
+          # Catches new services added by external-dns before hosts is updated
+          - name: forward
+            parameters: . <internal-ip>
+          - name: cache
+            parameters: 60
+          - name: reload
+
+      # ZONE 2: Everything else (cluster.local + external domains)
+      - zones:
+          - zone: .
+        port: 53
+        plugins:
+          - name: errors
+          - name: health
+            configBlock: |-
+              lameduck 10s
+          - name: ready
+          - name: kubernetes
+            parameters: cluster.local in-addr.arpa ip6.arpa
+            configBlock: |-
+              pods insecure
+              fallthrough in-addr.arpa ip6.arpa
+              ttl 30
+          # Public hostnames for Cloudflare Tunnel / NAT-exposed services
+          # Internal clients resolve directly, no Cloudflare roundtrip
+          # NOTE: livekit-sfu.example.com intentionally NOT here — lk-jwt-service
+          # uses LIVEKIT_URL for API calls and needs Cloudflare's valid TLS cert
+          # (DMZ Traefik only has *.example.com cert)
+          - name: hosts
+            configBlock: |-
+              <internal-ip> matrix.example.com
+              <internal-ip> livekit.example.com
+              <internal-ip> mas.example.com
+              <internal-ip> rendezvous.example.com
+              <internal-ip> turn.example.com
+              fallthrough
+          - name: prometheus
+            parameters: 0.0.0.0:9153
+          # AdGuard first, /etc/resolv.conf fallback only if AdGuard unreachable
+          - name: forward
+            parameters: . <internal-ip> /etc/resolv.conf
+            configBlock: |-
+              policy sequential
+          - name: cache
+            parameters: 30
+          - name: loop
+          - name: reload
+          - name: loadbalance

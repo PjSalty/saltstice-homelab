@@ -1,0 +1,182 @@
+---
+# Push the cluster wildcard cert onto iDRAC's web interface via Redfish.
+#
+# Whole role runs delegated to localhost — iDRAC is not an Ansible target,
+# it's an HTTP endpoint we POST to. `become` is intentionally false; we
+# never touch the controller's filesystem with elevated privileges.
+
+- name: Validate required variables are set
+  ansible.builtin.assert:
+    that:
+      - idrac_url is defined and idrac_url != ""
+      - idrac_username is defined and idrac_username != ""
+      - idrac_password is defined and idrac_password != ""
+    fail_msg: >
+      idrac_url / idrac_username / idrac_password must be set.
+      Source these from cred-ssot-monitoring at runtime via -e or inventory.
+    quiet: true
+
+# ---------------------------------------------------------------------------
+# Step 1 — read current iDRAC server cert and parse the NotAfter date.
+# ---------------------------------------------------------------------------
+# Dell iDRAC9 exposes server certs at slot 1 of the Manager certificate
+# collection. The Redfish payload includes a parsed ValidNotAfter timestamp
+# (RFC3339); we use that directly rather than re-parsing the X.509.
+
+- name: Read current iDRAC server certificate metadata
+  ansible.builtin.uri:
+    url: "{{ idrac_url }}/redfish/v1/Managers/iDRAC.Embedded.1/Certificates/SecurityCertificate.1"
+    method: GET
+    user: "{{ idrac_username }}"
+    password: "{{ idrac_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ idrac_validate_certs }}"
+    return_content: true
+    status_code: [200, 404]
+  register: idrac_current_cert
+  delegate_to: localhost
+  no_log: true
+
+- name: Compute days until current iDRAC certificate expires
+  ansible.builtin.set_fact:
+    idrac_cert_days_remaining: >-
+      {{
+        ((idrac_current_cert.json.ValidNotAfter | to_datetime('%Y-%m-%dT%H:%M:%S%z'))
+         - (ansible_date_time.iso8601 | to_datetime('%Y-%m-%dT%H:%M:%SZ'))
+        ).days
+      }}
+  when:
+    - idrac_current_cert.status == 200
+    - idrac_current_cert.json.ValidNotAfter is defined
+
+- name: Default days_remaining to 0 when iDRAC reports no current cert
+  ansible.builtin.set_fact:
+    idrac_cert_days_remaining: 0
+  when: idrac_cert_days_remaining is not defined
+
+- name: Show current cert state
+  ansible.builtin.debug:
+    msg: >-
+      iDRAC current cert has {{ idrac_cert_days_remaining }}d remaining
+      (renewal threshold: {{ idrac_cert_renewal_threshold_days }}d).
+
+# ---------------------------------------------------------------------------
+# Step 2 — short-circuit when current cert still has plenty of life.
+# ---------------------------------------------------------------------------
+
+- name: Skip rest of play when cert is healthy
+  ansible.builtin.meta: end_play
+  when:
+    - idrac_cert_days_remaining | int > idrac_cert_renewal_threshold_days | int
+
+# ---------------------------------------------------------------------------
+# Step 3 — pull wildcard cert + key from cert-manager Secret.
+# ---------------------------------------------------------------------------
+
+- name: Read wildcard cert Secret from Kubernetes
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ idrac_cert_source_namespace }}"
+    name: "{{ idrac_cert_source_secret }}"
+  register: wildcard_secret
+  delegate_to: localhost
+  no_log: true
+
+- name: Decode cert and key from base64
+  ansible.builtin.set_fact:
+    wildcard_cert_pem: "{{ wildcard_secret.resources[0].data['tls.crt'] | b64decode }}"
+    wildcard_key_pem: "{{ wildcard_secret.resources[0].data['tls.key'] | b64decode }}"
+  no_log: true
+
+# iDRAC9's ImportSSLCertificate Oem action takes a single SSLCertificateFile
+# field which must be the cert + private key concatenated as one PEM blob.
+# The whole thing is then base64-encoded for transport in the JSON body.
+- name: Build combined PEM payload
+  ansible.builtin.set_fact:
+    idrac_combined_pem: "{{ (wildcard_cert_pem + '\n' + wildcard_key_pem) | b64encode }}"
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Step 4 — upload via Dell's Redfish Oem ImportSSLCertificate action.
+# ---------------------------------------------------------------------------
+# CertificateType=1 is "Server" in the Dell mapping. Other types: 2=CA,
+# 3=CSC, 4=CustomSigningCert. We only ever push 1 here — server cert.
+# Source: Dell Redfish API spec, DelliDRACCardService 1.x.
+
+- name: Upload wildcard cert to iDRAC
+  ansible.builtin.uri:
+    url: "{{ idrac_url }}/redfish/v1/Dell/Managers/iDRAC.Embedded.1/DelliDRACCardService/Actions/DelliDRACCardService.ImportSSLCertificate"
+    method: POST
+    user: "{{ idrac_username }}"
+    password: "{{ idrac_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ idrac_validate_certs }}"
+    body_format: json
+    body:
+      CertificateType: "{{ idrac_cert_type }}"
+      SSLCertificateFile: "{{ idrac_combined_pem }}"
+    status_code: [200, 202]
+  delegate_to: localhost
+  no_log: true
+  register: idrac_upload_result
+
+- name: Show upload result
+  ansible.builtin.debug:
+    msg: "iDRAC upload returned HTTP {{ idrac_upload_result.status }}."
+
+# ---------------------------------------------------------------------------
+# Step 5 — gracefully reset the iDRAC web service so the new cert binds.
+# ---------------------------------------------------------------------------
+# A full Manager.Reset would cycle the BMC and break in-flight tasks.
+# The SSLResetCfg-equivalent Oem action just bounces the web stack.
+
+- name: Reset iDRAC web service to bind new certificate
+  ansible.builtin.uri:
+    url: "{{ idrac_url }}/redfish/v1/Managers/iDRAC.Embedded.1/Actions/Manager.Reset"
+    method: POST
+    user: "{{ idrac_username }}"
+    password: "{{ idrac_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ idrac_validate_certs }}"
+    body_format: json
+    body:
+      ResetType: "GracefulRestart"
+    status_code: [200, 202, 204]
+  delegate_to: localhost
+  no_log: true
+
+- name: Wait for iDRAC to come back online
+  ansible.builtin.uri:
+    url: "{{ idrac_url }}/redfish/v1/Managers/iDRAC.Embedded.1"
+    method: GET
+    user: "{{ idrac_username }}"
+    password: "{{ idrac_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ idrac_validate_certs }}"
+    status_code: 200
+  register: idrac_health
+  retries: "{{ (idrac_post_restart_wait / 5) | int }}"
+  delay: 5
+  until: idrac_health.status == 200
+  delegate_to: localhost
+  no_log: true
+
+- name: Confirm new cert binding
+  ansible.builtin.uri:
+    url: "{{ idrac_url }}/redfish/v1/Managers/iDRAC.Embedded.1/Certificates/SecurityCertificate.1"
+    method: GET
+    user: "{{ idrac_username }}"
+    password: "{{ idrac_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ idrac_validate_certs }}"
+    return_content: true
+  register: idrac_new_cert
+  delegate_to: localhost
+  no_log: true
+
+- name: Report final state
+  ansible.builtin.debug:
+    msg: >-
+      iDRAC server cert now valid until
+      {{ idrac_new_cert.json.ValidNotAfter | default('unknown') }}.

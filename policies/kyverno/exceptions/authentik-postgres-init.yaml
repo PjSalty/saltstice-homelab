@@ -1,0 +1,24 @@
+---
+# PolicyException: Authentik PostgreSQL init container runs as root
+# to fix data directory ownership (one-time migration from root→999).
+# Remove this exception after all pods have restarted successfully.
+apiVersion: kyverno.io/v2
+kind: PolicyException
+metadata:
+  name: authentik-postgres-init
+  namespace: kyverno
+spec:
+  exceptions:
+    - policyName: require-run-as-non-root
+      ruleNames:
+        - run-as-non-root
+        - autogen-run-as-non-root
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+          namespaces:
+            - authentik
+          names:
+            - "authentik-postgresql-*"

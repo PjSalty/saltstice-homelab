@@ -1,0 +1,56 @@
+---
+# bootstrap.yml — Full infrastructure bootstrap from bare Proxmox to production
+#
+# Usage:
+#   ansible-playbook playbooks/bootstrap.yml
+#   ansible-playbook playbooks/bootstrap.yml --tags phase-02
+#
+# Phases are designed to be run sequentially but can be targeted individually.
+
+- name: "Phase 0: Proxmox Hypervisor Configuration"
+  ansible.builtin.import_playbook: phases/00-proxmox-config.yml
+  tags:
+    - phase-00
+    - proxmox
+
+- name: "Phase 1: Terraform VM Provisioning"
+  ansible.builtin.import_playbook: phases/01-terraform-vms.yml
+  tags:
+    - phase-01
+    - terraform
+
+- name: "Phase 2: Base OS Configuration"
+  ansible.builtin.import_playbook: phases/02-base-config.yml
+  tags:
+    - phase-02
+    - base
+
+- name: "Phase 3: Infrastructure Services"
+  ansible.builtin.import_playbook: phases/03-infrastructure.yml
+  tags:
+    - phase-03
+    - infrastructure
+
+- name: "Phase 4: Load Balancers"
+  ansible.builtin.import_playbook: phases/04-load-balancers.yml
+  tags:
+    - phase-04
+    - load-balancers
+
+- name: "Phase 5: Kubernetes Cluster"
+  ansible.builtin.import_playbook: phases/05-kubernetes.yml
+  tags:
+    - phase-05
+    - kubernetes
+
+- name: "Phase 6: GitOps Bootstrap"
+  ansible.builtin.import_playbook: phases/06-gitops.yml
+  tags:
+    - phase-06
+    - gitops
+
+- name: "Phase 7: Verification"
+  ansible.builtin.import_playbook: phases/07-verify.yml
+  tags:
+    - phase-07
+    - verify

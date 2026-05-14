@@ -1,0 +1,328 @@
+---
+# =============================================================================
+# Kubernetes Applications - Managed by FluxCD
+# Per automation.md: Only apps that should run in K8s, not VMs
+# VMs: TrueNAS, GitLab, Harbor, NetBox, HAProxy, AdGuard
+# SSOT: All apps use postBuild for variable substitution from ConfigMaps
+# SECRETS: All secrets come from infrastructure/secrets repo via secrets-system
+# =============================================================================
+
+# Jellyfin - Media Server (GPU workload per automation.md)
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: jellyfin
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/jellyfin/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: secrets
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Headlamp - Kubernetes Dashboard with OIDC SSO
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: headlamp
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/headlamp/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Vaultwarden - Password Manager
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: vaultwarden
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/vaultwarden/base
+  prune: true
+  timeout: 5m
+  retryInterval: 2m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# UniFi - Network Controller
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: unifi
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/unifi/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Semaphore - Ansible Web UI for playbook execution
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: semaphore
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/semaphore/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Authentik - Identity Provider and SSO
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: authentik
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/authentik/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Monitoring Stack - Prometheus, Grafana, Alertmanager, MKTXP
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: monitoring
+  namespace: flux-system
+spec:
+  interval: 10m
+  timeout: 10m
+  retryInterval: 2m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./monitoring
+  prune: true
+  wait: true
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  dependsOn:
+    - name: infrastructure-configs
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Automation - Version Researcher and Update Checkers
+# Purpose: Automated CronJobs for checking container/VM updates
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: automation
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/automation
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Docmost - Team Documentation Wiki
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: docmost
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/docmost/base
+  prune: true
+  # wait: false because workspace-setup Job is one-shot
+  wait: false
+  timeout: 5m
+  retryInterval: 2m
+  # Health checks - only check deployment, not one-shot Job
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: docmost
+      namespace: docmost
+  dependsOn:
+    - name: infrastructure-configs
+    - name: secrets
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# MCP Server - homelab-cli serving Model Context Protocol over HTTP
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: mcp-server
+  namespace: flux-system
+spec:
+  interval: 30m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/mcp-server/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  dependsOn:
+    - name: secrets
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# =============================================================================
+# DMZ / COMMUNITY SERVICES (VLAN 60) — ingress via traefik-dmz
+# =============================================================================
+
+# Matrix Synapse — REMOVED 2026-03-23
+# No active users since 2026-03-22. Manifests deleted.
+# Data PVCs preserved in cluster (synapse-data, synapse-postgresql-data, synapse-media).
+# Secrets preserved in infrastructure/secrets repo.
+# To restore: recreate apps/matrix/ from git history and add kustomization back.
+---
+# VPN - wg-easy Traefik Ingress and Connection Alerts
+# wg-easy runs on external VM (<internal-ip>, DMZ VLAN 60)
+# This provides HTTPS ingress via Traefik and ntfy connection alerts
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: vpn
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/vpn/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  dependsOn:
+    - name: infrastructure-controllers
+    - name: cert-manager
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config

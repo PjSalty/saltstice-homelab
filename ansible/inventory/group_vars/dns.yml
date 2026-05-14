@@ -1,0 +1,13 @@
+---
+# =============================================================================
+# DNS Server Variables (AdGuard Home)
+# =============================================================================
+
+# Firewall
+firewall_extra_ports:
+  - { port: 53, proto: tcp, comment: "DNS" }
+  - { port: 53, proto: udp, comment: "DNS" }
+  - { port: 80, proto: tcp, comment: "HTTP redirect" }
+  - { port: 443, proto: tcp, comment: "HTTPS admin" }
+  - { port: 3000, proto: tcp, comment: "AdGuard Web UI" }
+  - { port: 9100, proto: tcp, comment: "node_exporter" }

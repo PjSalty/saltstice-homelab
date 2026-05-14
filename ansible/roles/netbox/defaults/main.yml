@@ -1,0 +1,16 @@
+---
+# netbox role defaults
+
+netbox_version: "4.2.6"
+netbox_data_dir: /data/netbox
+netbox_fqdn: "netbox.{{ domain }}"
+
+# PostgreSQL
+netbox_db_name: netbox
+netbox_db_user: netbox
+
+# NetBox config
+netbox_superuser_name: admin
+netbox_superuser_email: "admin@{{ domain }}"
+netbox_login_required: true
+netbox_metrics_enabled: true

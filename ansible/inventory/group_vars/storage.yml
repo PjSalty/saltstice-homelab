@@ -1,0 +1,14 @@
+---
+# =============================================================================
+# Storage Variables (TrueNAS)
+# =============================================================================
+
+# Firewall
+firewall_extra_ports:
+  - { port: 80, proto: tcp, comment: "TrueNAS HTTP redirect" }
+  - { port: 443, proto: tcp, comment: "TrueNAS HTTPS" }
+  - { port: 111, proto: tcp, comment: "RPC (NFS)" }
+  - { port: 111, proto: udp, comment: "RPC (NFS)" }
+  - { port: 2049, proto: tcp, comment: "NFS" }
+  - { port: 3260, proto: tcp, comment: "iSCSI" }
+  - { port: 9100, proto: tcp, comment: "node_exporter" }

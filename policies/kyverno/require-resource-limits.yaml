@@ -1,0 +1,53 @@
+---
+# Kyverno Policy: Require Resource Limits
+# Ensures all containers have CPU and memory limits defined.
+#
+# Mode: Enforce (blocks pods without resource limits at admission)
+# Background: false (only checks at admission time, prevents event noise)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  annotations:
+    policies.kyverno.io/title: Require Resource Limits
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      Resource limits help prevent resource starvation and ensure fair
+      scheduling. This policy requires all containers to specify memory
+      and CPU limits.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: validate-resources
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - flux-system
+                - kyverno
+                - karpenter
+                - metallb-system
+                - gitlab-runner
+                - default
+                - security
+                - velero
+                - democratic-csi
+                - cilium-secrets
+                - nvidia-device-plugin
+      validate:
+        message: "CPU and memory limits are required for all containers."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  limits:
+                    memory: "?*"
+                    cpu: "?*"

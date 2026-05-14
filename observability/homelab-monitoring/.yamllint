@@ -1,0 +1,24 @@
+# YAML Lint configuration for Salty Homelab
+# Copy to repo root or reference via CI
+
+extends: relaxed
+
+rules:
+  line-length:
+    max: 200
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no']
+  comments:
+    min-spaces-from-content: 1
+    require-starting-space: false  # SOPS-encrypted comments lack space
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+
+ignore: |
+  .git/
+  node_modules/
+  .terraform/
+  vendor/

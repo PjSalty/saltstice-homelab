@@ -1,0 +1,61 @@
+---
+# harbor role defaults
+
+harbor_version: "2.12.2"
+harbor_data_dir: /data/harbor
+harbor_install_dir: "{{ harbor_data_dir }}/install"
+harbor_data_storage: "{{ harbor_data_dir }}/data"
+harbor_log_dir: "{{ harbor_data_dir }}/logs"
+harbor_cert_dir: "{{ harbor_data_dir }}/secret/cert"
+harbor_fqdn: "harbor.{{ domain }}"
+harbor_admin_password: "{{ creds.infrastructure.harbor.admin_password | default('changeme') }}"
+harbor_db_password: "{{ creds.infrastructure.harbor.db_password | default('changeme') }}"
+
+# Robot account for API automation (created on first run, token stored in SOPS)
+# This robot has system-level permissions for project/registry management.
+# All API tasks use this token instead of admin basic auth.
+harbor_robot_secret: "{{ creds.infrastructure.harbor.robot_password | default('') }}"
+harbor_robot_name: "robot$<svc-account>"
+harbor_robot_prefix: "robot$"
+
+# OIDC / SSO (Authentik)
+harbor_oidc_client_id: "harbor-sso"
+harbor_oidc_client_secret: "{{ creds.kubernetes.authentik_sso_clients.harbor_client_secret | default('') }}"
+
+# Standard projects (non-proxy, for local images)
+harbor_projects:
+  - name: infrastructure
+    public: false
+  - name: tools
+    public: false
+
+# Proxy cache projects (backed by upstream registry endpoints)
+# registry_type values: docker-hub, docker-registry, github-ghcr, google-gcr
+harbor_proxy_cache_projects:
+  - name: dockerhub-proxy
+    registry_url: https://hub.docker.com
+    registry_type: docker-hub
+  - name: ghcr-proxy
+    registry_url: https://ghcr.io
+    registry_type: github-ghcr
+  - name: gcr-proxy
+    registry_url: https://gcr.io
+    registry_type: google-gcr
+  - name: quay-proxy
+    registry_url: https://quay.io
+    registry_type: docker-registry
+  - name: k8s-proxy
+    registry_url: https://registry.k8s.io
+    registry_type: docker-registry
+  - name: nvcr-proxy
+    registry_url: https://nvcr.io
+    registry_type: docker-registry
+  - name: kyverno-proxy
+    registry_url: https://ghcr.io
+    registry_type: github-ghcr
+  - name: gcp-proxy
+    registry_url: https://us-docker.pkg.dev
+    registry_type: docker-registry
+  - name: eso-proxy
+    registry_url: https://ghcr.io
+    registry_type: github-ghcr

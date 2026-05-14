@@ -1,0 +1,42 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grafana-dashboards-init
+  namespace: monitoring
+  labels:
+    app: grafana
+    component: dashboards-init
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: grafana
+        component: dashboards-init
+    spec:
+      restartPolicy: Never
+      serviceAccountName: default
+      containers:
+        - name: dashboards-init
+          image: ${IMAGE_BUSYBOX}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Grafana dashboards are loaded via ConfigMap volumes."
+              echo "Dashboards are available at /var/lib/grafana/dashboards"
+              echo ""
+              echo "Dashboard files:"
+              ls -lh /dashboards/
+              echo ""
+              echo "Dashboards initialization complete!"
+          volumeMounts:
+            - name: dashboards
+              mountPath: /dashboards
+      volumes:
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards-files

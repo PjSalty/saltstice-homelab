@@ -1,0 +1,597 @@
+# kube-prometheus-stack HelmRelease
+# Researched: 2025-12-02
+# Source: https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack
+# Version: 79.10.0 (latest stable as of research)
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+    name: kube-prometheus-stack
+    namespace: flux-system
+spec:
+    interval: 30m
+    chart:
+        spec:
+            chart: kube-prometheus-stack
+            version: 79.10.0
+            sourceRef:
+                kind: HelmRepository
+                name: prometheus-community
+                namespace: flux-system
+            interval: 12h
+    targetNamespace: monitoring
+    install:
+        createNamespace: true
+        remediation:
+            retries: 3
+    upgrade:
+        timeout: 10m
+        remediation:
+            retries: 3
+    values:
+        # Global settings
+        fullnameOverride: ""
+        # Prometheus Configuration
+        prometheus:
+            enabled: true
+            ingress:
+                enabled: true
+                ingressClassName: traefik
+                annotations:
+                    traefik.ingress.kubernetes.io/router.tls: "true"
+                hosts:
+                    - prometheus.example.com
+                tls:
+                    - secretName: wildcard-tls
+                      hosts:
+                        - prometheus.example.com
+            prometheusSpec:
+                # Probe tolerances - increase to handle slow responses under load
+                containers:
+                  - name: prometheus
+                    startupProbe:
+                      failureThreshold: 60
+                      periodSeconds: 15
+                      timeoutSeconds: 60
+                    livenessProbe:
+                      failureThreshold: 10
+                      periodSeconds: 60
+                      timeoutSeconds: 60
+                    readinessProbe:
+                      failureThreshold: 10
+                      periodSeconds: 60
+                      timeoutSeconds: 60
+                retention: 30d
+                retentionSize: 45GB
+                # Enable ServiceMonitor/PodMonitor auto-discovery from all namespaces
+                serviceMonitorSelectorNilUsesHelmValues: false
+                podMonitorSelectorNilUsesHelmValues: false
+                ruleSelectorNilUsesHelmValues: false
+                probeSelectorNilUsesHelmValues: false
+                storageSpec:
+                    volumeClaimTemplate:
+                        spec:
+                            storageClassName: nfs-client
+                            accessModes:
+                                - ReadWriteOnce
+                            resources:
+                                requests:
+                                    storage: 50Gi
+                resources:
+                    requests:
+                        cpu: 500m
+                        memory: 2Gi
+                    limits:
+                        cpu: 2000m
+                        memory: 4Gi
+                # External labels for cluster identification
+                externalLabels:
+                    cluster: homelab
+                    environment: production
+                # Additional scrape configs for infrastructure VMs (external targets)
+                additionalScrapeConfigs:
+                    # Infrastructure VMs - node_exporter
+                    - job_name: infrastructure-vms
+                      static_configs:
+                        - targets:
+                            # GitLab
+                            - <internal-ip>:9100
+                            # Harbor
+                            - <internal-ip>:9100
+                            # NetBox
+                            - <internal-ip>:9100
+                          labels:
+                            group: infrastructure
+                            vlan: "20"
+                        - targets:
+                            # AdGuard
+                            - <internal-ip>:9100
+                          labels:
+                            group: dns
+                            vlan: "20"
+                        - targets:
+                            # HAProxy-1
+                            - <internal-ip>:9100
+                            # HAProxy-2
+                            - <internal-ip>:9100
+                          labels:
+                            group: load_balancers
+                            vlan: "20"
+                        # TrueNAS — no node_exporter (appliance OS, wiped on updates)
+                        # Monitored via MCP TrueNAS API tools + blackbox NFS probe
+                        - targets:
+                            # Proxmox (K8s VLAN interface)
+                            - 10.x0.100:9100
+                          labels:
+                            group: hypervisor
+                            vlan: "30"
+                        - targets:
+                            # seedbox_wg_* and pia_port_forward_* metrics.
+                          labels:
+                            vlan: "60"
+                      relabel_configs:
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: gitlab
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: harbor
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: netbox
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: adguard
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-1
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-2
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: truenas
+                        - source_labels:
+                            - __address__
+                          regex: 10.x0.100:.*
+                          target_label: instance
+                          replacement: proxmox
+                        - source_labels:
+                            - __address__
+                          target_label: instance
+                    # MKTXP removed -- MCP server provides MikroTik monitoring via REST API.
+                    # HAProxy - built-in Prometheus endpoint (port 8405)
+                    - job_name: haproxy
+                      static_configs:
+                        - targets:
+                            - <internal-ip>:8405
+                            - <internal-ip>:8405
+                          labels:
+                            group: load_balancers
+                      relabel_configs:
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-1
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-2
+        # Grafana Configuration
+        grafana:
+            enabled: true
+            # Disable secret leak validation - secrets are SOPS encrypted in git
+            assertNoLeakedSecrets: false
+            # PDB lets a single-replica Grafana be drained during node
+            # maintenance. minAvailable: 1 perpetually blocks; maxUnavailable: 1
+            # allows eviction with a brief dashboard-unavailable window.
+            podDisruptionBudget:
+                maxUnavailable: 1
+            # Probe tolerances - increase to handle slow responses under load
+            livenessProbe:
+              failureThreshold: 10
+              periodSeconds: 60
+              timeoutSeconds: 60
+            readinessProbe:
+              failureThreshold: 10
+              periodSeconds: 60
+              timeoutSeconds: 60
+            # Admin credentials from SOPS-encrypted secret (grafana-admin-secret)
+            admin:
+                existingSecret: grafana-admin-secret
+                userKey: username
+                passwordKey: password
+            persistence:
+                enabled: true
+                storageClassName: nfs-client
+                size: 10Gi
+            resources:
+                requests:
+                    cpu: 100m
+                    memory: 256Mi
+                limits:
+                    cpu: 500m
+                    memory: 512Mi
+            # initChownData resources (required by ResourceQuota)
+            initChownData:
+                resources:
+                    requests:
+                        cpu: 25m
+                        memory: 32Mi
+                    limits:
+                        cpu: 100m
+                        memory: 64Mi
+            # downloadDashboards init container resources (required by ResourceQuota)
+            # This container downloads dashboards from grafana.com when gnetId is used
+            downloadDashboards:
+                resources:
+                    requests:
+                        cpu: 25m
+                        memory: 32Mi
+                    limits:
+                        cpu: 100m
+                        memory: 128Mi
+            sidecar:
+                # Shared resources for all sidecar containers (sc-dashboard, sc-datasources)
+                # Chart uses sidecar.resources — per-subsection resources keys are ignored
+                resources:
+                    requests:
+                        cpu: 50m
+                        memory: 256Mi
+                    limits:
+                        cpu: 200m
+                        memory: 512Mi
+                dashboards:
+                    enabled: true
+                    searchNamespace: ALL
+                    label: grafana_dashboard
+                    folderAnnotation: grafana_folder
+                    env:
+                        HEALTH_PORT: "8081"
+                datasources:
+                    enabled: true
+                    searchNamespace: ALL
+                    env:
+                        HEALTH_PORT: "8082"
+            # Plugins to install
+            plugins:
+                - grafana-lokiexplore-app
+                - grafana-metricsdrilldown-app
+                - grafana-exploretraces-app
+            ingress:
+                enabled: true
+                ingressClassName: traefik
+                annotations:
+                    traefik.ingress.kubernetes.io/router.tls: "true"
+                hosts:
+                    - grafana.example.com
+                tls:
+                    - secretName: wildcard-tls
+                      hosts:
+                        - grafana.example.com
+            # Default dashboards
+            defaultDashboardsEnabled: true
+            defaultDashboardsTimezone: America/Chicago
+            # Community dashboards imported from grafana.com, organized by folder
+            # Removed: cert-manager/20842 (uses non-existent $cluster label),
+            #          trivy-operator/16742 (duplicate; custom dashboard is better),
+            #          postgresql/9628 (uses non-existent $release label)
+            dashboardProviders:
+                dashboardproviders.yaml:
+                    apiVersion: 1
+                    providers:
+                        - name: infrastructure
+                          orgId: 1
+                          folder: Infrastructure
+                          type: file
+                          disableDeletion: false
+                          editable: true
+                          options:
+                              path: /var/lib/grafana/dashboards/infrastructure
+                        - name: kubernetes
+                          orgId: 1
+                          folder: Kubernetes
+                          type: file
+                          disableDeletion: false
+                          editable: true
+                          options:
+                              path: /var/lib/grafana/dashboards/kubernetes
+                        - name: networking
+                          orgId: 1
+                          folder: Networking
+                          type: file
+                          disableDeletion: false
+                          editable: true
+                          options:
+                              path: /var/lib/grafana/dashboards/networking
+                        - name: applications
+                          orgId: 1
+                          folder: Applications
+                          type: file
+                          disableDeletion: false
+                          editable: true
+                          options:
+                              path: /var/lib/grafana/dashboards/applications
+                        - name: backup
+                          orgId: 1
+                          folder: Backup
+                          type: file
+                          disableDeletion: false
+                          editable: true
+                          options:
+                              path: /var/lib/grafana/dashboards/backup
+            dashboards:
+                infrastructure:
+                    node-exporter-full:
+                        gnetId: 1860
+                        revision: 37
+                        datasource: Prometheus
+                    proxmox-ve:
+                        gnetId: 10347
+                        revision: 5
+                        datasource: Prometheus
+                    nvidia-gpu:
+                        gnetId: 12239
+                        revision: 2
+                        datasource: Prometheus
+                kubernetes:
+                    k8s-views-global:
+                        gnetId: 15757
+                        revision: 43
+                        datasource: Prometheus
+                    k8s-views-namespaces:
+                        gnetId: 15758
+                        revision: 42
+                        datasource: Prometheus
+                    k8s-views-nodes:
+                        gnetId: 15759
+                        revision: 35
+                        datasource: Prometheus
+                    k8s-views-pods:
+                        gnetId: 15760
+                        revision: 36
+                        datasource: Prometheus
+                    k8s-system-api-server:
+                        gnetId: 15761
+                        revision: 19
+                        datasource: Prometheus
+                    k8s-system-coredns:
+                        gnetId: 15762
+                        revision: 20
+                        datasource: Prometheus
+                networking:
+                    traefik:
+                        gnetId: 17347
+                        revision: 9
+                        datasource: Prometheus
+                    cilium-agent:
+                        gnetId: 16611
+                        revision: 2
+                        datasource: Prometheus
+                    cilium-operator:
+                        gnetId: 16612
+                        revision: 2
+                        datasource: Prometheus
+                    cilium-hubble:
+                        gnetId: 16613
+                        revision: 2
+                        datasource: Prometheus
+                applications:
+                    redis:
+                        gnetId: 763
+                        revision: 6
+                        datasource: Prometheus
+                    postgresql:
+                        gnetId: 14114
+                        revision: 1
+                        datasource: Prometheus
+                backup:
+                    velero:
+                        gnetId: 16829
+                        revision: 3
+                        datasource: Prometheus
+            # SSO Configuration with Authentik
+            # OIDC client_secret loaded from SOPS-encrypted secret via envFromSecret
+            envFromSecret: grafana-admin-secret
+            grafana.ini:
+                server:
+                    root_url: https://grafana.example.com
+                auth.generic_oauth:
+                    enabled: true
+                    name: Authentik
+                    allow_sign_up: true
+                    client_id: grafana-sso
+                    client_secret: $__env{oidc_secret}
+                    scopes: openid email profile groups
+                    # auth_url must be external (browser redirect)
+                    auth_url: https://auth.example.com/application/o/authorize/
+                    # token_url and api_url use internal service (server-to-server)
+                    token_url: http://authentik-server.authentik.svc.cluster.local/application/o/token/
+                    api_url: http://authentik-server.authentik.svc.cluster.local/application/o/userinfo/
+                    role_attribute_path: contains(groups[*], 'admins') && 'Admin' || 'Viewer'
+                    use_pkce: true
+                    email_attribute_path: email
+                    login_attribute_path: preferred_username
+                    name_attribute_path: name
+        # AlertManager Configuration
+        alertmanager:
+            enabled: true
+            ingress:
+                enabled: true
+                ingressClassName: traefik
+                annotations:
+                    traefik.ingress.kubernetes.io/router.tls: "true"
+                    traefik.ingress.kubernetes.io/router.middlewares: traefik-authentik-forward-auth@kubernetescrd,traefik-security-headers@kubernetescrd
+                hosts:
+                    - alerts.example.com
+                tls:
+                    - secretName: wildcard-tls
+                      hosts:
+                        - alerts.example.com
+            alertmanagerSpec:
+                resources:
+                    requests:
+                        cpu: 50m
+                        memory: 64Mi
+                    limits:
+                        cpu: 200m
+                        memory: 128Mi
+                storage:
+                    volumeClaimTemplate:
+                        spec:
+                            storageClassName: nfs-client
+                            accessModes:
+                                - ReadWriteOnce
+                            resources:
+                                requests:
+                                    storage: 10Gi
+            # AlertManager routing and receivers (ntfy push notifications)
+            config:
+                global:
+                    resolve_timeout: 5m
+                route:
+                    group_by: ['namespace', 'alertname']
+                    group_wait: 30s
+                    group_interval: 5m
+                    repeat_interval: 12h
+                    receiver: 'ntfy-warning'
+                    routes:
+                        # Suppress noisy/internal alerts
+                        - matchers:
+                            - alertname =~ "Watchdog|InfoInhibitor"
+                          receiver: 'null'
+                        # Critical alerts -> Ntfy urgent push
+                        - matchers:
+                            - severity = critical
+                          receiver: 'ntfy-critical'
+                          group_wait: 10s
+                          repeat_interval: 1h
+                        # Warning alerts -> Ntfy high priority
+                        - matchers:
+                            - severity = warning
+                          receiver: 'ntfy-warning'
+                          repeat_interval: 6h
+                        # Info alerts -> Ntfy low priority
+                        - matchers:
+                            - severity = info
+                          receiver: 'ntfy-info'
+                          repeat_interval: 24h
+                receivers:
+                    - name: 'null'
+                    - name: 'ntfy-critical'
+                      webhook_configs:
+                        - url: 'http://ntfy.ntfy.svc.cluster.local/homelab-saltstice-critical?priority=urgent&tags=rotating_light,homelab'
+                          send_resolved: true
+                          max_alerts: 5
+                    - name: 'ntfy-warning'
+                      webhook_configs:
+                        - url: 'http://ntfy.ntfy.svc.cluster.local/homelab-saltstice-critical?priority=high&tags=warning,homelab'
+                          send_resolved: true
+                          max_alerts: 10
+                    - name: 'ntfy-info'
+                      webhook_configs:
+                        - url: 'http://ntfy.ntfy.svc.cluster.local/homelab-saltstice-critical?priority=low&tags=information_source,homelab'
+                          send_resolved: true
+                          max_alerts: 10
+                inhibit_rules:
+                    # Critical silences warning/info for same alert
+                    - source_matchers:
+                        - severity = critical
+                      target_matchers:
+                        - severity =~ warning|info
+                      equal: ['namespace', 'alertname']
+                    # Warning silences info for same alert
+                    - source_matchers:
+                        - severity = warning
+                      target_matchers:
+                        - severity = info
+                      equal: ['namespace', 'alertname']
+                    # Pod alerts silenced when node is down
+                    - source_matchers:
+                        - alertname = KubeNodeNotReady
+                      target_matchers:
+                        - alertname =~ "KubePod.*"
+                      equal: ['node']
+        # Node Exporter - DaemonSet for node metrics
+        nodeExporter:
+            enabled: true
+        # prometheus-node-exporter subchart resources (path: prometheus-node-exporter.resources)
+        prometheus-node-exporter:
+            resources:
+                requests:
+                    cpu: 50m
+                    memory: 32Mi
+                limits:
+                    cpu: 200m
+                    memory: 64Mi
+        # kube-state-metrics - Kubernetes object metrics
+        kubeStateMetrics:
+            enabled: true
+        kube-state-metrics:
+            resources:
+                requests:
+                    cpu: 25m
+                    memory: 128Mi
+                limits:
+                    cpu: 200m
+                    memory: 384Mi
+        # Prometheus Operator
+        prometheusOperator:
+            enabled: true
+            resources:
+                requests:
+                    cpu: 100m
+                    memory: 128Mi
+                limits:
+                    cpu: 500m
+                    memory: 256Mi
+            admissionWebhooks:
+                patch:
+                    resources:
+                        requests:
+                            cpu: 25m
+                            memory: 32Mi
+                        limits:
+                            cpu: 100m
+                            memory: 64Mi
+            prometheusConfigReloader:
+                resources:
+                    requests:
+                        cpu: 50m
+                        memory: 32Mi
+                    limits:
+                        cpu: 100m
+                        memory: 64Mi
+        # Component Monitoring
+        kubeApiServer:
+            enabled: true
+        # Disabled: RKE2 controller-manager/scheduler bind to 127.0.0.1 and use different labels
+        kubeControllerManager:
+            enabled: false
+        kubeScheduler:
+            enabled: false
+        # Disabled: RKE2 kube-proxy uses different labels (component: kube-proxy vs k8s-app: kube-proxy)
+        kubeProxy:
+            enabled: false
+        # Disabled: RKE2 etcd requires mTLS for metrics and doesn't expose on standard port
+        kubeEtcd:
+            enabled: false
+        kubelet:
+            enabled: true
+        coreDns:
+            enabled: true

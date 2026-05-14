@@ -1,0 +1,94 @@
+---
+# Ansible Inventory ConfigMap
+# Contains infrastructure inventory for NetBox population
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ansible-inventory
+  namespace: netbox
+  labels:
+    app: netbox
+data:
+  hosts.yml: |
+    ---
+    # Ansible Inventory - Homelab Infrastructure
+    all:
+      children:
+        # Hypervisor Layer
+        proxmox:
+          hosts:
+            proxmox-salty:
+              ansible_host: <mgmt-ip>
+              ansible_user: root
+              node_name: salty
+          vars:
+            node_type: hypervisor
+
+        # Infrastructure Services
+        infrastructure:
+          hosts:
+            truenas:
+              ansible_host: <internal-ip>
+              ansible_user: root
+              vm_id: 100
+            harbor:
+              ansible_host: <mgmt-ip>
+              vm_id: 101
+            gitlab:
+              ansible_host: <mgmt-ip>
+              vm_id: 102
+          vars:
+            node_type: infrastructure
+
+        # Load Balancers
+        load_balancers:
+          hosts:
+            haproxy-1:
+              ansible_host: <mgmt-ip>
+              vm_id: 196
+            haproxy-2:
+              ansible_host: <mgmt-ip>
+              vm_id: 197
+          vars:
+            node_type: load_balancer
+
+        # Kubernetes Cluster
+        kubernetes:
+          children:
+            k8s_masters:
+              hosts:
+                k8s-master-1:
+                  ansible_host: <mgmt-ip>
+                  vm_id: 201
+                  k8s_role: master
+                k8s-master-2:
+                  ansible_host: <mgmt-ip>
+                  vm_id: 202
+                  k8s_role: master
+                k8s-master-3:
+                  ansible_host: <mgmt-ip>
+                  vm_id: 203
+                  k8s_role: master
+              vars:
+                k8s_control_plane: true
+
+            k8s_workers:
+              hosts:
+                k8s-worker-1:
+                  ansible_host: <mgmt-ip>
+                  vm_id: 211
+                  k8s_role: worker
+                k8s-worker-2:
+                  ansible_host: <mgmt-ip>
+                  vm_id: 212
+                  k8s_role: worker
+                k8s-worker-3:
+                  ansible_host: <mgmt-ip>
+                  vm_id: 213
+                  k8s_role: worker
+              vars:
+                k8s_control_plane: false
+
+          vars:
+            node_type: kubernetes
+            k8s_version: "1.28"

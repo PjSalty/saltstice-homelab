@@ -1,0 +1,34 @@
+---
+# Deploy the cluster wildcard certificate onto the Dell iDRAC web interface.
+#
+# Idempotent: if the iDRAC's current cert is more than
+# `idrac_cert_renewal_threshold_days` away from expiry the playbook
+# short-circuits without touching anything. Safe to schedule weekly.
+#
+# Usage:
+#   ansible-playbook playbooks/operations/deploy-idrac-cert.yml
+#   ansible-playbook playbooks/operations/deploy-idrac-cert.yml -e idrac_cert_renewal_threshold_days=365  # force renewal
+#
+# Required runtime variables (from cred-ssot-monitoring or env):
+#   idrac_username   — Redfish auth
+#   idrac_password   — Redfish auth
+#
+# The role itself runs delegated to localhost; we just need a host group
+# to anchor the play. Using `localhost` keeps the SSH path out of the
+# critical workflow entirely.
+
+- name: Load SSOT credentials
+  ansible.builtin.import_playbook: ../includes/load-ssot.yml
+
+- name: Push wildcard cert to iDRAC
+  hosts: localhost
+  gather_facts: true
+  connection: local
+  vars:
+    idrac_username: "{{ creds.infrastructure.idrac_username }}"
+    idrac_password: "{{ creds.infrastructure.idrac_password }}"
+  roles:
+    - idrac-cert
+  tags:
+    - idrac
+    - certificates

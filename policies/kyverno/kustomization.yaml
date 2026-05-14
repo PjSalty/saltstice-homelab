@@ -1,0 +1,28 @@
+---
+# Kyverno Policies Kustomization
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - disallow-latest-tag.yaml
+  - require-resource-limits.yaml
+  - require-harbor-registry.yaml
+  - require-ssot-labels-on-secrets.yaml
+  # Registry authentication — private Harbor pull access
+  - sync-harbor-pull-secret.yaml
+  - inject-harbor-pull-secret.yaml
+  # Certificate management
+  - sync-wildcard-tls.yaml
+  # ESO hardening — restrict ExternalSecret to approved namespaces
+  - restrict-externalsecret-namespaces.yaml
+  # Vulnerability blocking
+  - block-critical-vulnerabilities.yaml
+  # Container security — enforce mode
+  - require-run-as-non-root.yaml
+  # PolicyExceptions — workloads with legitimate root requirements
+  - exceptions
+  # Cleanup policies - automatic garbage collection
+  - cleanup-evicted-pods.yaml
+  - cleanup-failed-pods.yaml
+  - cleanup-empty-replicasets.yaml
+  # Drainability — audit PDBs that would block kubectl drain forever
+  - avoid-undrainable-pdb.yaml

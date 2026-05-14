@@ -1,0 +1,94 @@
+# {{ ansible_managed }}
+#---------------------------------------------------------------------
+# HAProxy Configuration for Homelab Kubernetes Cluster
+#---------------------------------------------------------------------
+
+#---------------------------------------------------------------------
+# Global settings
+#---------------------------------------------------------------------
+global
+    log         127.0.0.1 local2
+    chroot      /var/lib/haproxy
+    pidfile     /var/run/haproxy.pid
+    maxconn     4000
+    user        haproxy
+    group       haproxy
+    daemon
+    stats socket /var/lib/haproxy/stats
+
+#---------------------------------------------------------------------
+# Common defaults
+#---------------------------------------------------------------------
+defaults
+    mode                    tcp
+    log                     global
+    option                  tcplog
+    option                  dontlognull
+    option                  redispatch
+    retries                 3
+    timeout connect         5000
+    timeout client          50000
+    timeout server          50000
+    maxconn                 3000
+
+#---------------------------------------------------------------------
+# Stats interface
+#---------------------------------------------------------------------
+listen stats
+    bind *:{{ haproxy_stats_port }}
+    mode http
+    stats enable
+    stats uri /stats
+    stats realm HAProxy\ Statistics
+    stats auth {{ haproxy_stats_user }}:{{ haproxy_stats_password }}
+    stats refresh 30s
+    stats show-node
+    stats show-legends
+
+#---------------------------------------------------------------------
+# Prometheus metrics endpoint (port 8405)
+#---------------------------------------------------------------------
+frontend prometheus
+    bind *:8405
+    mode http
+    http-request use-service prometheus-exporter if { path /metrics }
+    no log
+
+#---------------------------------------------------------------------
+# Kubernetes API Server Load Balancer
+#---------------------------------------------------------------------
+frontend k8s-api-frontend
+    bind {{ haproxy_vip }}:6443
+    mode tcp
+    option tcplog
+    default_backend k8s-api-backend
+
+backend k8s-api-backend
+    mode tcp
+    balance roundrobin
+    option tcp-check
+{% for host in groups['masters'] %}
+    server {{ host }} {{ hostvars[host]['ansible_host'] }}:6443 check fall 3 rise 2
+{% endfor %}
+
+#---------------------------------------------------------------------
+# RKE2 Server Registration Port (for joining additional servers)
+#---------------------------------------------------------------------
+frontend rke2-registration-frontend
+    bind {{ haproxy_vip }}:9345
+    mode tcp
+    option tcplog
+    default_backend rke2-registration-backend
+
+backend rke2-registration-backend
+    mode tcp
+    balance roundrobin
+    option tcp-check
+{% for host in groups['masters'] %}
+    server {{ host }} {{ hostvars[host]['ansible_host'] }}:9345 check fall 3 rise 2
+{% endfor %}
+
+#---------------------------------------------------------------------
+# Note: HTTP/HTTPS ingress is handled by Traefik via MetalLB
+# at {{ traefik_ip }}, not through HAProxy
+#---------------------------------------------------------------------

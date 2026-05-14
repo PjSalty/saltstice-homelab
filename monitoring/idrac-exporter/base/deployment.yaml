@@ -1,0 +1,156 @@
+---
+# idrac_exporter - Prometheus Exporter for Dell iDRAC (Redfish)
+# Exports hardware health: temps, fans, power, storage, memory
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: idrac-exporter-config
+  namespace: monitoring
+  labels:
+    app: idrac-exporter
+data:
+  config.yml: |
+    address: 0.0.0.0
+    port: 9348
+    timeout: 30
+    retries: 1
+    hosts:
+      default:
+        username: __USERNAME_PLACEHOLDER__
+        password: __PASSWORD_PLACEHOLDER__
+    metrics:
+      system: true
+      sensors: true
+      power: true
+      sel: true
+      storage: true
+      memory: true
+      network: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: idrac-exporter
+  namespace: monitoring
+  labels:
+    app: idrac-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: idrac-exporter
+  template:
+    metadata:
+      labels:
+        app: idrac-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9348"
+        prometheus.io/path: "/metrics"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: config-init
+          image: ${IMAGE_BUSYBOX}
+          command: ['sh', '-c']
+          args:
+            - |
+              cp /config-template/config.yml /etc/idrac-exporter/config.yml
+              sed -i "s|__USERNAME_PLACEHOLDER__|$IDRAC_USERNAME|g" /etc/idrac-exporter/config.yml
+              sed -i "s|__PASSWORD_PLACEHOLDER__|$IDRAC_PASSWORD|g" /etc/idrac-exporter/config.yml
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          env:
+            - name: IDRAC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idrac-exporter-credentials
+                  key: username
+            - name: IDRAC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idrac-exporter-credentials
+                  key: password
+          volumeMounts:
+            - name: config-template
+              mountPath: /config-template
+            - name: config
+              mountPath: /etc/idrac-exporter
+      containers:
+        - name: idrac-exporter
+          image: ${IMAGE_IDRAC_EXPORTER}
+          args:
+            - -config
+            - /etc/idrac-exporter/config.yml
+          env:
+            - name: GODEBUG
+              value: "tlsmlkem=0,tlssecpmlkem=0"
+          ports:
+            - containerPort: 9348
+              name: metrics
+          volumeMounts:
+            - name: config
+              mountPath: /etc/idrac-exporter
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9348
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9348
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: config-template
+          configMap:
+            name: idrac-exporter-config
+        - name: config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: idrac-exporter
+  namespace: monitoring
+  labels:
+    app: idrac-exporter
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9348"
+spec:
+  selector:
+    app: idrac-exporter
+  ports:
+    - port: 9348
+      targetPort: 9348
+      name: metrics

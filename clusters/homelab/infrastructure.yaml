@@ -1,0 +1,206 @@
+---
+# =============================================================================
+# Infrastructure Kustomizations - Core cluster components
+# SSOT: All kustomizations use postBuild for variable substitution
+# =============================================================================
+
+# Infrastructure Kustomization - Helm Sources
+# These must be deployed first so HelmReleases can reference them
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-sources
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/sources
+  prune: true
+  wait: false  # OCI HelmRepositories don't report Ready status
+---
+# Infrastructure Controllers - HelmReleases
+# MetalLB, cert-manager, Traefik, CrowdSec, Falco
+# Depends on sources and PSA labels (controllers may need privileged PSA)
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-controllers
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infrastructure-sources
+    - name: infrastructure-psa-labels
+  interval: 30m
+  retryInterval: 1m
+  timeout: 15m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/controllers
+  prune: true
+  # Only wait for explicit healthChecks, not all resources.
+  # New services (CrowdSec, Falco) may take time to stabilize
+  # and should not block the entire dependency chain.
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: metallb-controller
+      namespace: metallb-system
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: cert-manager
+      namespace: cert-manager
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: traefik
+      namespace: traefik
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: trust-manager
+      namespace: cert-manager
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: external-secrets
+      namespace: external-secrets
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Infrastructure Configs - MetalLB pools, cert-manager issuers, etc
+# Depends on controllers being healthy
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-configs
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infrastructure-controllers
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/configs
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Infrastructure RBAC
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-rbac
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/rbac
+  prune: true
+  wait: true
+---
+# PSA Labels - Dedicated Kustomization with force: true
+# force: true uses --force-conflicts in server-side apply, taking
+# ownership of PSA label fields even when app namespace.yaml files
+# are managed by other Kustomizations
+# Must run BEFORE controllers: CrowdSec/Falco need privileged PSA
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-psa-labels
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infrastructure-sources
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/psa-labels
+  prune: false
+  force: true
+  wait: true
+---
+# Resource Quotas - Prevent resource exhaustion and fork bombs
+# Generous limits as a safety net, not a constraint
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-resource-quotas
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infrastructure-psa-labels
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/resource-quotas
+  prune: true
+  wait: true
+---
+# Network Policies - CiliumNetworkPolicies for namespace isolation
+# Deployed after controllers (Cilium must be running) and configs
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-network-policies
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infrastructure-configs
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/network-policies
+  prune: true
+  wait: true
+---
+# Cilium CNI - HelmChartConfig override for the RKE2-bundled chart.
+# A previous attempt to migrate Cilium to a Flux HelmRelease
+# (homelab-kubernetes!704+!705) was rolled back after the cutover failed:
+# Flux's source-controller could not fetch the chart from helm.cilium.io
+# because its pod-network DNS path goes through the same Cilium it was
+# trying to install. See infrastructure/cilium/README.md → "Why we
+# evaluated and abandoned a Flux-managed migration".
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-cilium
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infrastructure-psa-labels
+  interval: 30m
+  retryInterval: 1m
+  timeout: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/cilium
+  prune: true
+  wait: true

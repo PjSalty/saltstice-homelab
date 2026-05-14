@@ -1,0 +1,187 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: traefik-values
+  namespace: traefik
+data:
+  values.yaml: |
+    # Traefik v3.6.0 Configuration
+    image:
+      registry: harbor.example.com/dockerhub-proxy
+      repository: library/traefik
+      tag: "v3.6.0"
+
+    deployment:
+      enabled: true
+      kind: Deployment
+
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 6
+      metrics:
+        - type: Resource
+          resource:
+            name: cpu
+            target:
+              type: Utilization
+              averageUtilization: 70
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
+        scaleUp:
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
+
+    service:
+      enabled: true
+      type: LoadBalancer
+      annotations:
+        metallb.io/loadBalancerIPs: "<internal-ip>"
+      spec:
+        externalTrafficPolicy: Local
+
+    # Ports Configuration
+    ports:
+      web:
+        port: 80
+        exposedPort: 80
+        protocol: TCP
+      websecure:
+        port: 443
+        exposedPort: 443
+        protocol: TCP
+        http:
+          tls:
+            enabled: true
+      metrics:
+        port: 9100
+        expose:
+          default: true
+        exposedPort: 9100
+        protocol: TCP
+      # Dashboard API port - never expose on LoadBalancer
+      traefik:
+        port: 8080
+        expose:
+          default: false
+
+    # IngressRoute for Dashboard (protected by Authentik forward-auth)
+    ingressRoute:
+      dashboard:
+        enabled: true
+        matchRule: Host(`traefik.example.com`)
+        entryPoints:
+          - websecure
+        middlewares:
+          - name: authentik-forward-auth
+          - name: security-headers
+        tls:
+          secretName: wildcard-tls
+
+    # CrowdSec Bouncer Plugin (IPS integration) — TEMPORARILY DISABLED
+    # Plugin download from plugins.traefik.io fails post-reboot (egress DNS
+    # returns EPERM via Cilium BPF while identity cache rewarms), which
+    # stalls Traefik startup past the liveness probe deadline. Re-enable
+    # once a follow-up CNP explicitly allows egress to plugins.traefik.io
+    # or we switch to a pre-baked image including the plugin.
+    # experimental:
+    #   plugins:
+    #     crowdsec-bouncer:
+    #       moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+    #       version: v1.5.1
+
+    # Providers Configuration - CRITICAL FIX
+    providers:
+      kubernetesCRD:
+        enabled: true
+        allowCrossNamespace: true
+        allowExternalNameServices: true
+      kubernetesIngress:
+        enabled: true
+        allowExternalNameServices: true
+        publishedService:
+          enabled: true
+          pathOverride: ""  # Empty = auto-detect service
+
+    # Global settings (structured keys replaced globalArguments in chart v38+)
+    global:
+      checkNewVersion: false
+      sendAnonymousUsage: false
+
+    # Additional Arguments
+    additionalArguments:
+      - "--log.level=INFO"
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=<vlan-cidr>,<vlan-cidr>,127.0.0.1/32"
+      - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=60s"
+      - "--entrypoints.websecure.transport.respondingTimeouts.writeTimeout=60s"
+      - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout=180s"
+      - "--entrypoints.websecure.transport.lifeCycle.graceTimeOut=30s"
+
+    # Logs
+    logs:
+      general:
+        level: INFO
+      access:
+        enabled: true
+        filters: {}
+
+    # Metrics
+    metrics:
+      prometheus:
+        enabled: true
+        entryPoint: metrics
+        addEntryPointsLabels: true
+        addRoutersLabels: true
+        addServicesLabels: true
+
+    # Probes — increased from defaults (2s/3) to handle CRD cache sync
+    # after VPA eviction. With ~200 CRDs, sync can take 20-30s under load.
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 5
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 5
+
+    # Resources
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+
+    # Security Context
+    securityContext:
+      capabilities:
+        drop:
+          - ALL
+        add:
+          - NET_BIND_SERVICE
+      readOnlyRootFilesystem: true
+      runAsGroup: 65532
+      runAsNonRoot: true
+      runAsUser: 65532
+
+    # PDB ensures at least 1 replica during disruptions
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+
+    podSecurityContext:
+      fsGroup: 65532
+      fsGroupChangePolicy: OnRootMismatch

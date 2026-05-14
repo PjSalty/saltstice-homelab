@@ -1,0 +1,93 @@
+---
+# Velero - Kubernetes Backup & Restore
+# S3 backend: SeaweedFS (seaweedfs-s3.storage.svc:8333, bucket: velero)
+# Researched: 2026-02-18
+# Source: https://github.com/vmware-tanzu/velero
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: velero
+  namespace: velero
+  annotations:
+    config.kubernetes.io/origin: "config/versions.yaml"
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: velero
+      version: "${HELM_VELERO}"
+      sourceRef:
+        kind: HelmRepository
+        name: vmware-tanzu
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  upgrade:
+    cleanupOnFail: true
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    # RBAC: Velero needs cluster-wide access to backup all namespaces
+    rbac:
+      create: true
+      clusterAdministrator: true
+    # AWS S3 plugin (required for SeaweedFS S3-compatible backend)
+    initContainers:
+      - name: velero-plugin-for-aws
+        image: velero/velero-plugin-for-aws:v1.14.0@sha256:7e82f717f44e89671212e0dfce7e061321c386ea84a33bca64a671670ca6c278
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+          - mountPath: /target
+            name: plugins
+    # Use S3-compatible SeaweedFS as backup storage
+    configuration:
+      backupStorageLocation:
+        - name: default
+          provider: aws
+          bucket: velero
+          config:
+            region: us-east-1
+            s3ForcePathStyle: "true"
+            s3Url: http://seaweedfs-s3.storage.svc:8333
+      volumeSnapshotLocation: []
+      # Use Kopia for file-system backups (Restic removed in v1.17)
+      uploaderType: kopia
+      defaultVolumesToFsBackup: true
+    # Credentials from SOPS-encrypted secret
+    credentials:
+      useSecret: true
+      existingSecret: velero-s3-credentials
+    # Node agent (DaemonSet) for volume backups
+    deployNodeAgent: true
+    nodeAgent:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+    # Server resources
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    # Metrics for Prometheus
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+      prometheusRule:
+        enabled: false
+    # Disable chart's CRD upgrade hooks (broken: copies musl-linked sh into
+    # distroless velero container). Flux handles CRDs via crds: CreateReplace.
+    upgradeCRDs: false
+    # Schedule cleanup
+    cleanUpCRDs: false

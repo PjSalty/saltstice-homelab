@@ -1,0 +1,51 @@
+---
+# Kyverno Policy: Require Harbor Registry
+# Ensures images are pulled from internal Harbor registry for supply chain security.
+#
+# Mode: Audit (warns on violations, does not block)
+# Background: false (only checks at admission time, prevents event noise)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-harbor-registry
+  annotations:
+    policies.kyverno.io/title: Require Harbor Registry
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      All container images should be pulled from the internal Harbor
+      registry (harbor.example.com) for security scanning and
+      supply chain integrity.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: validate-image-registry
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - flux-system
+                - kyverno
+                - karpenter
+                - metallb-system
+                - cert-manager
+                - trivy-system
+                - gitlab-runner
+                - default
+                - security
+                - velero
+      validate:
+        message: "Images must be pulled from harbor.example.com"
+        pattern:
+          spec:
+            containers:
+              - image: "harbor.example.com/*"
+            =(initContainers):
+              - image: "harbor.example.com/*"

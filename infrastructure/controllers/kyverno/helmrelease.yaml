@@ -1,0 +1,140 @@
+---
+# Kyverno Policy Controller HelmRelease
+# Researched: 2025-12-05
+# Chart Version: 3.6.1 (from artifacthub.io)
+# Purpose: Kubernetes native policy management for admission control
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kyverno
+  namespace: kyverno
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: kyverno
+      version: "${HELM_KYVERNO}"
+      sourceRef:
+        kind: HelmRepository
+        name: kyverno
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  upgrade:
+    cleanupOnFail: true
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    # Kyverno can't inject imagePullSecrets into its own namespace,
+    # so we configure them directly in the chart values
+    global:
+      image:
+        pullSecrets:
+          - name: harbor-pull-secret
+    # Run in audit mode initially - don't block workloads
+    # Switch to enforce after validation
+    admissionController:
+      # 2 replicas: failurePolicy=Fail webhook blocks ALL K8s API ops when down
+      replicas: 2
+      rbac:
+        clusterRole:
+          extraResources:
+            # Required for validating generate policies that clone Secrets
+            - apiGroups:
+                - ""
+              resources:
+                - secrets
+              verbs:
+                - get
+                - list
+                - watch
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    backgroundController:
+      replicas: 1
+      rbac:
+        clusterRole:
+          extraResources:
+            # Required for generate policies that clone Secrets across namespaces
+            - apiGroups:
+                - ""
+              resources:
+                - secrets
+              verbs:
+                - get
+                - list
+                - create
+                - update
+                - delete
+                - watch
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+    cleanupController:
+      replicas: 1
+      rbac:
+        clusterRole:
+          extraResources:
+            - apiGroups:
+                - ""
+              resources:
+                - pods
+              verbs:
+                - list
+                - watch
+                - delete
+            - apiGroups:
+                - apps
+              resources:
+                - replicasets
+              verbs:
+                - list
+                - watch
+                - delete
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+    reportsController:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+    # Enable policy reporter for violation visibility
+    features:
+      policyExceptions:
+        enabled: true
+        namespace: kyverno
+    # Exclude kube-system and flux-system from policies
+    config:
+      excludeGroups:
+        - system:nodes
+      excludeUsernames:
+        - system:serviceaccount:kube-system:*
+        - system:serviceaccount:flux-system:*
+      resourceFilters:
+        - '[*,kube-system,*]'
+        - '[*,kube-node-lease,*]'
+        - '[*,kube-public,*]'
+        - '[*,flux-system,*]'
+        - '[*,velero,*]'

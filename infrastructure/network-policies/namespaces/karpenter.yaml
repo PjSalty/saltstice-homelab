@@ -1,0 +1,44 @@
+---
+# Karpenter node autoscaler — needs Proxmox API and K8s API
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-karpenter
+  namespace: karpenter
+spec:
+  description: "Allow Karpenter node provisioning"
+  endpointSelector: {}
+  ingress:
+    # Allow webhook calls from kube-apiserver
+    - fromEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    # Allow Proxmox API for VM provisioning
+    - toCIDR:
+        - 10.x0.100/32
+      toPorts:
+        - ports:
+            - port: "8006"
+              protocol: TCP
+    # Allow K8s API
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

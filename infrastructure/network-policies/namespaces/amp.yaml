@@ -1,0 +1,49 @@
+---
+# AMP - Game server manager
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-amp
+  namespace: amp
+spec:
+  description: "Allow AMP game server manager"
+  endpointSelector: {}
+  ingress:
+    # Allow Traefik for web UI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "8081"
+              protocol: TCP
+    # Allow game client connections
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "25000"
+              endPort: 25199
+              protocol: TCP
+            - port: "25000"
+              endPort: 25199
+              protocol: UDP
+  egress:
+    # Allow game server updates and licensing
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

@@ -1,0 +1,192 @@
+---
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+  become: true
+  tags:
+    - common
+    - timezone
+
+- name: Set locale
+  community.general.locale_gen:
+    name: "{{ locale }}"
+    state: present
+  become: true
+  tags:
+    - common
+    - locale
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  retries: 3
+  delay: 10
+  become: true
+  tags:
+    - common
+    - packages
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+  become: true
+  tags:
+    - common
+    - packages
+
+- name: Configure sysctl parameters
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: false
+  loop: "{{ common_sysctl | dict2items }}"
+  become: true
+  tags:
+    - common
+    - sysctl
+
+- name: Disable swap
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+  when: common_disable_swap
+  become: true
+  tags:
+    - common
+    - swap
+
+- name: Remove swap from fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\S+\s+\S+\s+swap\s+'
+    state: absent
+  when: common_disable_swap
+  become: true
+  tags:
+    - common
+    - swap
+
+# ---- OpenSSL: disable post-quantum key exchange ----
+
+- name: Add ssl_conf to openssl_init section
+  ansible.builtin.lineinfile:
+    path: /etc/ssl/openssl.cnf
+    insertafter: '^\[openssl_init\]'
+    regexp: '^ssl_conf\s*='
+    line: "ssl_conf = ssl_sect"
+  when: common_openssl_disable_pq
+  become: true
+  tags:
+    - common
+    - openssl
+    - tls
+
+- name: Add OpenSSL SSL section to disable PQ groups
+  ansible.builtin.blockinfile:
+    path: /etc/ssl/openssl.cnf
+    marker: "# {mark} ANSIBLE MANAGED - Disable post-quantum key exchange"
+    block: |
+      [ssl_sect]
+      system_default = system_default_sect
+
+      [system_default_sect]
+      Groups = {{ common_openssl_groups }}
+    append_newline: true
+    prepend_newline: true
+  when: common_openssl_disable_pq
+  become: true
+  tags:
+    - common
+    - openssl
+    - tls
+
+- name: Configure DNS resolvers
+  ansible.builtin.template:
+    src: resolv.conf.j2
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags:
+    - common
+    - dns
+
+- name: Configure chrony NTP
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart chrony
+  become: true
+  tags:
+    - common
+    - ntp
+
+- name: Enable chrony service
+  ansible.builtin.systemd:
+    name: chrony
+    enabled: true
+    state: started
+  become: true
+  tags:
+    - common
+    - ntp
+
+# ---- node_exporter (Prometheus metrics) ----
+
+- name: Install prometheus-node-exporter
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    state: present
+  when: node_exporter_enabled
+  become: true
+  tags:
+    - common
+    - monitoring
+    - node-exporter
+
+- name: Configure node_exporter listen address
+  ansible.builtin.lineinfile:
+    path: /etc/default/prometheus-node-exporter
+    regexp: '^ARGS='
+    line: 'ARGS="--web.listen-address=:{{ node_exporter_port }}"'
+    create: true
+    mode: "0644"
+  when: node_exporter_enabled
+  notify: Restart node_exporter
+  become: true
+  tags:
+    - common
+    - monitoring
+    - node-exporter
+
+- name: Enable node_exporter service
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+  when: node_exporter_enabled
+  become: true
+  tags:
+    - common
+    - monitoring
+    - node-exporter
+
+- name: Stop and disable host-level node_exporter (K8s DaemonSet handles this)
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    enabled: false
+    state: stopped
+  when: not node_exporter_enabled
+  become: true
+  failed_when: false
+  tags:
+    - common
+    - monitoring
+    - node-exporter

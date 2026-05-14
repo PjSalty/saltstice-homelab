@@ -1,0 +1,127 @@
+# Linting CI/CD Templates
+# Version: 2026-04-11
+#
+# Usage: include in .gitlab-ci.yml with:
+#   include:
+#     - project: 'infrastructure/homelab-ci-templates'
+#       ref: main
+#       file: '/lint.yml'
+#
+# Available jobs:
+#   .lint:shellcheck   - Shell script linting
+#   .lint:python       - Python linting (flake8 + black)
+#   .lint:markdown     - Markdown linting (markdownlint)
+#   .lint:yamllint     - YAML linting (uses repo .yamllint config)
+
+# =============================================================================
+# YAML Linting (yamllint)
+# =============================================================================
+# Requires .yamllint config in repo root
+
+.lint:yamllint:
+  stage: validate
+  image: harbor.example.com/dockerhub-proxy/library/python:3.11-alpine@sha256:f07e2ace46f560f09a6eeec7b4913b80ee99546e749ef82342a419a326620856
+  interruptible: true
+  timeout: 5 minutes
+  # Cache pip packages — yamllint install takes ~10s without cache
+  cache:
+    key: pip-lint-py311
+    paths:
+      - .cache/pip
+    policy: pull-push
+  variables:
+    # Override to limit scan path (default: current directory)
+    YAMLLINT_PATH: "."
+    PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
+  script:
+    - pip install --user yamllint==1.37.0
+    - export PATH="$HOME/.local/bin:$PATH"
+    - yamllint -c .yamllint --no-warnings ${YAMLLINT_PATH}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.yaml"
+        - "**/*.yml"
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - "**/*.yaml"
+        - "**/*.yml"
+
+# =============================================================================
+# Shell Script Linting (ShellCheck)
+# =============================================================================
+
+.lint:shellcheck:
+  stage: validate
+  # Version pinned per ADR-0001 SSOT - Researched: 2026-02-02
+  image: harbor.example.com/dockerhub-proxy/koalaman/shellcheck-alpine:v0.10.0@sha256:5921d946dac740cbeec2fb1c898747b6105e585130cc7f0602eec9a10f7ddb63
+  interruptible: true
+  timeout: 5 minutes
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - scheduler_failure
+  script:
+    - find . -name "*.sh" -exec shellcheck {} \;
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.sh"
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - "**/*.sh"
+
+# =============================================================================
+# Python Linting (flake8 + black)
+# =============================================================================
+
+.lint:python:
+  stage: validate
+  image: harbor.example.com/dockerhub-proxy/library/python:3.11-alpine@sha256:f07e2ace46f560f09a6eeec7b4913b80ee99546e749ef82342a419a326620856
+  interruptible: true
+  timeout: 5 minutes
+  # Cache pip packages — flake8+black install takes ~20s without cache
+  cache:
+    key: pip-lint-py311
+    paths:
+      - .cache/pip
+    policy: pull-push
+  variables:
+    # Override to limit scan path (e.g., "hooks" for agents repo)
+    PYTHON_SCAN_PATH: "."
+    PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
+  script:
+    - pip install --user flake8==7.3.0 black==25.1.0
+    - export PATH="$HOME/.local/bin:$PATH"
+    - find ${PYTHON_SCAN_PATH} -name "*.py" -exec black --check {} \;
+    - find ${PYTHON_SCAN_PATH} -name "*.py" -exec flake8 {} \;
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.py"
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - "**/*.py"
+
+# =============================================================================
+# Markdown Linting (markdownlint)
+# =============================================================================
+
+.lint:markdown:
+  stage: validate
+  image: harbor.example.com/dockerhub-proxy/library/node:20-alpine@sha256:b88333c42c23fbd91596ebd7fd10de239cedab9617de04142dde7315e3bc0afa
+  interruptible: true
+  timeout: 5 minutes
+  variables:
+    # Override to customize disabled rules
+    MARKDOWNLINT_DISABLE: "MD013 MD033 MD041"
+  script:
+    - npx markdownlint-cli "**/*.md" --disable ${MARKDOWNLINT_DISABLE}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.md"
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - "**/*.md"

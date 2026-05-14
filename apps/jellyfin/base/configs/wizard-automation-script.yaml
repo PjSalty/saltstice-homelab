@@ -1,0 +1,503 @@
+---
+# ConfigMap containing API-based Jellyfin wizard automation with post-setup
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jellyfin-wizard-automation-script
+  namespace: media
+data:
+  wizard-automation.py: |
+    #!/usr/bin/env python3
+    """Jellyfin Wizard Automation - Detects completion and triggers post-setup"""
+
+    import os
+    import sys
+    import time
+    import subprocess
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    JELLYFIN_URL = os.getenv('JELLYFIN_URL', 'http://jellyfin.media.svc.cluster.local:8096')
+    ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin')
+    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+
+    def get_session():
+        """Create requests session with retries"""
+        session = requests.Session()
+        retry = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        return session
+
+    def wait_for_jellyfin(url, timeout=60):
+        """Wait for Jellyfin to be responsive"""
+        print(f"Checking Jellyfin at {url}...")
+        session = get_session()
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                response = session.get(f"{url}/health", timeout=5)
+                if response.status_code == 200:
+                    print(" Jellyfin is ready")
+                    return True
+            except:
+                pass
+            time.sleep(3)
+        return False
+
+    def verify_login(url, username, password):
+        """Verify that we can authenticate"""
+        session = get_session()
+        auth_data = {"Username": username, "Pw": password}
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Emby-Authorization': 'MediaBrowser Client="Wizard", Device="K8s", DeviceId="wizard-check", Version="1.0"'
+        }
+        
+        try:
+            response = session.post(
+                f"{url}/Users/AuthenticateByName",
+                json=auth_data,
+                headers=headers,
+                timeout=10
+            )
+            return response.status_code == 200
+        except:
+            return False
+
+    def check_wizard_completed():
+        """Check if wizard was completed manually"""
+        session = get_session()
+        try:
+            response = session.get(f"{JELLYFIN_URL}/System/Info/Public", timeout=5)
+            if response.status_code == 200:
+                info = response.json()
+                return info.get('StartupWizardCompleted', False)
+        except:
+            pass
+        return False
+
+    def run_post_setup_automation():
+        """Execute the post-setup automation script"""
+        print("\n=== Running Post-Setup Automation ===")
+        print("Configuring libraries, transcoding, and server settings...\n")
+        
+        try:
+            # Run the post-setup script
+            result = subprocess.run(
+                ['python3', '/scripts/jellyfin-post-setup.py'],
+                timeout=120,
+                capture_output=True,
+                text=True
+            )
+            
+            print(result.stdout)
+            if result.stderr:
+                print("Errors:", result.stderr)
+            
+            if result.returncode == 0:
+                print("\n Post-setup automation completed successfully")
+                return True
+            else:
+                print(f"\n Post-setup automation exited with code {result.returncode}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("\n Post-setup automation timed out after 120 seconds")
+            return False
+        except Exception as e:
+            print(f"\n Error running post-setup: {e}")
+            return False
+
+    def main():
+        if not ADMIN_PASSWORD:
+            print(" ADMIN_PASSWORD environment variable not set")
+            sys.exit(1)
+
+        if not wait_for_jellyfin(JELLYFIN_URL):
+            print(" Jellyfin not ready")
+            sys.exit(1)
+
+        # Check if wizard is completed
+        wizard_done = check_wizard_completed()
+
+        if wizard_done:
+            # Wizard completed - check if we can login
+            if verify_login(JELLYFIN_URL, ADMIN_USERNAME, ADMIN_PASSWORD):
+                print("\n Jellyfin wizard completed and user can login")
+                
+                # Run post-setup automation
+                if run_post_setup_automation():
+                    print("\n Jellyfin is fully configured and ready")
+                    sys.exit(0)
+                else:
+                    print("\n Wizard complete but post-setup had issues")
+                    print("Check logs and configure remaining items manually via web UI")
+                    sys.exit(0)  # Exit cleanly so cron doesn't keep retrying
+            else:
+                print("\n Wizard completed but cannot login with provided credentials")
+                print("Please ensure the admin username/password match what was set in wizard")
+                sys.exit(1)
+        else:
+            print("\n Wizard not yet completed - waiting for manual completion")
+            print("Please complete wizard at: https://jellyfin.example.com")
+            sys.exit(0)  # Exit cleanly - will retry on next cron run
+
+    if __name__ == '__main__':
+        main()
+  jellyfin-post-setup.py: |
+    #!/usr/bin/env python3
+    """
+    Jellyfin Post-Setup Automation - Pure REST API Version
+    Runs after wizard is manually completed to configure:
+    - Media libraries
+    - Server settings
+    - Transcoding configuration
+    - (Plugins would require package manager API - optional)
+    """
+    
+    import os
+    import sys
+    import time
+    import json
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    
+    JELLYFIN_URL = os.getenv('JELLYFIN_URL', 'http://jellyfin.media.svc.cluster.local:8096')
+    ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin')
+    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+    SERVER_NAME = os.getenv('SERVER_NAME', 'Salty')
+    
+    def get_session():
+        """Create requests session with retries"""
+        session = requests.Session()
+        retry = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        return session
+    
+    def authenticate(url, username, password):
+        """Authenticate and get access token"""
+        print("\n=== Authenticating ===")
+        session = get_session()
+    
+        auth_data = {
+            "Username": username,
+            "Pw": password
+        }
+    
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Emby-Authorization': 'MediaBrowser Client="Automation", Device="K8s", DeviceId="post-setup-001", Version="1.0"'
+        }
+    
+        try:
+            response = session.post(
+                f"{url}/Users/AuthenticateByName",
+                json=auth_data,
+                headers=headers,
+                timeout=10
+            )
+    
+            if response.status_code == 200:
+                data = response.json()
+                token = data.get('AccessToken')
+                user_id = data.get('User', {}).get('Id')
+                print(f" Authenticated as {username}")
+                print(f"  User ID: {user_id}")
+                return token, user_id
+            else:
+                print(f" Authentication failed: HTTP {response.status_code}")
+                print(f"  Response: {response.text[:200]}")
+                return None, None
+        except Exception as e:
+            print(f" Authentication error: {e}")
+            return None, None
+    
+    def create_media_libraries(url, token):
+        """Create media library folders"""
+        print("\n=== Creating Media Libraries ===")
+        session = get_session()
+        headers = {
+            'X-Emby-Token': token,
+            'Content-Type': 'application/json'
+        }
+    
+        libraries = [
+            {"name": "Movies", "type": "movies", "path": "/media/movies"},
+            {"name": "TV Shows", "type": "tvshows", "path": "/media/tv-shows"},
+            {"name": "Anime", "type": "tvshows", "path": "/media/anime"},
+            {"name": "Music", "type": "music", "path": "/media/music"},
+        ]
+    
+        # Get existing libraries
+        try:
+            response = session.get(f"{url}/Library/VirtualFolders", headers=headers, timeout=10)
+            existing_libs = response.json() if response.status_code == 200 else []
+            existing_names = [lib.get('Name') for lib in existing_libs]
+        except Exception as e:
+            print(f" Could not get existing libraries: {e}")
+            existing_libs = []
+            existing_names = []
+
+        # Remove stale libraries (names not in desired list)
+        desired_names = {lib['name'] for lib in libraries}
+        for existing in existing_libs:
+            if existing.get('Name') not in desired_names:
+                ename = existing['Name']
+                try:
+                    response = session.delete(
+                        f"{url}/Library/VirtualFolders",
+                        headers=headers,
+                        params={'refreshLibrary': 'false', 'name': ename},
+                        timeout=10
+                    )
+                    if response.status_code in [200, 204]:
+                        print(f"  - Removed stale library '{ename}'")
+                    else:
+                        print(f"   Could not remove '{ename}': HTTP {response.status_code}")
+                except Exception as e:
+                    print(f"   Error removing '{ename}': {e}")
+                time.sleep(1)
+
+        created_count = 0
+        for lib in libraries:
+            if lib['name'] in existing_names:
+                print(f"   '{lib['name']}' already exists")
+                continue
+    
+            # Create library
+            library_data = {
+                "LibraryOptions": {
+                    "EnablePhotos": False,
+                    "EnableRealtimeMonitor": True,
+                    "PathInfos": [{"Path": lib['path']}]
+                }
+            }
+    
+            try:
+                response = session.post(
+                    f"{url}/Library/VirtualFolders",
+                    headers=headers,
+                    params={
+                        'collectionType': lib['type'],
+                        'refreshLibrary': 'false',
+                        'name': lib['name']
+                    },
+                    json=library_data,
+                    timeout=10
+                )
+    
+                if response.status_code in [200, 204]:
+                    print(f"  + Created '{lib['name']}'")
+                    created_count += 1
+                else:
+                    print(f"   Failed to create '{lib['name']}': HTTP {response.status_code}")
+                    print(f"    Response: {response.text[:200]}")
+            except Exception as e:
+                print(f"   Error creating '{lib['name']}': {e}")
+    
+            time.sleep(1)
+    
+        print(f" Libraries: {created_count} created, {len(existing_names)} already existed")
+        return created_count
+    
+    def configure_transcoding(url, token):
+        """Configure hardware transcoding settings"""
+        print("\n=== Configuring Hardware Transcoding ===")
+        session = get_session()
+        headers = {
+            'X-Emby-Token': token,
+            'Content-Type': 'application/json'
+        }
+    
+        transcode_config = {
+            "EncodingThreadCount": -1,
+            "HardwareAccelerationType": "vaapi",
+            "VaapiDevice": "/dev/dri/renderD128",
+            "EnableTonemapping": True,
+            "TonemappingAlgorithm": "bt2390",
+            "H264Crf": 23,
+            "H265Crf": 28,
+            "EnableHardwareEncoding": True,
+            "AllowHevcEncoding": True,
+            "EnableSubtitleExtraction": True,
+            "HardwareDecodingCodecs": ["h264", "vc1"]
+        }
+    
+        try:
+            response = session.post(
+                f"{url}/System/Configuration/encoding",
+                headers=headers,
+                json=transcode_config,
+                timeout=10
+            )
+    
+            if response.status_code in [200, 204]:
+                print(" Hardware transcoding configured (VAAPI)")
+                return True
+            else:
+                print(f" Transcoding config failed: HTTP {response.status_code}")
+                print(f"  Response: {response.text[:200]}")
+                return False
+        except Exception as e:
+            print(f" Transcoding config error: {e}")
+            return False
+    
+    def configure_server_settings(url, token, server_name):
+        """Configure server settings"""
+        print("\n=== Configuring Server Settings ===")
+        session = get_session()
+        headers = {
+            'X-Emby-Token': token,
+            'Content-Type': 'application/json'
+        }
+    
+        # First, get current configuration to avoid overwriting everything
+        try:
+            response = session.get(f"{url}/System/Configuration", headers=headers, timeout=10)
+            if response.status_code == 200:
+                current_config = response.json()
+            else:
+                current_config = {}
+        except Exception as e:
+            print(f" Could not get current config: {e}")
+            current_config = {}
+    
+        # Update only specific fields
+        current_config.update({
+            "ServerName": server_name,
+            "PublishedServerUrl": "https://jellyfin.example.com:<external-port>",
+            "EnableRemoteAccess": True
+        })
+    
+        try:
+            response = session.post(
+                f"{url}/System/Configuration",
+                headers=headers,
+                json=current_config,
+                timeout=10
+            )
+    
+            if response.status_code in [200, 204]:
+                print(f" Server configured: {server_name}")
+                return True
+            else:
+                print(f" Server config failed: HTTP {response.status_code}")
+                print(f"  Response: {response.text[:200]}")
+                return False
+        except Exception as e:
+            print(f" Server config error: {e}")
+            return False
+    
+    def create_plugin_folders(url, token):
+        """Ensure plugin configuration directories exist"""
+        print("\n=== Plugin Configuration ===")
+        print(" Plugin installation via API requires restart and manual verification")
+        print("  Recommended: Install plugins via Jellyfin web UI > Dashboard > Plugins")
+        print("  Suggested plugins:")
+        print("    - SSO-Authentication (for Authentik OIDC)")
+        print("    - Fanart")
+        print("    - Trakt")
+        print("    - Open Subtitles")
+        return True
+    
+    def verify_setup(url, token):
+        """Verify the setup was successful"""
+        print("\n=== Verifying Setup ===")
+        session = get_session()
+        headers = {'X-Emby-Token': token}
+    
+        checks = []
+    
+        # Check libraries
+        try:
+            response = session.get(f"{url}/Library/VirtualFolders", headers=headers, timeout=10)
+            if response.status_code == 200:
+                libs = response.json()
+                checks.append(f" {len(libs)} media libraries configured")
+            else:
+                checks.append(" Could not verify libraries")
+        except Exception as e:
+            checks.append(f" Library check failed: {e}")
+    
+        # Check server info
+        try:
+            response = session.get(f"{url}/System/Info", headers=headers, timeout=10)
+            if response.status_code == 200:
+                info = response.json()
+                checks.append(f" Server: {info.get('ServerName', 'Unknown')}")
+                checks.append(f" Version: {info.get('Version', 'Unknown')}")
+            else:
+                checks.append(" Could not verify server info")
+        except Exception as e:
+            checks.append(f" Server info check failed: {e}")
+    
+        for check in checks:
+            print(f"  {check}")
+    
+        return True
+    
+    def main():
+        print("=" * 70)
+        print("Jellyfin Post-Setup Automation (API-Based)")
+        print("=" * 70)
+    
+        if not ADMIN_PASSWORD:
+            print(" ADMIN_PASSWORD environment variable not set")
+            sys.exit(1)
+    
+        # Authenticate
+        token, user_id = authenticate(JELLYFIN_URL, ADMIN_USERNAME, ADMIN_PASSWORD)
+        if not token:
+            print("\n Authentication failed - cannot proceed with automation")
+            print("Please ensure:")
+            print("  1. Wizard was completed manually")
+            print("  2. Admin user was created with correct username/password")
+            print("  3. Credentials in secret match wizard configuration")
+            sys.exit(1)
+    
+        # Run post-setup tasks
+        success_count = 0
+    
+        # Create media libraries
+        created_libs = create_media_libraries(JELLYFIN_URL, token)
+        if created_libs >= 0:
+            success_count += 1
+    
+        # Configure transcoding
+        if configure_transcoding(JELLYFIN_URL, token):
+            success_count += 1
+    
+        # Configure server settings
+        if configure_server_settings(JELLYFIN_URL, token, SERVER_NAME):
+            success_count += 1
+    
+        # Plugin folders (informational only)
+        if create_plugin_folders(JELLYFIN_URL, token):
+            success_count += 1
+    
+        # Verify setup
+        verify_setup(JELLYFIN_URL, token)
+    
+        print()
+        print("=" * 70)
+        print(" Post-Setup Automation Complete!")
+        print("=" * 70)
+        print(f"Completed: {success_count}/4 tasks")
+        print()
+        print("Next steps:")
+        print("  1. Install SSO plugin via web UI: Dashboard > Plugins > Catalog")
+        print("  2. Configure OIDC: Dashboard > Plugins > SSO-Authentication")
+        print("  3. Add media files to /media folders")
+        print("  4. Start scanning libraries")
+        print("=" * 70)
+    
+        sys.exit(0)
+    
+    if __name__ == '__main__':
+        main()

@@ -1,0 +1,49 @@
+---
+- name: Create WireGuard directories
+  ansible.builtin.file:
+    path: "{{ vpn_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  become: true
+  tags:
+    - vpn
+
+- name: Check for legacy wg-easy container (pre-compose rename)
+  community.docker.docker_container_info:
+    name: wg-easy
+  register: vpn_legacy_container
+  become: true
+  tags:
+    - vpn
+
+- name: Remove legacy wg-easy container
+  community.docker.docker_container:
+    name: wg-easy
+    state: absent
+  become: true
+  when: vpn_legacy_container.exists | default(false)
+  tags:
+    - vpn
+
+- name: Deploy wg-easy docker-compose
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ vpn_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags:
+    - vpn
+    - config
+
+- name: Start wg-easy containers
+  community.docker.docker_compose_v2:
+    project_src: "{{ vpn_data_dir }}"
+    state: present
+    pull: missing
+  become: true
+  tags:
+    - vpn

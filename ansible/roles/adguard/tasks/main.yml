@@ -1,0 +1,222 @@
+---
+# =============================================================================
+# AdGuard Home — API configuration
+#
+# All state is reconciled via the AdGuard REST API. The role:
+#   1. Verifies AdGuard is reachable
+#   2. Reconciles DNS rewrites (adds missing, removes stale)
+#   3. Sets upstream DNS configuration
+#   4. Sets filtering state and filter list URLs
+#
+# Runs on localhost (delegate_to: localhost) — no SSH to AdGuard host.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 1. Health check
+# ---------------------------------------------------------------------------
+- name: Verify AdGuard API is reachable
+  ansible.builtin.uri:
+    url: "{{ adguard_api_url }}/control/status"
+    method: GET
+    url_username: "{{ adguard_admin_user }}"
+    url_password: "{{ adguard_admin_password }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: 200
+    timeout: "{{ adguard_api_timeout }}"
+  register: adguard_status
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-health
+
+- name: Display AdGuard version
+  ansible.builtin.debug:
+    msg: "AdGuard Home {{ adguard_status.json.version }} is running"
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-health
+
+# ---------------------------------------------------------------------------
+# 2. DNS Rewrites
+# ---------------------------------------------------------------------------
+- name: Fetch existing DNS rewrites
+  ansible.builtin.uri:
+    url: "{{ adguard_api_url }}/control/rewrite/list"
+    method: GET
+    url_username: "{{ adguard_admin_user }}"
+    url_password: "{{ adguard_admin_password }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: 200
+    timeout: "{{ adguard_api_timeout }}"
+  register: adguard_rewrites_raw
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-rewrites
+
+- name: Build set of desired rewrite keys
+  ansible.builtin.set_fact:
+    # List of "domain|answer" strings for the desired state
+    _adguard_desired_rewrites: "{{ adguard_dns_rewrites | map(attribute='domain') | zip(adguard_dns_rewrites | map(attribute='answer')) | map('join', '|') | list }}"
+    # Same format built from what AdGuard currently has
+    _adguard_existing_rewrites: "{{ adguard_rewrites_raw.json | map(attribute='domain') | zip(adguard_rewrites_raw.json | map(attribute='answer')) | map('join', '|') | list }}"
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-rewrites
+
+- name: Add missing DNS rewrites
+  ansible.builtin.uri:
+    url: "{{ adguard_api_url }}/control/rewrite/add"
+    method: POST
+    url_username: "{{ adguard_admin_user }}"
+    url_password: "{{ adguard_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      domain: "{{ item.domain }}"
+      answer: "{{ item.answer }}"
+    status_code: 200
+    timeout: "{{ adguard_api_timeout }}"
+  loop: "{{ adguard_dns_rewrites }}"
+  when: >
+    (item.domain + '|' + item.answer) not in _adguard_existing_rewrites
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-rewrites
+
+- name: Remove stale DNS rewrites (not in desired state)
+  ansible.builtin.uri:
+    url: "{{ adguard_api_url }}/control/rewrite/delete"
+    method: POST
+    url_username: "{{ adguard_admin_user }}"
+    url_password: "{{ adguard_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      domain: "{{ item.domain }}"
+      answer: "{{ item.answer }}"
+    status_code: 200
+    timeout: "{{ adguard_api_timeout }}"
+  loop: "{{ adguard_rewrites_raw.json }}"
+  when: >
+    (item.domain + '|' + item.answer) not in _adguard_desired_rewrites
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-rewrites
+
+# ---------------------------------------------------------------------------
+# 3. Upstream DNS configuration
+# ---------------------------------------------------------------------------
+- name: Configure upstream DNS servers
+  ansible.builtin.uri:
+    url: "{{ adguard_api_url }}/control/dns_config"
+    method: POST
+    url_username: "{{ adguard_admin_user }}"
+    url_password: "{{ adguard_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      upstream_dns: "{{ adguard_upstream_dns }}"
+      bootstrap_dns: "{{ adguard_bootstrap_dns }}"
+      upstream_mode: "{{ adguard_upstream_mode }}"
+    status_code: 200
+    timeout: "{{ adguard_api_timeout }}"
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-dns
+
+# ---------------------------------------------------------------------------
+# 4. Filtering — enable/disable and set update interval
+# ---------------------------------------------------------------------------
+- name: Set filtering configuration
+  ansible.builtin.uri:
+    url: "{{ adguard_api_url }}/control/filtering/config"
+    method: POST
+    url_username: "{{ adguard_admin_user }}"
+    url_password: "{{ adguard_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      enabled: "{{ adguard_filtering_enabled }}"
+      interval: "{{ adguard_filter_update_interval }}"
+    status_code: 200
+    timeout: "{{ adguard_api_timeout }}"
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-filtering
+
+- name: Fetch existing filter lists
+  ansible.builtin.uri:
+    url: "{{ adguard_api_url }}/control/filtering/status"
+    method: GET
+    url_username: "{{ adguard_admin_user }}"
+    url_password: "{{ adguard_admin_password }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: 200
+    timeout: "{{ adguard_api_timeout }}"
+  register: adguard_filters_raw
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-filtering
+
+- name: Build set of existing filter URLs
+  ansible.builtin.set_fact:
+    _adguard_existing_filter_urls: "{{ adguard_filters_raw.json.filters | default([]) | map(attribute='url') | list }}"
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-filtering
+
+- name: Add missing filter lists
+  ansible.builtin.uri:
+    url: "{{ adguard_api_url }}/control/filtering/add_url"
+    method: POST
+    url_username: "{{ adguard_admin_user }}"
+    url_password: "{{ adguard_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      url: "{{ item.url }}"
+      enabled: "{{ item.enabled }}"
+    status_code: 200
+    timeout: "{{ adguard_api_timeout }}"
+  loop: "{{ adguard_filter_lists }}"
+  when: item.url not in _adguard_existing_filter_urls
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-filtering
+
+- name: Update enabled state for existing filter lists
+  ansible.builtin.uri:
+    url: "{{ adguard_api_url }}/control/filtering/set_url"
+    method: POST
+    url_username: "{{ adguard_admin_user }}"
+    url_password: "{{ adguard_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      url: "{{ item.url }}"
+      data:
+        name: "{{ item.name }}"
+        url: "{{ item.url }}"
+        enabled: "{{ item.enabled }}"
+    status_code: 200
+    timeout: "{{ adguard_api_timeout }}"
+  loop: "{{ adguard_filter_lists }}"
+  when: item.url in _adguard_existing_filter_urls
+  delegate_to: localhost
+  tags:
+    - adguard
+    - adguard-filtering

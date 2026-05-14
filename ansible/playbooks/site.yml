@@ -1,0 +1,173 @@
+---
+# site.yml — Day-2 convergence playbook
+#
+# Idempotent: safe to run repeatedly. Brings all hosts to desired state.
+#
+# Usage:
+#   ansible-playbook playbooks/site.yml
+#   ansible-playbook playbooks/site.yml --tags base
+#   ansible-playbook playbooks/site.yml --limit infrastructure
+
+# Load SSOT credentials (decrypts once, distributes to all hosts)
+- name: Load SSOT credentials
+  ansible.builtin.import_playbook: includes/load-ssot.yml
+
+- name: Base OS configuration (all hosts)
+  pre_tasks:
+    - name: Remove known conflicting APT source files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/grafana.list
+        - /etc/apt/sources.list.d/grafana.sources
+        - /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        - /etc/apt/sources.list.d/nvidia-container-toolkit.sources
+        - /etc/apt/sources.list.d/docker.list
+        - /etc/apt/sources.list.d/docker.sources
+      become: true
+
+    - name: Remove APT keys from all locations
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/share/keyrings/grafana.gpg
+        - /usr/share/keyrings/nvidia-container-toolkit-keyring.asc
+        - /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        - /usr/share/keyrings/docker.gpg
+        - /usr/share/keyrings/docker.asc
+        - /etc/apt/keyrings/grafana.gpg
+        - /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
+        - /etc/apt/keyrings/docker.gpg
+        - /etc/apt/keyrings/docker.asc
+      become: true
+
+    - name: Remove third-party entries from main sources.list
+      ansible.builtin.lineinfile:
+        path: /etc/apt/sources.list
+        regexp: "{{ item }}"
+        state: absent
+      loop:
+        - 'apt\.grafana\.com'
+        - 'nvidia\.github\.io'
+        - 'download\.docker\.com'
+      become: true
+  roles:
+    - common
+    - automation_user
+    - ssh
+    - firewall
+    - fail2ban
+    - sudo
+    - auto-updates
+    - qemu-guest-agent
+    - promtail
+  tags:
+    - base
+
+- name: Proxmox hypervisor hardening
+  hosts: proxmox
+  roles:
+    - proxmox
+    - proxmox-maintenance
+  tags:
+    - proxmox
+
+- name: Infrastructure services (Docker hosts)
+  hosts: infrastructure
+  roles:
+    - docker
+    - certificates
+  tags:
+    - infrastructure
+
+- name: GitLab deployment
+  hosts: gitlab
+  roles:
+    - gitlab
+  tags:
+    - gitlab
+
+- name: Harbor deployment
+  hosts: harbor
+  roles:
+    - harbor
+  tags:
+    - harbor
+
+- name: NetBox deployment
+  hosts: netbox
+  roles:
+    - netbox
+  tags:
+    - netbox
+
+- name: DNS servers (AdGuard Home)
+  hosts: dns
+  roles:
+    - common
+    - adguard
+  tags:
+    - dns
+    - adguard
+
+- name: Load balancers
+  hosts: load_balancers
+  roles:
+    - haproxy
+  tags:
+    - load-balancers
+
+- name: Kubernetes prerequisites
+  hosts: k8s_cluster
+  roles:
+    - k8s-prereqs
+  tags:
+    - kubernetes
+
+- name: GPU worker nodes
+  hosts: gpu_workers
+  roles:
+    - gpu
+  tags:
+    - gpu
+
+- name: CI Runner (dedicated deploy runner)
+  hosts: ci_runner
+  roles:
+    - docker
+    - gitlab-runner
+  tags:
+    - ci-runner
+
+- name: AMP game server
+  hosts: amp_servers
+  roles:
+    - docker
+    - amp
+  tags:
+    - amp
+
+- name: VPN server
+  hosts: vpn_servers
+  roles:
+    - docker
+    - vpn
+  tags:
+    - vpn
+
+
+- name: Storage configuration
+  hosts: storage
+  roles:
+    - certificates
+  tags:
+    - storage
+
+- name: Deploy TLS certificates
+  hosts: infrastructure:load_balancers:storage:proxmox
+  roles:
+    - certificates
+  tags:
+    - certificates

@@ -1,0 +1,267 @@
+---
+# MKTXP - Prometheus Exporter for MikroTik RouterOS
+# Exports ALL metrics: interfaces, firewall, DHCP, WireGuard, etc.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mktxp-config
+  namespace: monitoring
+  labels:
+    app: mktxp
+data:
+  mktxp.conf: |
+    ## MKTXP Config - MikroTik Prometheus Exporter
+    ## Exports metrics from all 3 MikroTik devices
+
+    [RB4011]
+        enabled = True
+        hostname = <mgmt-ip>
+        port = 8729
+        username = prometheus
+        password = __PASSWORD_PLACEHOLDER__
+
+        use_ssl = True
+        no_ssl_certificate = False
+        ssl_certificate_verify = False
+
+        installed_packages = True
+        dhcp = True
+        dhcp_lease = True
+        connections = True
+        connection_stats = True
+        pool = True
+        interface = True
+        firewall = True
+        ipv6_firewall = False
+        ipv6_neighbor = False
+        poe = False
+        monitor = True
+        netwatch = True
+        public_ip = True
+        route = True
+        wireless = False
+        wireless_clients = False
+        capsman = False
+        capsman_clients = False
+        user = True
+        queue = True
+        remote_dhcp_entry = None
+        use_comments_over_names = True
+        check_for_updates = False
+
+    [CRS317]
+        enabled = True
+        hostname = <mgmt-ip>
+        port = 8729
+        username = prometheus
+        password = __PASSWORD_PLACEHOLDER__
+
+        use_ssl = True
+        no_ssl_certificate = False
+        ssl_certificate_verify = False
+
+        installed_packages = True
+        dhcp = False
+        dhcp_lease = False
+        connections = False
+        connection_stats = False
+        pool = False
+        interface = True
+        firewall = False
+        ipv6_firewall = False
+        ipv6_neighbor = False
+        poe = False
+        monitor = True
+        netwatch = False
+        public_ip = False
+        route = False
+        wireless = False
+        wireless_clients = False
+        capsman = False
+        capsman_clients = False
+        user = True
+        queue = False
+        remote_dhcp_entry = None
+        use_comments_over_names = True
+        check_for_updates = False
+
+    [CRS328]
+        enabled = True
+        hostname = <mgmt-ip>
+        port = 8729
+        username = prometheus
+        password = __PASSWORD_PLACEHOLDER__
+
+        use_ssl = True
+        no_ssl_certificate = False
+        ssl_certificate_verify = False
+
+        installed_packages = True
+        dhcp = False
+        dhcp_lease = False
+        connections = False
+        connection_stats = False
+        pool = False
+        interface = True
+        firewall = False
+        ipv6_firewall = False
+        ipv6_neighbor = False
+        poe = True
+        monitor = True
+        netwatch = False
+        public_ip = False
+        route = False
+        wireless = False
+        wireless_clients = False
+        capsman = False
+        capsman_clients = False
+        user = True
+        queue = False
+        remote_dhcp_entry = None
+        use_comments_over_names = True
+        check_for_updates = False
+
+  _mktxp.conf: |
+    ## MKTXP Exporter global settings
+    ## Updated: 2025-12-02 for MKTXP latest
+    [MKTXP]
+        port = 49090
+        socket_timeout = 10
+
+        initial_delay_on_failure = 120
+        max_delay_on_failure = 900
+        delay_inc_div = 5
+
+        bandwidth = True
+        bandwidth_test_interval = 600
+
+        minimal_collect_interval = 5
+        verbose_mode = False
+
+        fetch_routers_in_parallel = True
+        max_worker_threads = 5
+
+        total_max_scrape_duration = 60
+        max_scrape_duration = 30
+
+        http_timeout = 30
+
+        # Required for newer MKTXP versions
+        compact_default_conf_values = True
+---
+# MKTXP Deployment - MikroTik Prometheus Exporter
+# Image: harbor.example.com/ghcr-proxy/akpw/mktxp:1.2.15
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mktxp
+  namespace: monitoring
+  labels:
+    app: mktxp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mktxp
+  template:
+    metadata:
+      labels:
+        app: mktxp
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "49090"
+        prometheus.io/path: "/metrics"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: config-init
+          image: ${IMAGE_BUSYBOX}
+          command: ['sh', '-c']
+          args:
+            - |
+              cp /config-template/mktxp.conf /home/mktxp/mktxp/mktxp.conf
+              cp /config-template/_mktxp.conf /home/mktxp/mktxp/_mktxp.conf
+              # Use | as sed delimiter to avoid conflicts with special chars in password
+              sed -i "s|__PASSWORD_PLACEHOLDER__|$MIKROTIK_PASSWORD|g" /home/mktxp/mktxp/mktxp.conf
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          env:
+            - name: MIKROTIK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mktxp-credentials
+                  key: password
+          volumeMounts:
+            - name: config-template
+              mountPath: /config-template
+            - name: config
+              mountPath: /home/mktxp/mktxp
+      containers:
+        - name: mktxp
+          # Pinned version from config/versions.yaml
+          # Source: https://github.com/akpw/mktxp/releases
+          image: ${IMAGE_MKTXP}
+          ports:
+            - containerPort: 49090
+              name: metrics
+          volumeMounts:
+            - name: config
+              mountPath: /home/mktxp/mktxp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 49090
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 49090
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: config-template
+          configMap:
+            name: mktxp-config
+        - name: config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mktxp
+  namespace: monitoring
+  labels:
+    app: mktxp
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "49090"
+spec:
+  selector:
+    app: mktxp
+  ports:
+    - port: 49090
+      targetPort: 49090
+      name: metrics

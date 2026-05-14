@@ -1,0 +1,18 @@
+---
+# GitLab Runner Prometheus ServiceMonitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gitlab-runner
+  namespace: gitlab-runner
+  labels:
+    app: gitlab-runner
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: gitlab-runner
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics

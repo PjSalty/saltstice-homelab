@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: semaphore
+
+resources:
+  - namespace.yaml
+  # secrets/secret.yaml managed by infrastructure/secrets repo
+  - secrets/gitlab-ssh-secret.yaml
+  - secrets/kubeconfig-secret.yaml
+  - config/configmap.yaml
+  # config/root-ca-configmap.yaml removed - CA bundle distributed by trust-manager
+  - deployments/postgres-deployment.yaml
+  - deployments/semaphore-deployment.yaml
+  - ingress/ingress.yaml
+  - secrets/ssh-secret.yaml
+  - services/services.yaml
+  - storage/storage.yaml
+  - jobs/setup-gitlab-repo.yaml
+  - jobs/setup-tasks-schedules.yaml
+  - backup/pvc.yaml
+  - backup/cronjob.yaml
+  # One-shot: replays latest pg_dump into the new iSCSI-backed DB
+  # after the NFS migration. Idempotent, safe to leave in the tree.
+  - backup/restore-job.yaml
+  - autoscaling
+  - pdb/pdb.yaml
+  - networkpolicy
+  # SSO user sync moved to init container in semaphore-deployment.yaml

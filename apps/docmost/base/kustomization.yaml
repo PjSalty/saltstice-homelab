@@ -1,0 +1,25 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: docmost
+
+resources:
+  - deployments/docmost-deployment.yaml
+  - deployments/postgresql.yaml
+  - deployments/redis.yaml
+  - services/docmost-service.yaml
+  - services/postgresql-service.yaml
+  - ingress/ingressroute.yaml
+  - jobs/workspace-setup.yaml
+  - storage/pvc.yaml
+  - backup/pvc.yaml
+  - backup/cronjob.yaml
+  - autoscaling
+  - pdb/pdb.yaml
+  - networkpolicy
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: docmost
+      app.kubernetes.io/component: documentation

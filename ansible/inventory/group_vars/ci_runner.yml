@@ -1,0 +1,31 @@
+---
+# =============================================================================
+# CI Runner Variables - Dedicated GitLab Runner for deploy jobs
+# =============================================================================
+
+# Docker
+docker_edition: ce
+
+# GitLab Runner (version from group_vars/all.yml SSOT)
+gitlab_runner_executor: docker
+gitlab_runner_tag_list: "deploy,infrastructure,terraform"
+gitlab_runner_concurrent: 4
+gitlab_runner_docker_network_mode: host
+gitlab_runner_docker_privileged: false
+
+# Firewall
+firewall_extra_ports:
+  - { port: 9100, proto: tcp, comment: "node_exporter" }
+  - { port: 9252, proto: tcp, comment: "gitlab-runner metrics" }
+
+# Sudo — Docker commands
+sudo_extra_commands:
+  - /usr/bin/docker *
+  - /usr/bin/systemctl restart docker
+  - /usr/bin/systemctl stop docker
+  - /usr/bin/systemctl start docker
+  - /usr/bin/systemctl restart gitlab-runner
+  - /usr/bin/systemctl stop gitlab-runner
+  - /usr/bin/systemctl start gitlab-runner
+  - /usr/sbin/ufw *
+  - /usr/bin/fail2ban-client *

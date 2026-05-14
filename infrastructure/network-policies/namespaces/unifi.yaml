@@ -1,0 +1,66 @@
+---
+# UniFi - Network controller
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-unifi
+  namespace: unifi
+spec:
+  description: "Allow UniFi network controller"
+  endpointSelector: {}
+  ingress:
+    # Allow Traefik for web UI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+    # Allow device adoption and communication
+    - fromEntities:
+        - world
+        - cluster
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+            - port: "3478"
+              protocol: UDP
+            - port: "10001"
+              protocol: UDP
+            - port: "6789"
+              protocol: TCP
+  egress:
+    # Allow device communication (inform, SSH, SNMP)
+    - toCIDR:
+        - <mgmt-ip>/24
+        - <internal-ip>/16
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "22"
+              protocol: TCP
+            - port: "161"
+              protocol: UDP
+    # Allow cloud features
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

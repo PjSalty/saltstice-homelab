@@ -1,0 +1,26 @@
+---
+# Kyverno CleanupPolicy: Remove Evicted Pods
+# Evicted pods are Failed pods that were evicted by kubelet under resource pressure.
+# They serve no purpose once evicted and should be cleaned up automatically.
+apiVersion: kyverno.io/v2
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-evicted-pods
+  labels:
+    app.kubernetes.io/component: cleanup
+    app.kubernetes.io/part-of: kyverno
+spec:
+  schedule: "*/30 * * * *"  # Every 30 minutes
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+  conditions:
+    all:
+      - key: "{{ status.phase }}"
+        operator: Equals
+        value: Failed
+      - key: "{{ status.reason || '' }}"
+        operator: Equals
+        value: Evicted

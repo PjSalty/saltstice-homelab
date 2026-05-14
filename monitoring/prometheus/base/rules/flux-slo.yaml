@@ -1,0 +1,99 @@
+---
+# Flux GitOps SLO Alerts
+# Detects reconciliation lag, controller unavailability, and leader-election
+# thrash — the steady-state failure modes that, if missed, cascade into
+# cluster-wide application drift and CrashLoops.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: flux-slo-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    - name: flux-controllers
+      interval: 1m
+      rules:
+        # Any flux-system Deployment with available < desired for >5m.
+        # Catches the source-controller stale-lease wedge symptom: pod
+        # cycles between Ready and NotReady without ever stabilizing.
+        - alert: FluxControllerNotReady
+          expr: |
+            kube_deployment_status_replicas_available{namespace="flux-system"}
+              < kube_deployment_spec_replicas{namespace="flux-system"}
+          for: 5m
+          labels:
+            severity: critical
+            category: gitops
+          annotations:
+            summary: "Flux controller {{ $labels.deployment }} not Ready"
+            description: |
+              Deployment flux-system/{{ $labels.deployment }} has fewer
+              available replicas than desired for >5m. This blocks GitOps
+              reconciliation cluster-wide. Likely cause: leader-election
+              wedge after node disruption.
+            action: "kubectl -n flux-system rollout restart deployment {{ $labels.deployment }}"
+            runbook_url: "https://grafana.example.com/d/flux"
+
+        # Container restart thrash — controller is in a restart loop.
+        # Flux controllers should run for days; >3 restarts/hour is a
+        # leader-lease deadlock or persistent crash signature.
+        - alert: FluxControllerRestartThrash
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="flux-system"}[1h]) > 3
+          for: 10m
+          labels:
+            severity: warning
+            category: gitops
+          annotations:
+            summary: "Flux controller {{ $labels.pod }} restarting frequently"
+            description: |
+              Pod flux-system/{{ $labels.pod }} container {{ $labels.container }}
+              has restarted {{ $value | printf "%.0f" }} times in the last hour.
+              Common cause: leader-election lease cannot be acquired by the
+              new container, manager exits, kubelet restarts, repeat.
+            action: "kubectl -n flux-system delete pod {{ $labels.pod }} (forces fresh lease acquisition)"
+            runbook_url: "https://grafana.example.com/d/flux"
+
+    - name: flux-reconciliation
+      interval: 1m
+      rules:
+        # Any Flux resource (Kustomization, HelmRelease, GitRepository, etc.)
+        # with Ready=False for >10m. The 10m grace allows transient
+        # reconcile failures to self-heal without paging.
+        - alert: FluxResourceNotReady
+          expr: |
+            gotk_reconcile_condition{type="Ready", status="False"} == 1
+          for: 10m
+          labels:
+            severity: warning
+            category: gitops
+          annotations:
+            summary: "Flux {{ $labels.kind }}/{{ $labels.name }} not Ready"
+            description: |
+              {{ $labels.kind }} {{ $labels.exported_namespace }}/{{ $labels.name }}
+              has been Ready=False for >10m. Downstream resources gated by
+              this one will be stale or unmanaged.
+            action: "flux describe {{ $labels.kind | toLower }} -n {{ $labels.exported_namespace }} {{ $labels.name }}"
+            runbook_url: "https://grafana.example.com/d/flux"
+
+        # Reconciliation suspended for >1h is almost always a forgotten
+        # `flux suspend` from a debugging session. Surface it before
+        # drift accumulates.
+        - alert: FluxResourceSuspended
+          expr: |
+            gotk_suspend_status == 1
+          for: 1h
+          labels:
+            severity: warning
+            category: gitops
+          annotations:
+            summary: "Flux {{ $labels.kind }}/{{ $labels.name }} suspended >1h"
+            description: |
+              {{ $labels.kind }} {{ $labels.exported_namespace }}/{{ $labels.name }}
+              has been suspended for over an hour. Reconciliation is paused
+              and Git changes will not apply.
+            action: "flux resume {{ $labels.kind | toLower }} -n {{ $labels.exported_namespace }} {{ $labels.name }}"

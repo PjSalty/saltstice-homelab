@@ -1,0 +1,48 @@
+---
+# CiliumClusterwideNetworkPolicy - Default deny with baseline allows
+#
+# Provides default-deny for all non-system namespaces while allowing
+# DNS resolution and Kubernetes API access, which are universally needed.
+# Namespace-specific CiliumNetworkPolicies add further allow rules.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  description: "Default deny all traffic cluster-wide with baseline DNS and API server access"
+  endpointSelector:
+    matchExpressions:
+      # Exclude system namespaces that need unrestricted access
+      - key: io.kubernetes.pod.namespace
+        operator: NotIn
+        values:
+          - kube-system
+          - kube-public
+          - kube-node-lease
+          - cilium-secrets
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    # Allow DNS resolution to kube-dns (required for basic functionality)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow access to Kubernetes API server
+    # Port 6443: direct to API server nodes
+    # Port 443: via ClusterIP 10.43.0.1 (Cilium checks pre-DNAT)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP

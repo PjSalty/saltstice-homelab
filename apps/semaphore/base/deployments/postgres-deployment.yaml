@@ -1,0 +1,97 @@
+---
+# PostgreSQL Database
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: semaphore
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: postgres
+        image: ${IMAGE_POSTGRES_15}
+        lifecycle:
+          postStart:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  until pg_isready -U semaphore -q; do sleep 1; done
+                  psql -U semaphore -d semaphore -c "ALTER USER semaphore WITH PASSWORD '$${POSTGRES_PASSWORD}';" 2>/dev/null || true
+        ports:
+        - containerPort: 5432
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        env:
+        - name: POSTGRES_DB
+          value: "semaphore"
+        - name: POSTGRES_USER
+          value: "semaphore"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: semaphore-secrets
+              key: postgres-password
+        # ext4-formatted iSCSI volumes ship with a lost+found at the
+        # mount root, which initdb refuses to touch. Put PGDATA in a
+        # subdirectory so initdb has a clean slate.
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+      - name: postgres-exporter
+        image: ${IMAGE_POSTGRES_EXPORTER}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        ports:
+          - containerPort: 9187
+            name: pg-metrics
+        env:
+          - name: DATA_SOURCE_URI
+            value: "localhost:5432/semaphore?sslmode=disable"
+          - name: DATA_SOURCE_USER
+            value: "semaphore"
+          - name: DATA_SOURCE_PASS
+            valueFrom:
+              secretKeyRef:
+                name: semaphore-secrets
+                key: postgres-password
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          # Switched from postgres-pvc (NFS) to iSCSI to fix the WAL
+          # checkpoint corruption that killed recovery after a pod
+          # restart. CLAUDE.md rule: Postgres MUST be on iSCSI.
+          claimName: postgres-iscsi-pvc

@@ -1,0 +1,64 @@
+---
+# =============================================================================
+# AdGuard Home Role Defaults
+# =============================================================================
+#
+# Credentials are injected by load-ssot.yml into the `creds` fact.
+# Reference them as: creds.adguard.admin_username / creds.adguard.admin_password
+#
+
+# API connection
+adguard_host: "{{ adguard_ip | default('<internal-ip>') }}"
+adguard_port: 3000
+adguard_api_url: "http://{{ adguard_host }}:{{ adguard_port }}"
+
+# Credentials (sourced from SSOT — override via creds.adguard.*)
+adguard_admin_user: "{{ creds.adguard.admin_username | default('admin') }}"
+adguard_admin_password: "{{ creds.adguard.admin_password | default('') }}"
+
+# HTTP timeouts
+adguard_api_timeout: 10
+
+# =============================================================================
+# DNS Rewrites
+# =============================================================================
+# Wildcard catches all *.example.com → Traefik VIP.
+# Specific entries override for non-Traefik services.
+adguard_dns_rewrites:
+  - domain: "*.example.com"
+    answer: "<internal-ip>"   # Traefik MetalLB VIP
+  - domain: "proxmox.example.com"
+    answer: "<mgmt-ip>"
+  - domain: "truenas.example.com"
+    answer: "<internal-ip>"
+  - domain: "adguard.example.com"
+    answer: "<internal-ip>"
+
+# =============================================================================
+# Upstream DNS Servers
+# =============================================================================
+adguard_upstream_dns:
+  - "1.1.1.1"
+  - "8.8.8.8"
+  - "https://dns.cloudflare.com/dns-query"
+
+adguard_bootstrap_dns:
+  - "1.1.1.1"
+  - "8.8.8.8"
+
+# Use parallel querying across all upstreams
+adguard_upstream_mode: "parallel"
+
+# =============================================================================
+# Filtering
+# =============================================================================
+adguard_filtering_enabled: true
+adguard_filter_update_interval: 24   # hours
+
+adguard_filter_lists:
+  - name: "AdGuard DNS filter"
+    url: "https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt"
+    enabled: true
+  - name: "OISD Big"
+    url: "https://big.oisd.nl/domainswild"
+    enabled: true

@@ -1,0 +1,69 @@
+---
+# Falco runtime security — needs K8s API and outbound for alerts
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-falco
+  namespace: falco
+spec:
+  description: Falco runtime security network policy
+  endpointSelector: {}
+  ingress:
+    # Allow Prometheus to scrape metrics
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "8765"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s-app: kube-dns
+            k8s:io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # K8s API for container metadata
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # Falcosidekick -> AlertManager
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9093"
+              protocol: TCP
+    # Falcosidekick -> Loki
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: loki
+      toPorts:
+        - ports:
+            - port: "3100"
+              protocol: TCP
+    # Falcoctl rule downloads (falcosecurity.github.io, ghcr.io)
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Internal communication (falco -> falcosidekick)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: falco
+      toPorts:
+        - ports:
+            - port: "2801"
+              protocol: TCP

@@ -1,0 +1,81 @@
+---
+# Karpenter Provider Proxmox - Node Autoscaler
+# Chart: v0.4.4, App: v0.9.0
+# Researched: 2026-02-10
+# Source: https://github.com/sergelogvinov/karpenter-provider-proxmox
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: karpenter
+  namespace: karpenter
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: karpenter-provider-proxmox
+      version: "0.4.7"
+      sourceRef:
+        kind: HelmRepository
+        name: karpenter-proxmox
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  upgrade:
+    cleanupOnFail: true
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    replicaCount: 1
+
+    # Use SOPS-encrypted secret from secrets repo
+    existingConfigSecret: karpenter-proxmox-config
+    existingConfigSecretKey: config.yaml
+
+    logVerbosityLevel: info
+
+    settings:
+      batchMaxDuration: 10s
+      batchIdleDuration: 1s
+      preferencePolicy: Respect
+      minValuesPolicy: Strict
+      vmMemoryOverheadPercent: 0.075
+
+    # Run on control-plane nodes
+    tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/control-plane
+        operator: Exists
+      - effect: NoSchedule
+        key: node.cloudprovider.kubernetes.io/uninitialized
+        operator: Exists
+
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: "true"
+
+    # Security context (already restricted by default)
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      fsGroup: 65532
+      fsGroupChangePolicy: OnRootMismatch
+
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      seccompProfile:
+        type: RuntimeDefault
+      readOnlyRootFilesystem: true
+
+    metrics:
+      enabled: true
+      port: 8080
+      type: annotation
+
+    priorityClassName: system-cluster-critical
+

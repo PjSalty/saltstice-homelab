@@ -1,0 +1,16 @@
+---
+# Grant GitLab CI runner read access to vm-certificates secrets
+# The runner SA needs to extract certs for VM deployment via Ansible
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-runner-cert-reader
+  namespace: vm-certificates
+subjects:
+- kind: ServiceAccount
+  name: gitlab-runner
+  namespace: gitlab-runner
+roleRef:
+  kind: Role
+  name: cert-sync
+  apiGroup: rbac.authorization.k8s.io

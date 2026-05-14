@@ -1,0 +1,27 @@
+---
+- name: Install qemu-guest-agent
+  ansible.builtin.apt:
+    name: qemu-guest-agent
+    state: present
+  when: "'proxmox' not in group_names"
+  become: true
+  tags:
+    - qemu-guest-agent
+    - packages
+
+- name: Enable qemu-guest-agent service
+  ansible.builtin.systemd:
+    name: qemu-guest-agent
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - qemu_guest_agent_enabled
+    - "'proxmox' not in group_names"
+  become: true
+  register: qga_result
+  failed_when:
+    - qga_result is failed
+    - "'dependency job' not in (qga_result.msg | default(''))"
+  tags:
+    - qemu-guest-agent

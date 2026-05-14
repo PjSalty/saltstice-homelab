@@ -1,0 +1,17 @@
+---
+# GitLab Runner Service for metrics
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-runner-metrics
+  namespace: gitlab-runner
+  labels:
+    app: gitlab-runner
+spec:
+  selector:
+    app: gitlab-runner
+  ports:
+    - name: metrics
+      port: 9252
+      targetPort: 9252
+      protocol: TCP

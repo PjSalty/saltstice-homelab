@@ -1,0 +1,103 @@
+---
+# RBAC for Jellyfin setup job
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jellyfin-setup
+  namespace: media
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jellyfin-setup
+  namespace: media
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "secrets"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jellyfin-setup
+  namespace: media
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jellyfin-setup
+subjects:
+  - kind: ServiceAccount
+    name: jellyfin-setup
+    namespace: media
+---
+# Complete automation script as ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jellyfin-complete-setup-script
+  namespace: media
+data:
+  setup.sh: |
+    #!/bin/bash
+    # Jellyfin Complete Automation - GitOps Version
+    # Runs the Python automation script from the repository
+    set -e
+    
+    echo "=== Jellyfin GitOps Automation ==="
+    echo "Fetching automation script from repository..."
+    
+    # Download the complete automation script
+    curl -sSL https://raw.githubusercontent.com/YOUR_ORG/homelab-complete/main/scripts/jellyfin-complete-automation.py -o /tmp/setup.py
+    
+    # Or use kubectl cp if script is in a config volume
+    python3 /tmp/setup.py
+---
+# Kubernetes Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-complete-setup
+  namespace: media
+spec:
+  ttlSecondsAfterFinished: 3600  # Keep for 1 hour after completion
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: jellyfin-setup
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: jellyfin-setup
+      containers:
+        - name: setup
+          image: ${IMAGE_PYTHON_SLIM}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              apt-get update -qq && apt-get install -y -qq curl kubectl > /dev/null 2>&1
+              
+              # Run the complete automation from the scripts directory
+              python3 /scripts/jellyfin-complete-automation.py
+          envFrom:
+            - secretRef:
+                name: jellyfin-admin-credentials
+          volumeMounts:
+            - name: automation-script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: automation-script
+          configMap:
+            name: jellyfin-automation-embedded
+            defaultMode: 0755

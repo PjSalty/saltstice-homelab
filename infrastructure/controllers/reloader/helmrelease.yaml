@@ -1,0 +1,52 @@
+---
+# Stakater Reloader — auto-restart pods on Secret/ConfigMap changes
+# Required for credential rotation workflow (Go CLI rotates → FluxCD
+# reconciles Secret → Reloader restarts dependent pods)
+# Researched: 2026-03-12
+# Source: https://github.com/stakater/Reloader
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: reloader
+  namespace: reloader
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: reloader
+      version: "2.2.11"
+      sourceRef:
+        kind: HelmRepository
+        name: stakater
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    reloader:
+      watchGlobally: true
+      readOnlyRootFileSystem: true
+      deployment:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          seccompProfile:
+            type: RuntimeDefault
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL

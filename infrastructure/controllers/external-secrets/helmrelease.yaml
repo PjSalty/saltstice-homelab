@@ -1,0 +1,80 @@
+---
+# External Secrets Operator — syncs credentials from SOPS-decrypted source
+# Secrets to per-namespace target Secrets via ExternalSecret CRs.
+# Deployed with scopedRBAC and namespace-scoped SecretStores (not Cluster).
+# Source: https://external-secrets.io
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: external-secrets
+  namespace: external-secrets
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: external-secrets
+      version: "${HELM_EXTERNAL_SECRETS}"
+      sourceRef:
+        kind: HelmRepository
+        name: external-secrets
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  upgrade:
+    cleanupOnFail: true
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    # Scoped RBAC: operator only gets permissions in namespaces with SecretStores
+    scopedRBAC: true
+
+    replicaCount: 1
+
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+    webhook:
+      replicaCount: 1
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    certController:
+      replicaCount: 1
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    # Prometheus metrics
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+
+    # Pod security — restricted PSS compliant
+    podSecurityContext:
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: ["ALL"]

@@ -1,0 +1,11 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-files
+  namespace: monitoring
+  labels:
+    app: grafana
+    grafana_dashboard: "true"
+data: {}
+# Dashboard JSON files will be added via kustomization configMapGenerator

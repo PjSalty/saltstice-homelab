@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: netbox-config
+    namespace: netbox
+data:
+    DB_HOST: <sops-encrypted-in-private-repo>
+    DB_NAME: <sops-encrypted-in-private-repo>
+    DB_USER: <sops-encrypted-in-private-repo>
+    REDIS_HOST: <sops-encrypted-in-private-repo>
+    REDIS_PORT: <sops-encrypted-in-private-repo>
+    ALLOWED_HOSTS: <sops-encrypted-in-private-repo>
+    SKIP_SUPERUSER: <sops-encrypted-in-private-repo>
+    SUPERUSER_NAME: <sops-encrypted-in-private-repo>
+    SUPERUSER_EMAIL: <sops-encrypted-in-private-repo>
+    SUPERUSER_PASSWORD: <sops-encrypted-in-private-repo>
+    #<sops-encrypted-in-private-repo>
+    REMOTE_AUTH_ENABLED: <sops-encrypted-in-private-repo>
+    REMOTE_AUTH_BACKEND: <sops-encrypted-in-private-repo>
+    REMOTE_AUTH_AUTO_CREATE_USER: <sops-encrypted-in-private-repo>
+    REMOTE_AUTH_DEFAULT_GROUPS: <sops-encrypted-in-private-repo>
+    REMOTE_AUTH_DEFAULT_PERMISSIONS: <sops-encrypted-in-private-repo>
+    #<sops-encrypted-in-private-repo>
+    SOCIAL_AUTH_OIDC_OIDC_ENDPOINT: <sops-encrypted-in-private-repo>
+    SOCIAL_AUTH_OIDC_KEY: <sops-encrypted-in-private-repo>
+    SOCIAL_AUTH_OIDC_SECRET: <sops-encrypted-in-private-repo>
+    SOCIAL_AUTH_OIDC_SCOPE: <sops-encrypted-in-private-repo>
+    #<sops-encrypted-in-private-repo>
+    SOCIAL_AUTH_JSONFIELD_ENABLED: <sops-encrypted-in-private-repo>
+    SOCIAL_AUTH_TRAILING_SLASH: <sops-encrypted-in-private-repo>
+    SOCIAL_AUTH_LOGIN_REDIRECT_URL: <sops-encrypted-in-private-repo>
+    SOCIAL_AUTH_SANITIZE_REDIRECTS: <sops-encrypted-in-private-repo>
+    SOCIAL_AUTH_USERNAME_IS_FULL_EMAIL: <sops-encrypted-in-private-repo>
+    #<sops-encrypted-in-private-repo>
+    LOGOUT_REDIRECT_URL: <sops-encrypted-in-private-repo>
+# (sops metadata block stripped — see templates/sops-secret.example.yaml for the canonical pattern)

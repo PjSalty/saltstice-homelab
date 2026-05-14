@@ -1,0 +1,33 @@
+---
+- name: Install sudo
+  ansible.builtin.apt:
+    name: sudo
+    state: present
+  become: true
+  tags:
+    - sudo
+    - packages
+
+- name: Deploy hardened sudoers config
+  ansible.builtin.template:
+    src: sudoers-hardened.j2
+    dest: /etc/sudoers.d/99-hardened
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  become: true
+  tags:
+    - sudo
+    - hardening
+
+- name: Set sudoers.d directory permissions
+  ansible.builtin.file:
+    path: /etc/sudoers.d
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+  tags:
+    - sudo
+    - hardening

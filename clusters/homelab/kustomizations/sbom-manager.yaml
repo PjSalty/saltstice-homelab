@@ -1,0 +1,26 @@
+---
+# SBOM Manager - License Compliance Scanning
+# Runs weekly scan of all cluster images for license policy violations
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: sbom-manager
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./apps/security/sbom-manager/base
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  wait: true
+  retryInterval: 2m0s
+  dependsOn:
+    - name: trivy
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config

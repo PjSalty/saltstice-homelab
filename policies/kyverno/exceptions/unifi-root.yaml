@@ -1,0 +1,34 @@
+---
+# PolicyException: UniFi init container needs root for chown/keytool,
+# automation sidecar needs root for apt-get install + MongoDB shell.
+# Main unifi container runs as UID 999 via RUNAS_UID0=false env var.
+apiVersion: kyverno.io/v2
+kind: PolicyException
+metadata:
+  name: unifi-root
+  namespace: kyverno
+spec:
+  exceptions:
+    - policyName: require-run-as-non-root
+      ruleNames:
+        # Pod-level rule covers static pods and runtime Pod validation.
+        - run-as-non-root
+        # Autogen rule fires on Deployment admission — missing this left
+        # the unifi Deployment flagged in PolicyReport even though the
+        # runtime Pod rule was excepted.
+        - autogen-run-as-non-root
+  match:
+    any:
+      - resources:
+          kinds:
+            # Pod covers runtime admission; Deployment/ReplicaSet cover the
+            # full controller lineage that autogen-run-as-non-root evaluates
+            # during background scans (the ReplicaSet report is what we saw
+            # stay stamped `fail` even with Pod+Deployment listed).
+            - Pod
+            - Deployment
+            - ReplicaSet
+            # Job covers unifi-init-storage (NFS chown pre-install hook).
+            - Job
+          namespaces:
+            - unifi

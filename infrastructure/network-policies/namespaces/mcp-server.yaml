@@ -1,0 +1,156 @@
+---
+# MCP Server - homelab-cli MCP HTTP endpoint
+# Ingress: Traefik only (Authentik SSO protected)
+# Egress: K8s API, all infrastructure VLANs, all in-cluster app namespaces
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-mcp-server
+  namespace: mcp-server
+spec:
+  description: "Allow MCP server - Traefik ingress, K8s API + infrastructure egress"
+  endpointSelector: {}
+  ingress:
+    # Allow Traefik for HTTPS access (Authentik SSO protected)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Allow K8s API server access (for in-cluster K8s reads)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # Allow all infrastructure VLANs — direct IP access to VMs and network devices
+    - toCIDR:
+        - <vlan-cidr>
+        - 10.x0.0/24
+        - <vlan-cidr>
+        - <vlan-cidr>
+        - <vlan-cidr>
+        - <mgmt-ip>/24
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+            - port: "8006"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+            - port: "8081"
+              protocol: TCP
+            - port: "8443"
+              protocol: TCP
+            - port: "9000"
+              protocol: TCP
+            - port: "9443"
+              protocol: TCP
+            - port: "51821"
+              protocol: TCP
+    # Allow in-cluster: monitoring namespace (Prometheus, AlertManager, Grafana)
+    # Grafana: Service port 80 → container port 3000
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "9090"
+              protocol: TCP
+            - port: "9093"
+              protocol: TCP
+    # Allow in-cluster: loki namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: loki
+      toPorts:
+        - ports:
+            - port: "3100"
+              protocol: TCP
+    # Allow in-cluster: tempo namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tempo
+      toPorts:
+        - ports:
+            - port: "3200"
+              protocol: TCP
+    # Allow in-cluster: crowdsec namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: crowdsec
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow in-cluster: authentik namespace
+    # authentik-server: Service port 80 → container port 9000, 443 → 9443
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: authentik
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+            - port: "9443"
+              protocol: TCP
+    # Allow in-cluster: media namespace (Jellyfin)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+      toPorts:
+        - ports:
+            - port: "8096"
+              protocol: TCP
+    # Allow in-cluster: matrix namespace (Synapse)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: matrix
+      toPorts:
+        - ports:
+            - port: "8008"
+              protocol: TCP
+    # Allow in-cluster: semaphore namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: semaphore
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # Allow in-cluster: ntfy namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ntfy
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    # Allow in-cluster: unifi namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: unifi
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

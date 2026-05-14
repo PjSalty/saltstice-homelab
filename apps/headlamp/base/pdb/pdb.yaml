@@ -1,0 +1,12 @@
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: headlamp-pdb
+  namespace: headlamp
+spec:
+  # Single-replica admin UI; brief restart on drain is fine.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: headlamp

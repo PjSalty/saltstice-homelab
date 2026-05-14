@@ -1,0 +1,9 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: authentik-sso-scripts
+    namespace: authentik
+data:
+    setup-sso-providers.py: <sops-encrypted-in-private-repo>
+# (sops metadata block stripped — see templates/sops-secret.example.yaml for the canonical pattern)

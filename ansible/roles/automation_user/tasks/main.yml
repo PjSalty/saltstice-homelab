@@ -1,0 +1,53 @@
+---
+- name: Create automation user
+  ansible.builtin.user:
+    name: "{{ automation_user_name }}"
+    comment: "{{ automation_user_comment }}"
+    shell: "{{ automation_user_shell }}"
+    home: "{{ automation_user_home }}"
+    create_home: true
+    system: true
+    state: present
+  become: true
+  tags:
+    - automation_user
+    - setup
+
+- name: Create .ssh directory
+  ansible.builtin.file:
+    path: "{{ automation_user_home }}/.ssh"
+    state: directory
+    owner: "{{ automation_user_name }}"
+    group: "{{ automation_user_name }}"
+    mode: "0700"
+  become: true
+  tags:
+    - automation_user
+    - ssh
+
+- name: Deploy authorized key
+  ansible.posix.authorized_key:
+    user: "{{ automation_user_name }}"
+    key: "{{ automation_user_ssh_pubkey }}"
+    state: present
+    exclusive: true
+  become: true
+  tags:
+    - automation_user
+    - ssh
+
+- name: Deploy automation sudoers (NOPASSWD ALL)
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/10-automation"
+    content: |
+      # Ansible CI/CD automation user — NOPASSWD required for Ansible become
+      # Security boundary: SSH key-only auth, nologin shell, dedicated account
+      {{ automation_user_name }} ALL=(ALL) NOPASSWD: ALL
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  become: true
+  tags:
+    - automation_user
+    - sudo

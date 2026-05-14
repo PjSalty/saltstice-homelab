@@ -1,0 +1,111 @@
+---
+# Proxmox Hypervisor Maintenance Window
+# Deploys scripts + systemd units for safe weekly patching and reboot.
+# Disables the legacy unattended-upgrades auto-reboot (we handle it properly now).
+
+- name: Create maintenance state directory
+  ansible.builtin.file:
+    path: /var/lib/proxmox-maintenance
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  tags:
+    - proxmox
+    - maintenance
+
+- name: Deploy pre-reboot maintenance script
+  ansible.builtin.template:
+    src: proxmox-maintenance.sh.j2
+    dest: /usr/local/bin/proxmox-maintenance.sh
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  tags:
+    - proxmox
+    - maintenance
+
+- name: Deploy post-reboot verification script
+  ansible.builtin.template:
+    src: proxmox-post-maintenance.sh.j2
+    dest: /usr/local/bin/proxmox-post-maintenance.sh
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  tags:
+    - proxmox
+    - maintenance
+
+- name: Deploy maintenance timer unit
+  ansible.builtin.template:
+    src: proxmox-maintenance.timer.j2
+    dest: /etc/systemd/system/proxmox-maintenance.timer
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Reload systemd
+  tags:
+    - proxmox
+    - maintenance
+
+- name: Deploy maintenance service unit
+  ansible.builtin.template:
+    src: proxmox-maintenance.service.j2
+    dest: /etc/systemd/system/proxmox-maintenance.service
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Reload systemd
+  tags:
+    - proxmox
+    - maintenance
+
+- name: Deploy post-boot service unit
+  ansible.builtin.template:
+    src: proxmox-post-boot.service.j2
+    dest: /etc/systemd/system/proxmox-post-boot.service
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Reload systemd
+  tags:
+    - proxmox
+    - maintenance
+
+- name: Enable maintenance timer
+  ansible.builtin.systemd:
+    name: proxmox-maintenance.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true
+  tags:
+    - proxmox
+    - maintenance
+
+# Disable legacy auto-reboot — our maintenance script handles it now
+- name: Disable unattended-upgrades auto-reboot
+  ansible.builtin.lineinfile:
+    path: /etc/apt/apt.conf.d/50unattended-upgrades
+    regexp: 'Unattended-Upgrade::Automatic-Reboot '
+    line: 'Unattended-Upgrade::Automatic-Reboot "false";'
+  become: true
+  tags:
+    - proxmox
+    - maintenance
+
+# Ensure showmount is available for NFS health checks
+- name: Install nfs-common for showmount
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+  become: true
+  tags:
+    - proxmox
+    - maintenance

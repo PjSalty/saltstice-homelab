@@ -1,0 +1,685 @@
+# UniFi Network Controller Deployment with Integrated Automation
+# Version: 9.1.120 (latest stable as of 2025-11)
+# Source: https://github.com/jacobalberty/unifi-docker
+# Automation: Sidecar container handles bootstrap + WiFi setup automatically
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: unifi
+  labels:
+    tls.example.com/wildcard: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unifi
+  namespace: unifi
+  labels:
+    app: unifi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unifi
+  strategy:
+    type: Recreate  # Required for single-instance with PVC
+  template:
+    metadata:
+      labels:
+        app: unifi
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Inject our CA-signed certificate into UniFi's Java keystore
+        - name: cert-injector
+          # Version managed by config/versions.yaml via Flux substituteFrom
+          image: ${IMAGE_UNIFI_ECLIPSE_TEMURIN}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "=== Injecting CA-signed certificate into UniFi keystore ==="
+
+              KEYSTORE_PASS="aircontrolenterprise"
+              KEYSTORE_PATH="/unifi/data/keystore"
+
+              # Wait for cert-manager to provision the certificate
+              while [ ! -f /tls/tls.crt ]; do
+                echo "Waiting for TLS certificate..."
+                sleep 5
+              done
+
+              # Create PKCS12 from PEM certs
+              echo "Converting PEM to PKCS12..."
+              openssl pkcs12 -export \
+                -in /tls/tls.crt \
+                -inkey /tls/tls.key \
+                -out /tmp/unifi.p12 \
+                -name unifi \
+                -passout pass:${KEYSTORE_PASS}
+
+              # Create Java keystore from PKCS12
+              echo "Creating Java keystore..."
+              mkdir -p /unifi/data
+              keytool -importkeystore \
+                -deststorepass ${KEYSTORE_PASS} \
+                -destkeypass ${KEYSTORE_PASS} \
+                -destkeystore ${KEYSTORE_PATH} \
+                -srckeystore /tmp/unifi.p12 \
+                -srcstoretype PKCS12 \
+                -srcstorepass ${KEYSTORE_PASS} \
+                -alias unifi \
+                -noprompt 2>/dev/null || true
+
+              # Set permissions for UniFi user (999:999)
+              chown -R 999:999 /unifi/data
+              if [ -f "${KEYSTORE_PATH}" ]; then
+                chmod 600 "${KEYSTORE_PATH}"
+              fi
+
+              echo "Certificate injection complete!"
+              ls -la "${KEYSTORE_PATH}" 2>/dev/null || echo "Keystore not created yet"
+          volumeMounts:
+            - name: config
+              mountPath: /unifi
+            - name: tls-cert
+              mountPath: /tls
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      containers:
+        - name: unifi
+          # Version managed by config/versions.yaml via Flux substituteFrom
+          image: ${IMAGE_UNIFI_CONTROLLER}
+          ports:
+            - name: web-https
+              containerPort: 8443
+              protocol: TCP
+            - name: device-comm
+              containerPort: 8080
+              protocol: TCP
+            - name: stun
+              containerPort: 3478
+              protocol: UDP
+            - name: ap-discovery
+              containerPort: 10001
+              protocol: UDP
+            - name: speedtest
+              containerPort: 6789
+              protocol: TCP
+          env:
+            - name: TZ
+              value: "America/New_York"
+            - name: RUNAS_UID0
+              value: "false"
+            - name: UNIFI_UID
+              value: "999"
+            - name: UNIFI_GID
+              value: "999"
+          volumeMounts:
+            - name: config
+              mountPath: /unifi
+            - name: db
+              mountPath: /unifi/data/db
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 30
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 300
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 5
+        # Automation sidecar - runs bootstrap + WiFi setup then sleeps
+        - name: automation
+          # Version managed by config/versions.yaml via Flux substituteFrom
+          image: ${IMAGE_UNIFI_MONGODB}
+          env:
+            - name: UNIFI_USER
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: UNIFI_USER
+            - name: UNIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: UNIFI_PASS
+            - name: NACHO_WIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: NACHO_WIFI_PASS
+            - name: IOT_WIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: IOT_WIFI_PASS
+            - name: GUEST_WIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: GUEST_WIFI_PASS
+            - name: SECURE_WIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: SECURE_WIFI_PASS
+            # NetBox VM API credentials (Source of Truth per automation.md)
+            - name: NETBOX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: netbox-token
+                  key: token
+            - name: NETBOX_URL
+              valueFrom:
+                secretKeyRef:
+                  name: netbox-token
+                  key: url
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              MARKER_FILE="/unifi/.automation_complete"
+
+              # Function to maintain session and adopt pending devices (defined early for reuse)
+              monitor_and_adopt() {
+                # Disable exit-on-error for this function - API calls may fail temporarily
+                set +e
+
+                COOKIE_FILE="/tmp/unifi_cookie"
+                SITE="default"
+                CHECK_INTERVAL=300  # 5 minutes
+
+                # Wait for API to be ready
+                echo "Waiting for UniFi API..."
+                for i in $(seq 1 60); do
+                  if curl -sk https://localhost:8443/status 2>/dev/null | grep -q "meta"; then
+                    break
+                  fi
+                  sleep 10
+                done
+
+                echo "Starting AP monitor (checking every 5 min, quiet unless action needed)..."
+                while true; do
+                  # Re-login to maintain session (quietly)
+                  LOGIN_RESULT=$(curl -sk -X POST "https://localhost:8443/api/login" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"username\":\"${UNIFI_USER}\",\"password\":\"${UNIFI_PASS}\"}" \
+                    -c ${COOKIE_FILE} -w "%{http_code}" -o /dev/null 2>/dev/null || echo "000")
+
+                  if [ "$LOGIN_RESULT" != "200" ]; then
+                    sleep 60
+                    continue
+                  fi
+
+                  # Check for pending devices (state 0 = pending adoption)
+                  DEVICES=$(curl -sk -b ${COOKIE_FILE} "https://localhost:8443/api/s/${SITE}/stat/device" 2>/dev/null || echo "")
+
+                  # Find devices pending adoption (|| true prevents set -e exit when no matches)
+                  PENDING_MACS=$(echo "$DEVICES" | grep -o '"mac":"[^"]*"[^}]*"state":0' | grep -o '"mac":"[^"]*"' | cut -d'"' -f4 || true)
+
+                  if [ -n "$PENDING_MACS" ]; then
+                    for MAC in $PENDING_MACS; do
+                      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Adopting device: $MAC"
+                      curl -sk -X POST "https://localhost:8443/api/s/${SITE}/cmd/devmgr" \
+                        -H "Content-Type: application/json" -b ${COOKIE_FILE} \
+                        -d "{\"cmd\":\"adopt\",\"mac\":\"$MAC\"}" >/dev/null 2>&1
+                    done
+                  fi
+
+                  # Check for devices needing upgrade (upgradable flag) (|| true prevents set -e exit)
+                  UPGRADE_MACS=$(echo "$DEVICES" | grep -o '"mac":"[^"]*"[^}]*"upgradable":true' | grep -o '"mac":"[^"]*"' | cut -d'"' -f4 || true)
+
+                  if [ -n "$UPGRADE_MACS" ]; then
+                    for MAC in $UPGRADE_MACS; do
+                      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Upgrading device: $MAC"
+                      curl -sk -X POST "https://localhost:8443/api/s/${SITE}/cmd/devmgr" \
+                        -H "Content-Type: application/json" -b ${COOKIE_FILE} \
+                        -d "{\"cmd\":\"upgrade\",\"mac\":\"$MAC\"}" >/dev/null 2>&1
+                    done
+                  fi
+
+                  sleep $CHECK_INTERVAL
+                done
+              }
+
+              # Check if initial setup already ran
+              if [ -f "$MARKER_FILE" ]; then
+                echo "Initial setup already completed, starting AP monitor only..."
+                # Install curl if not present (container restart) - don't fail if apt-get fails
+                if ! which curl >/dev/null 2>&1; then
+                  rm -f /etc/apt/sources.list.d/mongodb*.list 2>/dev/null || true
+                  apt-get update -qq 2>/dev/null && apt-get install -qq -y curl >/dev/null 2>&1 || {
+                    echo "Warning: curl not available, AP monitor will sleep instead"
+                    # Just sleep forever if curl can't be installed
+                    exec sleep infinity
+                  }
+                fi
+                monitor_and_adopt
+                exit 0
+              fi
+
+              echo "=== UniFi Automation Sidecar ==="
+
+              # Install curl from debian repos only (skip mongodb repo with expired key)
+              rm -f /etc/apt/sources.list.d/mongodb*.list 2>/dev/null || true
+              apt-get update -qq && apt-get install -qq -y curl >/dev/null 2>&1
+              echo "curl installed: $(which curl)"
+
+              echo "Waiting for MongoDB on localhost:27117..."
+
+              # Wait for MongoDB (localhost - same pod network)
+              for i in $(seq 1 120); do
+                if mongo --quiet --port 27117 --eval "db.stats()" 2>/dev/null; then
+                  echo "MongoDB is ready!"
+                  break
+                fi
+                echo "Attempt $i/120 - waiting..."
+                sleep 5
+              done
+
+              # Generate SHA-512 password hash
+              SALT=$(openssl rand -base64 8 | tr -dc 'a-zA-Z0-9' | head -c 8)
+              X_SHADOW=$(openssl passwd -6 -salt "${SALT}" "${UNIFI_PASS}")
+
+              # Check if user exists
+              EXISTING=$(mongo --quiet --port 27117 ace --eval "db.admin.count({name: '${UNIFI_USER}'})" 2>/dev/null || echo "0")
+
+              if [ "$EXISTING" -gt 0 ]; then
+                echo "User '${UNIFI_USER}' exists, updating credentials..."
+                mongo --quiet --port 27117 ace --eval "
+                  db.admin.updateOne(
+                    {name: '${UNIFI_USER}'},
+                    {\$set: {x_shadow: '${X_SHADOW}', email: 'automation@example.com'}}
+                  );
+                "
+              else
+                echo "Creating admin user '${UNIFI_USER}'..."
+                mongo --quiet --port 27117 ace --eval "
+                  db.admin.insertOne({
+                    email: 'automation@example.com',
+                    name: '${UNIFI_USER}',
+                    x_shadow: '${X_SHADOW}',
+                    last_site_name: 'default',
+                    time_created: NumberLong($(date +%s)),
+                    requires_new_password: false,
+                    ui_settings: {}
+                  });
+                "
+              fi
+
+              # Get admin ID and create privileges
+              ADMIN_ID=$(mongo --quiet --port 27117 ace --eval "
+                var admin = db.admin.findOne({name: '${UNIFI_USER}'});
+                if (admin) print(admin._id.str);
+              " 2>/dev/null | tail -1)
+
+              echo "Admin ID: ${ADMIN_ID}"
+
+              # Create privileges for all sites
+              mongo --quiet --port 27117 ace --eval "
+                var adminId = '${ADMIN_ID}';
+                var sites = db.site.find().toArray();
+                sites.forEach(function(site) {
+                  var existing = db.privilege.findOne({admin_id: adminId, site_id: site._id.str});
+                  if (!existing) {
+                    db.privilege.insertOne({
+                      admin_id: adminId, site_id: site._id.str,
+                      role: 'admin', permissions: []
+                    });
+                  } else {
+                    db.privilege.updateOne(
+                      {admin_id: adminId, site_id: site._id.str},
+                      {\$set: {role: 'admin'}}
+                    );
+                  }
+                });
+              " 2>/dev/null
+
+              echo "Bootstrap complete!"
+
+              # Fetch AP inventory from NetBox (Source of Truth per automation.md)
+              echo "Fetching AP inventory from NetBox VM (${NETBOX_URL})..."
+
+              # Get all access point devices from NetBox with their AP group assignment
+              NETBOX_DEVICES=$(curl -s -H "Authorization: Token ${NETBOX_TOKEN}" \
+                -H "Host: netbox.example.com" \
+                "${NETBOX_URL}/api/dcim/devices/?role=access-point&status=active" 2>/dev/null)
+
+              # Get MAC addresses from NetBox
+              NETBOX_MACS=$(curl -s -H "Authorization: Token ${NETBOX_TOKEN}" \
+                -H "Host: netbox.example.com" \
+                "${NETBOX_URL}/api/dcim/mac-addresses/" 2>/dev/null)
+
+              # Parse AP groups and MACs using basic shell (no jq in mongo container)
+              # Extract devices with their ap_group custom field
+              LOCAL_APS_MACS=""
+              REMOTE_AP_MACS=""
+
+              # Parse each device and its MAC
+              for DEVICE_ID in $(echo "$NETBOX_DEVICES" | grep -o '"id":[0-9]*' | cut -d: -f2); do
+                # Get device info
+                DEVICE_INFO=$(echo "$NETBOX_DEVICES" | grep -o "{[^}]*\"id\":${DEVICE_ID}[^}]*}")
+                AP_GROUP=$(echo "$DEVICE_INFO" | grep -o '"unifi_ap_group":"[^"]*"' | cut -d'"' -f4)
+                DEVICE_NAME=$(echo "$DEVICE_INFO" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+                # Find MAC for this device's interface
+                DEVICE_MAC=$(echo "$NETBOX_MACS" | grep -o "{[^}]*\"device\":{[^}]*\"name\":\"${DEVICE_NAME}\"[^}]*}[^}]*\"mac_address\":\"[^\"]*\"" | grep -o '"mac_address":"[^"]*"' | cut -d'"' -f4 | tr 'A-Z' 'a-z')
+
+                if [ -n "$DEVICE_MAC" ] && [ -n "$AP_GROUP" ]; then
+                  echo "Found: ${DEVICE_NAME} -> MAC: ${DEVICE_MAC}, Group: ${AP_GROUP}"
+                  if [ "$AP_GROUP" = "Local APs" ]; then
+                    LOCAL_APS_MACS="${LOCAL_APS_MACS}'${DEVICE_MAC}',"
+                  elif [ "$AP_GROUP" = "Remote AP" ]; then
+                    REMOTE_AP_MACS="${REMOTE_AP_MACS}'${DEVICE_MAC}',"
+                  fi
+                fi
+              done
+
+              # Remove trailing comma
+              LOCAL_APS_MACS=$(echo "$LOCAL_APS_MACS" | sed 's/,$//')
+              REMOTE_AP_MACS=$(echo "$REMOTE_AP_MACS" | sed 's/,$//')
+
+              # Fallback to hardcoded if NetBox query fails (for initial setup)
+              if [ -z "$LOCAL_APS_MACS" ]; then
+                echo "Warning: NetBox query returned no Local APs, using fallback MACs"
+                LOCAL_APS_MACS="'02:00:00:00:00:02','02:00:00:00:00:03'"
+              fi
+              if [ -z "$REMOTE_AP_MACS" ]; then
+                echo "Warning: NetBox query returned no Remote APs, using fallback MACs"
+                REMOTE_AP_MACS="'02:00:00:00:00:04'"
+              fi
+
+              echo "Local APs MACs: [${LOCAL_APS_MACS}]"
+              echo "Remote AP MACs: [${REMOTE_AP_MACS}]"
+
+              # Create AP Groups with MACs from NetBox
+              echo "Creating AP groups..."
+              mongo --quiet --port 27117 ace --eval "
+                // Use the default site (same as 'All APs' group)
+                var defaultGroup = db.apgroup.findOne({attr_hidden_id: 'default'});
+                var siteId = defaultGroup ? defaultGroup.site_id : db.site.findOne()._id.str;
+
+                // Local APs group - MACs from NetBox
+                var localMacs = [${LOCAL_APS_MACS}];
+                if (!db.apgroup.findOne({name: 'Local APs'})) {
+                  db.apgroup.insertOne({
+                    name: 'Local APs',
+                    site_id: siteId,
+                    device_macs: localMacs,
+                    attr_hidden_id: 'local_aps',
+                    attr_no_delete: false,
+                    for_wlanconf: true
+                  });
+                  print('Created Local APs group with ' + localMacs.length + ' devices');
+                } else {
+                  db.apgroup.updateOne({name: 'Local APs'}, {\$set: {site_id: siteId, device_macs: localMacs, for_wlanconf: true, attr_no_delete: false}});
+                  print('Updated Local APs group');
+                }
+
+                // Remote AP group - MACs from NetBox
+                var remoteMacs = [${REMOTE_AP_MACS}];
+                if (!db.apgroup.findOne({name: 'Remote AP'})) {
+                  db.apgroup.insertOne({
+                    name: 'Remote AP',
+                    site_id: siteId,
+                    device_macs: remoteMacs,
+                    attr_hidden_id: 'remote_ap',
+                    attr_no_delete: false,
+                    for_wlanconf: true
+                  });
+                  print('Created Remote AP group with ' + remoteMacs.length + ' devices');
+                } else {
+                  db.apgroup.updateOne({name: 'Remote AP'}, {\$set: {site_id: siteId, device_macs: remoteMacs, for_wlanconf: true, attr_no_delete: false}});
+                  print('Updated Remote AP group');
+                }
+              " 2>/dev/null
+
+              echo "Waiting for API..."
+
+              # Wait for UniFi API to be ready
+              for i in $(seq 1 60); do
+                if curl -sk https://localhost:8443/status 2>/dev/null | grep -q "meta"; then
+                  echo "UniFi API is ready!"
+                  break
+                fi
+                echo "Waiting for API... attempt $i/60"
+                sleep 10
+              done
+
+              # WiFi Setup via API
+              echo "=== Starting WiFi Setup ==="
+              COOKIE_FILE="/tmp/unifi_cookie"
+
+              # Login
+              curl -sk -X POST "https://localhost:8443/api/login" \
+                -H "Content-Type: application/json" \
+                -d "{\"username\":\"${UNIFI_USER}\",\"password\":\"${UNIFI_PASS}\"}" \
+                -c ${COOKIE_FILE}
+
+              # Get site info
+              SITE=$(curl -sk -b ${COOKIE_FILE} "https://localhost:8443/api/self/sites" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+              SITE=${SITE:-default}
+              echo "Using site: ${SITE}"
+
+              # Create VLAN networks via API
+              echo "Creating VLAN networks..."
+              create_vlan() {
+                local NAME="$1"
+                local VLAN="$2"
+                EXISTING=$(curl -sk -b ${COOKIE_FILE} "https://localhost:8443/api/s/${SITE}/rest/networkconf")
+                if echo "${EXISTING}" | grep -q "\"name\":\"${NAME}\""; then
+                  echo "Network ${NAME} exists"
+                  return
+                fi
+                curl -sk -X POST "https://localhost:8443/api/s/${SITE}/rest/networkconf" \
+                  -H "Content-Type: application/json" -b ${COOKIE_FILE} \
+                  -d "{\"name\":\"${NAME}\",\"purpose\":\"vlan-only\",\"vlan\":${VLAN},\"vlan_enabled\":true,\"enabled\":true}"
+                echo "Created ${NAME} (VLAN ${VLAN})"
+              }
+
+              create_vlan "Trusted" 70
+              create_vlan "IoT" 80
+              create_vlan "Guest" 100
+              create_vlan "homelab-secure" 88
+
+              # Get network IDs for VLAN assignment
+              sleep 2  # Brief pause to ensure networks are created
+              NETWORKS=$(curl -sk -b ${COOKIE_FILE} "https://localhost:8443/api/s/${SITE}/rest/networkconf")
+
+              # Helper to get network ID by name
+              get_network_id() {
+                local NAME="$1"
+                echo "${NETWORKS}" | grep -o "\"_id\":\"[^\"]*\"[^}]*\"name\":\"${NAME}\"" | grep -o '"_id":"[^"]*"' | head -1 | cut -d'"' -f4
+              }
+
+              TRUSTED_NET=$(get_network_id "Trusted")
+              IOT_NET=$(get_network_id "IoT")
+              GUEST_NET=$(get_network_id "Guest")
+              SECURE_NET=$(get_network_id "homelab-secure")
+              echo "Networks: Trusted=${TRUSTED_NET}, IoT=${IOT_NET}, Guest=${GUEST_NET}, homelab-secure=${SECURE_NET}"
+
+              # Enable the default "All APs" group for WLAN config
+              DEFAULT_SITE_ID=$(mongo --quiet --port 27117 ace --eval "var s=db.site.findOne({name:'default'}); print(s._id.str);" 2>/dev/null | tail -1)
+              mongo --quiet --port 27117 ace --eval "db.apgroup.updateOne({site_id:'${DEFAULT_SITE_ID}',name:'All APs'},{\$set:{for_wlanconf:true}});" 2>/dev/null
+              AP_GROUP_ID=$(mongo --quiet --port 27117 ace --eval "var g=db.apgroup.findOne({site_id:'${DEFAULT_SITE_ID}'}); print(g._id.str);" 2>/dev/null | tail -1)
+              echo "AP Group ID: ${AP_GROUP_ID}"
+
+              # Configure WLANs via API (proper method with VLAN assignment)
+              echo "Configuring WLANs via API..."
+              create_wifi() {
+                local NAME="$1"
+                local PASS="$2"
+                local IS_GUEST="$3"
+                local NET_ID="$4"
+                EXISTING=$(curl -sk -b ${COOKIE_FILE} "https://localhost:8443/api/s/${SITE}/rest/wlanconf")
+                if echo "${EXISTING}" | grep -q "\"name\":\"${NAME}\""; then
+                  echo "WiFi ${NAME} exists"
+                  return
+                fi
+                curl -sk -X POST "https://localhost:8443/api/s/${SITE}/rest/wlanconf" \
+                  -H "Content-Type: application/json" -b ${COOKIE_FILE} \
+                  -d "{\"name\":\"${NAME}\",\"x_passphrase\":\"${PASS}\",\"security\":\"wpapsk\",\"wpa_mode\":\"wpa2\",\"wpa_enc\":\"ccmp\",\"enabled\":true,\"is_guest\":${IS_GUEST},\"networkconf_id\":\"${NET_ID}\",\"wlan_bands\":[\"2g\",\"5g\"],\"ap_group_ids\":[\"${AP_GROUP_ID}\"],\"ap_group_mode\":\"all\"}" >/dev/null 2>&1
+                echo "Created WiFi: ${NAME} -> VLAN network ${NET_ID}"
+              }
+
+              # Create WiFi networks with proper VLAN assignments
+              # homelab-wifi -> VLAN 70 (Trusted)
+              create_wifi "homelab-wifi" "${NACHO_WIFI_PASS}" "false" "${TRUSTED_NET}"
+              # IoT Network -> VLAN 80 (IoT)
+              create_wifi "IoT Network" "${IOT_WIFI_PASS}" "false" "${IOT_NET}"
+              # Guest Network -> VLAN 100 (Guest)
+              create_wifi "Guest Network" "${GUEST_WIFI_PASS}" "true" "${GUEST_NET}"
+
+              # homelab-secure - WPA3 with 6GHz support (for remote-ap) -> VLAN 88
+              create_wifi_wpa3() {
+                local NAME="$1"
+                local PASS="$2"
+                local NET_ID="$3"
+                EXISTING=$(curl -sk -b ${COOKIE_FILE} "https://localhost:8443/api/s/${SITE}/rest/wlanconf")
+                if echo "${EXISTING}" | grep -q "\"name\":\"${NAME}\""; then
+                  echo "WiFi ${NAME} exists"
+                  return
+                fi
+                curl -sk -X POST "https://localhost:8443/api/s/${SITE}/rest/wlanconf" \
+                  -H "Content-Type: application/json" -b ${COOKIE_FILE} \
+                  -d "{\"name\":\"${NAME}\",\"x_passphrase\":\"${PASS}\",\"security\":\"wpapsk\",\"wpa_mode\":\"wpa2\",\"wpa_enc\":\"ccmp\",\"wpa3_support\":true,\"wpa3_transition\":true,\"pmf_mode\":\"required\",\"enabled\":true,\"is_guest\":false,\"networkconf_id\":\"${NET_ID}\",\"wlan_bands\":[\"2g\",\"5g\",\"6g\"],\"ap_group_ids\":[\"${AP_GROUP_ID}\"],\"ap_group_mode\":\"all\"}" >/dev/null 2>&1
+                echo "Created WiFi: ${NAME} (WPA3 + 6GHz) -> VLAN 88"
+              }
+              create_wifi_wpa3 "homelab-secure" "${SECURE_WIFI_PASS}" "${SECURE_NET}"
+
+              echo "WiFi setup complete!"
+
+              # Assign WiFi SSIDs to correct AP groups via MongoDB
+              # (API doesn't work reliably for AP group assignment)
+              echo "Assigning SSIDs to AP groups..."
+              mongo --quiet --port 27117 ace --eval "
+                var localGroup = db.apgroup.findOne({name: 'Local APs'});
+                var remoteGroup = db.apgroup.findOne({name: 'Remote AP'});
+
+                if (localGroup && remoteGroup) {
+                  var localId = localGroup._id.str;
+                  var remoteId = remoteGroup._id.str;
+
+                  // Local SSIDs -> Local APs (ap-1 + ap-2)
+                  db.wlanconf.updateOne({name: 'homelab-wifi'}, {\$set: {ap_group_ids: [localId], ap_group_mode: 'groups'}});
+                  db.wlanconf.updateOne({name: 'IoT Network'}, {\$set: {ap_group_ids: [localId], ap_group_mode: 'groups'}});
+                  db.wlanconf.updateOne({name: 'Guest Network'}, {\$set: {ap_group_ids: [localId], ap_group_mode: 'groups'}});
+
+                  // homelab-secure -> Remote AP only (remote-ap)
+                  db.wlanconf.updateOne({name: 'homelab-secure'}, {\$set: {ap_group_ids: [remoteId], ap_group_mode: 'groups'}});
+
+                  print('AP group assignments updated');
+                } else {
+                  print('Warning: AP groups not found, using defaults');
+                }
+              " 2>/dev/null
+
+              echo "Provisioning APs to apply settings..."
+              # Provision all APs from NetBox to apply new SSID settings
+              # Get MACs from NetBox (same query as earlier, or use saved list)
+              ALL_AP_MACS=$(curl -s -H "Authorization: Token ${NETBOX_TOKEN}" \
+                -H "Host: netbox.example.com" \
+                "${NETBOX_URL}/api/dcim/mac-addresses/" 2>/dev/null | \
+                grep -o '"mac_address":"[^"]*"' | cut -d'"' -f4 | tr 'A-Z' 'a-z')
+
+              # Fallback if NetBox query fails
+              if [ -z "$ALL_AP_MACS" ]; then
+                ALL_AP_MACS="02:00:00:00:00:02 02:00:00:00:00:03 02:00:00:00:00:04"
+              fi
+
+              for MAC in $ALL_AP_MACS; do
+                echo "Provisioning AP: $MAC"
+                curl -sk -X POST "https://localhost:8443/api/s/${SITE}/cmd/devmgr" \
+                  -H "Content-Type: application/json" -b ${COOKIE_FILE} \
+                  -d "{\"cmd\":\"force-provision\",\"mac\":\"$MAC\"}" >/dev/null 2>&1
+              done
+              echo "APs provisioned"
+
+              # Create marker file to prevent re-running initial setup
+              touch "$MARKER_FILE"
+              echo "=== Initial Setup Complete ==="
+
+              # Start the AP monitoring loop (function defined at top)
+              monitor_and_adopt
+          volumeMounts:
+            - name: config
+              mountPath: /unifi
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: unifi-config
+        - name: db
+          persistentVolumeClaim:
+            claimName: unifi-db  # NFS-backed for persistence across restarts
+        - name: tls-cert
+          secret:
+            secretName: wildcard-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unifi
+  namespace: unifi
+  annotations:
+    metallb.io/loadBalancerIPs: "${UNIFI_LB_IP}"
+spec:
+  type: LoadBalancer
+  selector:
+    app: unifi
+  ports:
+    - name: web-https
+      port: 8443
+      targetPort: 8443
+      protocol: TCP
+    - name: device-comm
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: stun
+      port: 3478
+      targetPort: 3478
+      protocol: UDP
+    - name: ap-discovery
+      port: 10001
+      targetPort: 10001
+      protocol: UDP
+    - name: speedtest
+      port: 6789
+      targetPort: 6789
+      protocol: TCP

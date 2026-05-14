@@ -1,0 +1,8 @@
+---
+# sudo role defaults
+
+sudo_user: debian
+sudo_base_commands:
+  - /usr/bin/systemctl status *
+  - /usr/bin/journalctl *
+sudo_extra_commands: []

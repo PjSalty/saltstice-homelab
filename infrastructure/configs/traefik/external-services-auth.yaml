@@ -1,0 +1,400 @@
+---
+# External Services with Authentik Forward Auth
+# These services are outside the cluster but accessible via Traefik with SSO
+#
+# TrueNAS: <internal-ip> (Storage VLAN)
+# AdGuard: <internal-ip> (Infrastructure VLAN)
+---
+# TrueNAS Endpoints and Service
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: truenas-external
+  namespace: traefik
+subsets:
+  - addresses:
+      - ip: <internal-ip>
+    ports:
+      - port: 443
+        name: https
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: truenas-external
+  namespace: traefik
+spec:
+  ports:
+    - port: 443
+      targetPort: 443
+      name: https
+---
+# TrueNAS IngressRoute (No forward-auth - breaks TrueNAS UI, no OIDC support anyway)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: truenas
+  namespace: traefik
+  annotations:
+    kubernetes.io/ingress.class: traefik
+
+    external-dns.alpha.kubernetes.io/hostname: truenas.example.com
+    external-dns.alpha.kubernetes.io/target: <internal-ip>
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`truenas.example.com`)
+      kind: Rule
+      middlewares:
+        - name: security-headers
+      services:
+        - name: truenas-external
+          port: 443
+          scheme: https
+          passHostHeader: true
+          serversTransport: traefik-truenas-ca-trust@kubernetescrd
+  tls:
+    secretName: wildcard-tls
+---
+# AdGuard Endpoints and Service
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: adguard-external
+  namespace: traefik
+subsets:
+  - addresses:
+      - ip: <internal-ip>
+    ports:
+      - port: 80
+        name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adguard-external
+  namespace: traefik
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+      name: http
+---
+# AdGuard IngressRoute with Forward Auth
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: adguard
+  namespace: traefik
+  annotations:
+    kubernetes.io/ingress.class: traefik
+
+    external-dns.alpha.kubernetes.io/hostname: adguard.example.com
+    external-dns.alpha.kubernetes.io/target: <internal-ip>
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`adguard.example.com`)
+      kind: Rule
+      middlewares:
+        - name: authentik-forward-auth
+        - name: security-headers
+      services:
+        - name: adguard-external
+          port: 80
+          scheme: http
+  tls:
+    secretName: wildcard-tls
+---
+# GitLab Endpoints and Service
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: gitlab-external
+  namespace: traefik
+subsets:
+  - addresses:
+      - ip: <internal-ip>
+    ports:
+      - port: 443
+        name: https
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-external
+  namespace: traefik
+spec:
+  ports:
+    - port: 443
+      targetPort: 443
+      name: https
+---
+# GitLab IngressRoute with Forward Auth
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab
+  namespace: traefik
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    external-dns.alpha.kubernetes.io/hostname: gitlab.example.com
+    external-dns.alpha.kubernetes.io/target: <internal-ip>
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`gitlab.example.com`)
+      kind: Rule
+      services:
+        - name: gitlab-external
+          port: 443
+          scheme: https
+          serversTransport: traefik-gitlab-ca-trust@kubernetescrd
+      middlewares:
+        - name: security-headers
+          namespace: traefik
+  tls:
+    secretName: wildcard-tls
+---
+# NetBox Endpoints and Service (HTTP port 80)
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: netbox-external
+  namespace: traefik
+subsets:
+  - addresses:
+      - ip: <internal-ip>
+    ports:
+      - port: 80
+        name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netbox-external
+  namespace: traefik
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+      name: http
+---
+# NetBox IngressRoute
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: netbox
+  namespace: traefik
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    external-dns.alpha.kubernetes.io/hostname: netbox.example.com
+    external-dns.alpha.kubernetes.io/target: <internal-ip>
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`netbox.example.com`)
+      kind: Rule
+      services:
+        - name: netbox-external
+          port: 80
+          scheme: http
+      middlewares:
+        - name: authentik-forward-auth
+          namespace: traefik
+        - name: security-headers
+          namespace: traefik
+  tls:
+    secretName: wildcard-tls
+---
+# Proxmox Endpoints and Service
+# Proxmox is reachable on K8s VLAN (10.x0.100) for Traefik backend access
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: proxmox-external
+  namespace: traefik
+subsets:
+  - addresses:
+      - ip: 10.x0.100
+    ports:
+      - port: 8006
+        name: https
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxmox-external
+  namespace: traefik
+spec:
+  ports:
+    - port: 8006
+      targetPort: 8006
+      name: https
+---
+# Proxmox IngressRoute (native OIDC via Authentik - no forward auth needed)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: proxmox
+  namespace: traefik
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    external-dns.alpha.kubernetes.io/hostname: proxmox.example.com
+    external-dns.alpha.kubernetes.io/target: <internal-ip>
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`proxmox.example.com`)
+      kind: Rule
+      middlewares:
+        - name: proxmox-security-headers
+      services:
+        - name: proxmox-external
+          port: 8006
+          scheme: https
+          passHostHeader: true
+          serversTransport: traefik-proxmox-ca-trust@kubernetescrd
+  tls:
+    secretName: wildcard-tls
+---
+# Harbor Endpoints and Service
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: harbor-external
+  namespace: traefik
+subsets:
+  - addresses:
+      - ip: <internal-ip>
+    ports:
+      - port: 443
+        name: https
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-external
+  namespace: traefik
+spec:
+  ports:
+    - port: 443
+      targetPort: 443
+      name: https
+---
+# Harbor IngressRoute
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: harbor
+  namespace: traefik
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    external-dns.alpha.kubernetes.io/hostname: harbor.example.com
+    external-dns.alpha.kubernetes.io/target: <internal-ip>
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`harbor.example.com`)
+      kind: Rule
+      services:
+        - name: harbor-external
+          port: 443
+          scheme: https
+          passHostHeader: true
+          serversTransport: traefik-harbor-ca-trust@kubernetescrd
+  tls:
+    secretName: wildcard-tls
+---
+# HAProxy Stats Endpoints and Service
+# Stats page on port 9000, path /stats
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: haproxy-stats-external
+  namespace: traefik
+subsets:
+  - addresses:
+      - ip: <internal-ip>
+    ports:
+      - port: 9000
+        name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: haproxy-stats-external
+  namespace: traefik
+spec:
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: http
+---
+# HAProxy Stats IngressRoute with Forward Auth
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: haproxy-stats
+  namespace: traefik
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    external-dns.alpha.kubernetes.io/hostname: haproxy.example.com
+    external-dns.alpha.kubernetes.io/target: <internal-ip>
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`haproxy.example.com`)
+      kind: Rule
+      middlewares:
+        - name: authentik-forward-auth
+        - name: security-headers
+      services:
+        - name: haproxy-stats-external
+          port: 9000
+          scheme: http
+  tls:
+    secretName: wildcard-tls
+---
+# Per-service ServersTransports for backend TLS verification
+# Each needs serverName because Traefik connects via IP but certs are for FQDNs
+# VMs serve Let's Encrypt certs — verified against Traefik's default trust store
+---
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: truenas-ca-trust
+  namespace: traefik
+spec:
+  serverName: truenas.example.com
+---
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: gitlab-ca-trust
+  namespace: traefik
+spec:
+  serverName: gitlab.example.com
+---
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: proxmox-ca-trust
+  namespace: traefik
+spec:
+  serverName: proxmox.example.com
+---
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: harbor-ca-trust
+  namespace: traefik
+spec:
+  serverName: harbor.example.com

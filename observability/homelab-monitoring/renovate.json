@@ -1,0 +1,107 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":disableRateLimiting"
+  ],
+  "prConcurrentLimit": 5,
+  "timezone": "America/New_York",
+  "schedule": [
+    "at any time"
+  ],
+  "labels": [
+    "dependencies",
+    "renovate"
+  ],
+  "platformAutomerge": true,
+  "gitLabIgnoreApprovals": true,
+  "automergeType": "pr",
+  "automerge": true,
+  "ignorePaths": [
+    "**/.backups/**"
+  ],
+  "flux": {
+    "managerFilePatterns": [
+      "/.*\\.yaml$/"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "Group Prometheus stack updates",
+      "matchPackageNames": [
+        "kube-prometheus-stack",
+        "prometheus",
+        "alertmanager"
+      ],
+      "groupName": "prometheus stack",
+      "groupSlug": "prometheus",
+      "labels": [
+        "monitoring",
+        "prometheus"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Group Grafana ecosystem",
+      "matchPackageNames": [
+        "grafana",
+        "loki",
+        "tempo",
+        "promtail"
+      ],
+      "groupName": "grafana stack",
+      "groupSlug": "grafana",
+      "labels": [
+        "monitoring",
+        "grafana"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Monitoring container images",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDatasources": [
+        "docker"
+      ],
+      "groupName": "monitoring images",
+      "groupSlug": "monitoring-images",
+      "automerge": true
+    },
+    {
+      "description": "Major versions require manual review",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "labels": [
+        "major-update",
+        "needs-review"
+      ],
+      "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Container images in monitoring configs",
+      "managerFilePatterns": [
+        "/\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image:\\s*(?<depName>[^:]+):(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": [
+      "security-alert"
+    ],
+    "enabled": true,
+    "automerge": true
+  }
+}

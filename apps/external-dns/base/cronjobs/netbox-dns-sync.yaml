@@ -1,0 +1,216 @@
+# NetBox  AdGuard DNS Sync CronJob
+# Syncs IP addresses with dns_name from NetBox (Source of Truth) to AdGuard
+# Runs every 15 minutes to keep DNS in sync with infrastructure changes
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: netbox-dns-sync
+  namespace: external-dns
+spec:
+  schedule: "*/15 * * * *"  # Every 15 minutes
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 600
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sync
+              image: ${IMAGE_HOMELAB_TOOLING}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  # python3 + requests are baked into homelab-tooling.
+                  python3 << 'PYTHON_SCRIPT'
+                  #!/usr/bin/env python3
+                  """
+                  NetBox  AdGuard DNS Sync
+
+                  Fetches all IP addresses with dns_name from NetBox and syncs them
+                  to AdGuard DNS rewrites. This ensures DNS stays in sync with
+                  infrastructure changes in NetBox (Source of Truth per automation.md).
+                  """
+                  import os
+                  import requests
+                  import json
+
+                  # Configuration from environment
+                  NETBOX_URL = os.environ.get('NETBOX_URL', 'http://<internal-ip>')
+                  NETBOX_TOKEN = os.environ.get('NETBOX_TOKEN', '')
+                  ADGUARD_URL = os.environ.get('ADGUARD_URL', 'http://<internal-ip>:80')
+                  ADGUARD_USER = os.environ.get('ADGUARD_USER', 'admin')
+                  ADGUARD_PASSWORD = os.environ.get('ADGUARD_PASSWORD', '')
+
+                  # Domains managed by external-dns via IngressRoute annotations
+                  # These are VM services that route through Traefik for TLS termination
+                  # NetBox sync should NOT override these (use *-direct for direct VM access)
+                  EXTERNAL_DNS_MANAGED = {
+                      'gitlab.example.com',
+                      'harbor.example.com',
+                      'netbox.example.com',
+                      'truenas.example.com',
+                      'proxmox.example.com',
+                      'adguard.example.com',
+                  }
+
+                  NETBOX_HEADERS = {
+                      "Authorization": f"Token {NETBOX_TOKEN}",
+                      "Host": "netbox.example.com"
+                  }
+
+                  def get_netbox_dns_records():
+                      """Fetch all IPs with dns_name from NetBox"""
+                      records = {}
+                      try:
+                          resp = requests.get(
+                              f"{NETBOX_URL}/api/ipam/ip-addresses/?has_dns_name=true&limit=200",
+                              headers=NETBOX_HEADERS,
+                              timeout=30
+                          )
+                          if resp.status_code == 200:
+                              for ip in resp.json().get('results', []):
+                                  dns_name = ip.get('dns_name', '')
+                                  address = ip.get('address', '').split('/')[0]
+                                  # Skip domains managed by external-dns
+                                  if dns_name in EXTERNAL_DNS_MANAGED:
+                                      print(f"  Skipping {dns_name} (managed by external-dns)")
+                                      continue
+                                  if dns_name and address:
+                                      records[dns_name] = address
+                          else:
+                              print(f"Error fetching from NetBox: {resp.status_code}")
+                      except Exception as e:
+                          print(f"NetBox error: {e}")
+                      return records
+
+                  def get_adguard_rewrites():
+                      """Fetch current DNS rewrites from AdGuard"""
+                      rewrites = {}
+                      try:
+                          resp = requests.get(
+                              f"{ADGUARD_URL}/control/rewrite/list",
+                              auth=(ADGUARD_USER, ADGUARD_PASSWORD),
+                              timeout=30
+                          )
+                          if resp.status_code == 200:
+                              for entry in resp.json():
+                                  domain = entry.get('domain', '')
+                                  answer = entry.get('answer', '')
+                                  if domain and answer:
+                                      rewrites[domain] = answer
+                      except Exception as e:
+                          print(f"AdGuard error: {e}")
+                      return rewrites
+
+                  def add_rewrite(domain, ip):
+                      """Add DNS rewrite to AdGuard"""
+                      try:
+                          resp = requests.post(
+                              f"{ADGUARD_URL}/control/rewrite/add",
+                              auth=(ADGUARD_USER, ADGUARD_PASSWORD),
+                              json={"domain": domain, "answer": ip},
+                              timeout=30
+                          )
+                          return resp.status_code == 200
+                      except:
+                          return False
+
+                  def delete_rewrite(domain, ip):
+                      """Delete DNS rewrite from AdGuard"""
+                      try:
+                          resp = requests.post(
+                              f"{ADGUARD_URL}/control/rewrite/delete",
+                              auth=(ADGUARD_USER, ADGUARD_PASSWORD),
+                              json={"domain": domain, "answer": ip},
+                              timeout=30
+                          )
+                          return resp.status_code == 200
+                      except:
+                          return False
+
+                  def main():
+                      print("NetBox  AdGuard DNS Sync starting...")
+
+                      # Get records from both sources
+                      netbox_records = get_netbox_dns_records()
+                      adguard_rewrites = get_adguard_rewrites()
+
+                      print(f"NetBox has {len(netbox_records)} DNS records")
+                      print(f"AdGuard has {len(adguard_rewrites)} rewrites")
+
+                      added = 0
+                      updated = 0
+
+                      # Sync NetBox  AdGuard
+                      for dns_name, ip in netbox_records.items():
+                          current_ip = adguard_rewrites.get(dns_name)
+
+                          if current_ip is None:
+                              # New record - add it
+                              if add_rewrite(dns_name, ip):
+                                  print(f"  + Added: {dns_name}  {ip}")
+                                  added += 1
+                          elif current_ip != ip:
+                              # IP changed - update (delete old, add new)
+                              delete_rewrite(dns_name, current_ip)
+                              if add_rewrite(dns_name, ip):
+                                  print(f"  ~ Updated: {dns_name}  {ip} (was {current_ip})")
+                                  updated += 1
+
+                      print(f"\nSync complete: {added} added, {updated} updated")
+
+                  if __name__ == "__main__":
+                      main()
+                  PYTHON_SCRIPT
+              env:
+                - name: NETBOX_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: netbox-credentials
+                      key: NETBOX_URL
+                - name: NETBOX_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: netbox-credentials
+                      key: NETBOX_TOKEN
+                - name: ADGUARD_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: adguard-credentials
+                      key: ADGUARD_URL
+                - name: ADGUARD_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: adguard-credentials
+                      key: ADGUARD_USER
+                - name: ADGUARD_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: adguard-credentials
+                      key: ADGUARD_PASSWORD
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "100m"

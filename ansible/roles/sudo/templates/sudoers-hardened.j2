@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+
+# Hardened sudo configuration
+Defaults    env_reset
+Defaults    mail_badpass
+Defaults    secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults    use_pty
+Defaults:automation !use_pty
+Defaults    logfile="/var/log/sudo.log"
+Defaults    timestamp_timeout=5
+
+# Base commands (all hosts)
+{% for cmd in sudo_base_commands %}
+{{ sudo_user }} ALL=(ALL) NOPASSWD: {{ cmd }}
+{% endfor %}
+
+# Extra commands (per-group)
+{% for cmd in sudo_extra_commands %}
+{{ sudo_user }} ALL=(ALL) NOPASSWD: {{ cmd }}
+{% endfor %}

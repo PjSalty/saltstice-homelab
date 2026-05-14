@@ -1,0 +1,80 @@
+---
+# Traefik DMZ - community-facing ingress controller (VLAN 60)
+# ISOLATED from internal services — only routes to DMZ namespaces
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-traefik-dmz
+  namespace: traefik-dmz
+spec:
+  description: "Allow Traefik DMZ to receive external traffic and route to community backends only"
+  endpointSelector: {}
+  ingress:
+    # Allow external traffic (LoadBalancer from WAN via MikroTik NAT)
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Allow cluster-internal traffic (MetalLB health probes, internal clients)
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Allow health checks from monitoring (Prometheus)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9100"
+              protocol: TCP
+  egress:
+    # Allow Kubernetes API server (Traefik discovers IngressRoutes, Secrets, Services)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # Allow DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow routing to Matrix namespace (Synapse + MAS)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: matrix
+      toPorts:
+        - ports:
+            - port: "8008"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+    # Allow routing to Fluxer namespace (web UI on 3000)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: fluxer
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # Allow routing to bridge namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: matrix-bridge
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

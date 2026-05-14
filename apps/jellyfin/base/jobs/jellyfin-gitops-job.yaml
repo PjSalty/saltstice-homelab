@@ -1,0 +1,90 @@
+---
+# Service Account for Jellyfin setup
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jellyfin-setup
+  namespace: media
+---
+# Role for pod operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jellyfin-setup
+  namespace: media
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "secrets"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+# RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jellyfin-setup
+  namespace: media
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jellyfin-setup
+subjects:
+  - kind: ServiceAccount
+    name: jellyfin-setup
+    namespace: media
+---
+# Kubernetes Job for GitOps automation
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-complete-setup
+  namespace: media
+  annotations:
+    # Uncomment for FluxCD/ArgoCD auto-deployment:
+    # argocd.argoproj.io/hook: PostSync
+    # argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 3600  # Keep logs for 1 hour
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: jellyfin-setup
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: jellyfin-setup
+      containers:
+        - name: setup
+          image: ${IMAGE_PYTHON_SLIM}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              
+              # Install dependencies
+              apt-get update -qq && apt-get install -y -qq curl kubectl sqlite3 > /dev/null 2>&1
+              
+              # Run the automation script from the mounted ConfigMap
+              python3 /scripts/jellyfin-complete-automation.py
+          envFrom:
+            - secretRef:
+                name: jellyfin-admin-credentials
+          volumeMounts:
+            - name: automation-script
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: automation-script
+          configMap:
+            name: jellyfin-automation-script
+            defaultMode: 0755

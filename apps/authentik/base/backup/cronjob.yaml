@@ -1,0 +1,77 @@
+---
+# PostgreSQL backup CronJob for Authentik
+# Runs pg_dump daily, retains 7 days of backups on NFS
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgresql-backup
+  namespace: authentik
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: pg-backup
+              image: ${IMAGE_POSTGRES_16}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: authentik-secret
+                      key: AUTHENTIK_POSTGRESQL__PASSWORD
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+                  BACKUP_FILE="/backups/authentik-$${TIMESTAMP}.sql.gz"
+
+                  echo "[$(date)] Starting PostgreSQL backup for authentik"
+                  pg_dump -h authentik-postgresql -U authentik -d authentik \
+                    --no-owner --no-privileges | gzip > "$${BACKUP_FILE}"
+                  echo "[$(date)] Backup complete: $(du -h "$${BACKUP_FILE}" | cut -f1)"
+
+                  # Retention: keep last 7 days
+                  find /backups -name "authentik-*.sql.gz" -mtime +7 -delete
+                  echo "[$(date)] Current backups:"
+                  ls -lh /backups/authentik-*.sql.gz 2>/dev/null || echo "  (none)"
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: postgresql-backups
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi

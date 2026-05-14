@@ -1,0 +1,28 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: external-dns
+rules:
+- apiGroups: [""]
+  resources: ["services","endpoints","pods"]
+  verbs: ["get","watch","list"]
+# EndpointSlice support (required for external-dns v0.18+)
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get","watch","list"]
+- apiGroups: ["extensions","networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get","watch","list"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["list","watch"]
+# Traefik CRDs for IngressRoute/IngressRouteTCP support
+- apiGroups: ["traefik.io", "traefik.containo.us"]
+  resources: ["ingressroutes", "ingressroutetcps", "ingressrouteudps"]
+  verbs: ["get","watch","list"]
+# ConfigMap patch for cloudflare-dns-sync state tracking
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["cloudflare-dns-state"]
+  verbs: ["get","patch"]

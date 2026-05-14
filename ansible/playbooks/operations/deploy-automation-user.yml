@@ -1,0 +1,32 @@
+---
+# Deploy automation user to all hosts
+#
+# Run ONCE as the debian user to bootstrap the automation account:
+#   ansible-playbook -i inventory/hosts.yml playbooks/operations/deploy-automation_user.yml
+#
+# After this, CI/CD can connect as 'automation' user with full sudo.
+# The debian user keeps its restricted sudoers for interactive use.
+
+- name: Deploy automation user
+  gather_facts: false
+  roles:
+    - automation_user
+
+  post_tasks:
+    - name: Update sshd AllowUsers to include automation
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config.d/99-hardening.conf
+        regexp: '^AllowUsers'
+        line: "AllowUsers {{ ssh_allowed_users }}"
+      become: true
+      notify: Reload sshd
+      tags:
+        - automation_user
+        - ssh
+
+  handlers:
+    - name: Reload sshd
+      ansible.builtin.systemd:
+        name: sshd
+        state: reloaded
+      become: true

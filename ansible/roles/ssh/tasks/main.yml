@@ -1,0 +1,66 @@
+---
+- name: Create sshd drop-in directory
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  tags:
+    - ssh
+    - hardening
+
+- name: Deploy SSH hardening config
+  ansible.builtin.template:
+    src: 99-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "sshd -t -f %s"
+  notify: Restart sshd
+  become: true
+  tags:
+    - ssh
+    - hardening
+
+- name: Set SSH directory permissions
+  ansible.builtin.file:
+    path: /etc/ssh
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  tags:
+    - ssh
+    - hardening
+
+- name: Deploy authorized keys for debian user
+  ansible.posix.authorized_key:
+    user: debian
+    key: "{{ item }}"
+    state: present
+  loop: "{{ ssh_authorized_keys_debian }}"
+  when:
+    - ssh_authorized_keys_debian is defined
+    - "'proxmox' not in group_names"
+  become: true
+  tags:
+    - ssh
+    - keys
+
+- name: Remove insecure SSH host keys
+  ansible.builtin.file:
+    path: "/etc/ssh/{{ item }}"
+    state: absent
+  loop:
+    - ssh_host_dsa_key
+    - ssh_host_dsa_key.pub
+    - ssh_host_ecdsa_key
+    - ssh_host_ecdsa_key.pub
+  notify: Restart sshd
+  become: true
+  tags:
+    - ssh
+    - hardening

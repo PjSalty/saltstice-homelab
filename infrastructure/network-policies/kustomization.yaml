@@ -1,0 +1,54 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # Cluster-wide default deny + DNS/API allows
+  - default-deny.yaml
+  # Cluster-wide kubelet (host) probe allow — complements default-deny
+  - allow-kubelet-probes.yaml
+  # Host-level firewall v2 — complete port matrix from ss -tlnp
+  - host-firewall.yaml
+  # Infrastructure namespace policies
+  - namespaces/flux-system.yaml
+  - namespaces/cert-manager.yaml
+  - namespaces/democratic-csi.yaml
+  - namespaces/metallb-system.yaml
+  - namespaces/monitoring.yaml
+  - namespaces/traefik.yaml
+  - namespaces/kyverno.yaml
+  - namespaces/loki.yaml
+  - namespaces/vpa.yaml
+  - namespaces/karpenter.yaml
+  - namespaces/goldilocks.yaml
+  - namespaces/external-dns.yaml
+  - namespaces/vm-certificates.yaml
+  - namespaces/velero.yaml
+  - namespaces/crowdsec.yaml
+  - namespaces/falco.yaml
+  - namespaces/reloader.yaml
+  - namespaces/external-secrets.yaml
+  - namespaces/cluster-cleanup.yaml
+  - namespaces/nvidia-device-plugin.yaml
+  - namespaces/nfs-system.yaml
+  - namespaces/storage.yaml
+  # Application namespace policies
+  - namespaces/authentik.yaml
+  - namespaces/semaphore.yaml
+  - namespaces/media.yaml
+  - namespaces/vaultwarden.yaml
+
+  - namespaces/headlamp.yaml
+  - namespaces/ntfy.yaml
+  - namespaces/automation.yaml
+  - namespaces/security.yaml
+  - namespaces/unifi.yaml
+  - namespaces/amp.yaml
+  - namespaces/gitlab-runner.yaml
+  - namespaces/vpn.yaml
+  - namespaces/docmost.yaml
+  - namespaces/mcp-server.yaml
+  # DMZ namespace policies
+  - namespaces/traefik-dmz.yaml
+  # - namespaces/matrix.yaml  # ARCHIVED 2026-03-22
+  - namespaces/fluxer.yaml
+  # - namespaces/matrix-bridge.yaml  # ARCHIVED 2026-03-22

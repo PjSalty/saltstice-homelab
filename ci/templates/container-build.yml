@@ -1,0 +1,220 @@
+# =============================================================================
+# Reusable Container Image Build Pipeline
+# Version: 2026-04-11
+# =============================================================================
+# Include in any repo that builds custom container images:
+#
+#   include:
+#     - project: 'infrastructure/homelab-ci-templates'
+#       file: '/container-build.yml'
+#
+# Then define jobs that extend the templates:
+#
+#   build-docker:
+#     extends: .container:build
+#     variables:
+#       CONTAINER_IMAGE: ${HARBOR_REGISTRY}/infrastructure/my-app
+#       CONTAINER_CONTEXT: .
+#       CONTAINER_FILE: Dockerfile
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == "main"
+#       - if: $CI_COMMIT_TAG
+#
+#   scan-docker:
+#     extends: .container:scan
+#     needs: [build-docker]
+#     variables:
+#       CONTAINER_IMAGE: ${HARBOR_REGISTRY}/infrastructure/my-app
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == "main"
+#       - if: $CI_COMMIT_TAG
+#
+#   promote-docker:
+#     extends: .container:promote
+#     needs: [scan-docker]
+#     variables:
+#       CONTAINER_IMAGE: ${HARBOR_REGISTRY}/infrastructure/my-app
+#       CONTAINER_PROMOTE_TAGS: "${CI_COMMIT_TAG:-latest}"
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == "main"
+#       - if: $CI_COMMIT_TAG
+#
+# Pipeline flow:
+#   build (sha tag) → scan (Trivy gate) → promote (sha → release tag)
+#
+# Tagging strategy:
+#   - Every build: :sha-<short> (immutable)
+#   - Main branch: :latest (mutable, always points to last green main build)
+#   - Git tags: :<tag> (e.g. v1.0.5, immutable release)
+#   - Scheduled: :sha-<short> (weekly rebuild for base image security patches)
+#
+# =============================================================================
+
+variables:
+  HARBOR_REGISTRY: harbor.example.com
+
+# -----------------------------------------------------------------------------
+# .container:build — Build and push image with SHA tag
+# -----------------------------------------------------------------------------
+# Produces: ${CONTAINER_IMAGE}:sha-${CI_COMMIT_SHORT_SHA}
+# On MR pipelines: build-only (validates Dockerfile compiles, no push)
+# On main/tag/schedule: build + push to Harbor
+#
+# Required variables:
+#   CONTAINER_IMAGE:   Full image path (e.g. harbor.example.com/infrastructure/my-app)
+#   CONTAINER_CONTEXT: Build context directory (default: .)
+#   CONTAINER_FILE:    Dockerfile path relative to context (default: Dockerfile)
+# -----------------------------------------------------------------------------
+.container:build:
+  stage: build
+  interruptible: true
+  timeout: 15 minutes
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29
+  services:
+    - name: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    # BuildKit disabled: DinD BuildKit can't read Docker client's auth config
+    # for pulling FROM images from private registries. Classic builder works.
+    DOCKER_BUILDKIT: "0"
+    CONTAINER_CONTEXT: "."
+    CONTAINER_FILE: "Dockerfile"
+  before_script:
+    - until docker info >/dev/null 2>&1; do sleep 1; done
+    # Drop the runner-level DOCKER_AUTH_CONFIG so explicit `docker login` below
+    # takes effect. DinD's docker daemon honors ~/.docker/config.json only when
+    # DOCKER_AUTH_CONFIG is unset; otherwise push silently falls through to
+    # anonymous auth and 401s on the final manifest upload.
+    - unset DOCKER_AUTH_CONFIG
+    - |
+      if [ -n "${HARBOR_USERNAME:-}" ] && [ -n "${HARBOR_PASSWORD:-}" ]; then
+        echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_REGISTRY} -u "${HARBOR_USERNAME}" --password-stdin
+        echo "Logged in to Harbor as ${HARBOR_USERNAME}"
+      else
+        echo "No Harbor credentials — build-only mode (MR pipeline)"
+      fi
+  script:
+    - SHA_TAG="sha-${CI_COMMIT_SHORT_SHA}"
+    - |
+      docker build \
+        --no-cache \
+        --tag "${CONTAINER_IMAGE}:${SHA_TAG}" \
+        --file "${CONTAINER_CONTEXT}/${CONTAINER_FILE}" \
+        "${CONTAINER_CONTEXT}"
+    - |
+      if [ -n "${HARBOR_USERNAME:-}" ]; then
+        docker push "${CONTAINER_IMAGE}:${SHA_TAG}"
+        echo "Pushed ${CONTAINER_IMAGE}:${SHA_TAG}"
+      else
+        echo "MR pipeline — build validated, skipping push"
+      fi
+
+# -----------------------------------------------------------------------------
+# .container:scan — Trivy vulnerability scan (CRITICAL/HIGH gate)
+# -----------------------------------------------------------------------------
+# Scans the SHA-tagged image. Fails pipeline on CRITICAL or HIGH CVEs.
+# Only runs when image was pushed (not on MR pipelines).
+#
+# Required variables:
+#   CONTAINER_IMAGE: Same as build stage
+# -----------------------------------------------------------------------------
+.container:scan:
+  stage: test
+  interruptible: true
+  timeout: 10 minutes
+  image:
+    name: ${HARBOR_REGISTRY}/dockerhub-proxy/aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73
+    entrypoint: [""]
+  # Retry on network failures — trivy fetches CVE DB from internet on first run
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+  variables:
+    TRIVY_USERNAME: "${HARBOR_USERNAME}"
+    TRIVY_PASSWORD: "${HARBOR_PASSWORD}"
+    TRIVY_NON_SSL: "false"
+    TRIVY_CACHE_DIR: ".trivycache"
+  # Cache CVE database across runs — avoids ~100MB re-download on every scan
+  cache:
+    key: trivy-cache
+    paths:
+      - .trivycache/
+    policy: pull-push
+  before_script:
+    # Write Docker auth config so Trivy can authenticate to private registries.
+    # DOCKER_AUTH_CONFIG (from runner or project CI vars) takes precedence
+    # over TRIVY_USERNAME/TRIVY_PASSWORD for registry authentication.
+    - |
+      if [ -n "${DOCKER_AUTH_CONFIG:-}" ]; then
+        mkdir -p "${HOME}/.docker"
+        echo "${DOCKER_AUTH_CONFIG}" > "${HOME}/.docker/config.json"
+      fi
+  script:
+    - SHA_TAG="sha-${CI_COMMIT_SHORT_SHA}"
+    - trivy image --severity CRITICAL,HIGH --exit-code 1
+        --cache-dir ${TRIVY_CACHE_DIR}
+        "${CONTAINER_IMAGE}:${SHA_TAG}"
+  allow_failure: false
+
+# -----------------------------------------------------------------------------
+# .container:promote — Tag SHA image with release tags
+# -----------------------------------------------------------------------------
+# After scan + test pass, promotes the SHA image to release tags.
+#
+# Required variables:
+#   CONTAINER_IMAGE:        Same as build stage
+#   CONTAINER_PROMOTE_TAGS: Space-separated list of tags to apply
+#                           Default: "latest" on main, "${CI_COMMIT_TAG}" on tags
+#
+# Examples:
+#   Main push:  sha-abc1234 → :latest
+#   Git tag:    sha-abc1234 → :v1.0.5 + :latest
+#   Schedule:   sha-abc1234 → :latest (weekly rebuild)
+# -----------------------------------------------------------------------------
+.container:promote:
+  stage: deploy
+  interruptible: false
+  timeout: 10 minutes
+  # Prevent concurrent promotions racing on mutable tags like :latest
+  resource_group: container-promote-${CI_PROJECT_ID}
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29
+  services:
+    - name: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    CONTAINER_PROMOTE_TAGS: "latest"
+  before_script:
+    - until docker info >/dev/null 2>&1; do sleep 1; done
+    # See .container:build for rationale — DOCKER_AUTH_CONFIG breaks docker
+    # push in DinD; always log in explicitly.
+    - unset DOCKER_AUTH_CONFIG
+    - |
+      if [ -n "${HARBOR_USERNAME:-}" ] && [ -n "${HARBOR_PASSWORD:-}" ]; then
+        echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_REGISTRY} -u "${HARBOR_USERNAME}" --password-stdin
+        echo "Logged in to Harbor as ${HARBOR_USERNAME}"
+      else
+        echo "ERROR: Cannot promote — HARBOR_USERNAME/HARBOR_PASSWORD not set"
+        exit 1
+      fi
+  script:
+    - SHA_TAG="sha-${CI_COMMIT_SHORT_SHA}"
+    - docker pull "${CONTAINER_IMAGE}:${SHA_TAG}"
+    # Add CI_COMMIT_TAG to promote list if this is a tag pipeline
+    - |
+      TAGS="${CONTAINER_PROMOTE_TAGS}"
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        TAGS="${CI_COMMIT_TAG} ${TAGS}"
+      fi
+    - |
+      for TAG in ${TAGS}; do
+        docker tag "${CONTAINER_IMAGE}:${SHA_TAG}" "${CONTAINER_IMAGE}:${TAG}"
+        docker push "${CONTAINER_IMAGE}:${TAG}"
+        echo "Promoted ${CONTAINER_IMAGE}:${SHA_TAG} → :${TAG}"
+      done

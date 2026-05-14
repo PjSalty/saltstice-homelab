@@ -1,0 +1,29 @@
+# velero-s3-credentials: S3 credentials in AWS credentials format for Velero
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: velero-s3-credentials
+  namespace: velero
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: velero-s3-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        cloud: |
+          [default]
+          aws_access_key_id = {{ index (splitList "," .credentials) 0 | trimPrefix "aws_access_key_id=" }}
+          aws_secret_access_key = {{ index (splitList "," .credentials) 1 | trimPrefix "aws_secret_access_key=" }}
+  data:
+  # CRED_VELERO_S3_CREDENTIALS is a composite key:
+  # 'aws_access_key_id=...,aws_secret_access_key=...'
+  # Template parses the composite value into AWS credentials format
+  - secretKey: credentials
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_VELERO_S3_CREDENTIALS

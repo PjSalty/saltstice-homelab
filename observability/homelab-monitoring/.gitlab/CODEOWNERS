@@ -1,0 +1,9 @@
+# CODEOWNERS for managed files
+# Synced automatically from homelab-ci-templates
+
+# Shared configs are managed by homelab-ci-templates
+# DO NOT MODIFY - changes will be overwritten by auto-sync
+.pre-commit-config.yaml @infrastructure/homelab-ci-templates
+.yamllint @infrastructure/homelab-ci-templates
+.gitlab/CODEOWNERS @infrastructure/homelab-ci-templates
+.gitlab/merge_request_templates/* @infrastructure/homelab-ci-templates

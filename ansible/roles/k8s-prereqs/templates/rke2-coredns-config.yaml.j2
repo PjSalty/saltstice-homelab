@@ -1,0 +1,24 @@
+---
+# HelmChartConfig override for RKE2 bundled CoreDNS
+# Pins CoreDNS pods to control-plane nodes for stability.
+# When CoreDNS runs on workers, VPA/Karpenter pod churn can trigger
+# Cilium eBPF service map staleness → DNS outage → cascade failure.
+# Deployed to: /var/lib/rancher/rke2/server/manifests/rke2-coredns-config.yaml
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-coredns
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: "true"
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/etcd
+        operator: Exists
+        effect: NoExecute

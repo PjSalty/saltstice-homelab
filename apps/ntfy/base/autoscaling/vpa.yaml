@@ -1,0 +1,23 @@
+---
+# VPA for ntfy (Auto mode - applies recommendations)
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: ntfy
+  namespace: ntfy
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ntfy
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: ntfy
+        minAllowed:
+          cpu: 10m
+          memory: 32Mi
+        maxAllowed:
+          cpu: 250m
+          memory: 256Mi

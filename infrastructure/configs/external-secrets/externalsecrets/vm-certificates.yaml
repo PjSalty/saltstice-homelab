@@ -1,0 +1,39 @@
+# truenas-api-key: TrueNAS API key for VM certificate deployment
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: truenas-api-key-vmcerts
+  namespace: vm-certificates
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: truenas-api-key
+    creationPolicy: Owner
+  data:
+  - secretKey: api-key
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_VM_CERTIFICATES_TRUENAS_API_KEY
+---
+# vm-cert-deploy-ssh: SSH key for deploying certs to VMs
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: vm-cert-deploy-ssh
+  namespace: vm-certificates
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: vm-cert-deploy-ssh
+    creationPolicy: Owner
+  data:
+  - secretKey: ssh-privatekey
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_VM_CERTIFICATES_SSH_PRIVATE_KEY

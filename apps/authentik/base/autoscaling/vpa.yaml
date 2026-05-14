@@ -1,0 +1,92 @@
+---
+# VPA for authentik-server (Auto mode - applies recommendations)
+# Memory-only: CPU managed by HPA, avoid conflicts
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-server
+  namespace: authentik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: authentik-server
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: authentik
+        controlledResources: ["memory"]
+        minAllowed:
+          memory: 512Mi
+        maxAllowed:
+          memory: 3Gi
+---
+# VPA for authentik-worker
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-worker
+  namespace: authentik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: authentik-worker
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: authentik
+        minAllowed:
+          cpu: 100m
+          memory: 640Mi
+        maxAllowed:
+          cpu: "1"
+          memory: 2Gi
+---
+# VPA for authentik-postgresql
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-postgresql
+  namespace: authentik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: authentik-postgresql
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: postgresql
+        minAllowed:
+          cpu: 50m
+          memory: 128Mi
+        maxAllowed:
+          cpu: "1"
+          memory: 2Gi
+---
+# VPA for authentik-redis
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-redis
+  namespace: authentik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: authentik-redis
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: redis
+        minAllowed:
+          cpu: 10m
+          memory: 64Mi
+        maxAllowed:
+          cpu: 500m
+          memory: 512Mi

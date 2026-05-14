@@ -1,0 +1,71 @@
+---
+# Network Policy for Tempo
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-tempo
+  namespace: tempo
+spec:
+  description: "Allow Tempo for distributed tracing"
+  endpointSelector: {}
+  ingress:
+    # Allow Grafana to query traces
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "3200"
+              protocol: TCP
+    # Allow all namespaces to send traces (OTLP, Zipkin, Jaeger)
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "4317"
+              protocol: TCP
+            - port: "4318"
+              protocol: TCP
+            - port: "9411"
+              protocol: TCP
+            - port: "14268"
+              protocol: TCP
+            - port: "14250"
+              protocol: TCP
+    # Allow MCP server read-only API access
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp-server
+      toPorts:
+        - ports:
+            - port: "3200"
+              protocol: TCP
+    # Allow Prometheus to scrape metrics
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "3200"
+              protocol: TCP
+  egress:
+    # Allow sending metrics to Prometheus (remote write)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

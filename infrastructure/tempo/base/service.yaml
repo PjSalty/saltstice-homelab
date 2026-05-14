@@ -1,0 +1,88 @@
+---
+# Tempo Query Service (for Grafana)
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: tempo
+  labels:
+    app.kubernetes.io/name: tempo
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3200
+      targetPort: 3200
+      protocol: TCP
+    - name: grpc
+      port: 9095
+      targetPort: 9095
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: tempo
+---
+# Tempo OTLP Receiver Service
+# Applications send traces here
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo-otlp
+  namespace: tempo
+  labels:
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/component: otlp-receiver
+spec:
+  type: ClusterIP
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: tempo
+---
+# Tempo Zipkin Receiver Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo-zipkin
+  namespace: tempo
+  labels:
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/component: zipkin-receiver
+spec:
+  type: ClusterIP
+  ports:
+    - name: zipkin
+      port: 9411
+      targetPort: 9411
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: tempo
+---
+# Tempo Jaeger Receiver Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo-jaeger
+  namespace: tempo
+  labels:
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/component: jaeger-receiver
+spec:
+  type: ClusterIP
+  ports:
+    - name: jaeger-http
+      port: 14268
+      targetPort: 14268
+      protocol: TCP
+    - name: jaeger-grpc
+      port: 14250
+      targetPort: 14250
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: tempo

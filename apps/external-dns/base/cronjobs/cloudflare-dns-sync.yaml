@@ -1,0 +1,415 @@
+# Cloudflare Public DNS Sync CronJob
+# Scans Ingress/IngressRoute for dns.example.com/public=true label
+# Creates/updates/deletes Cloudflare A records automatically
+# Records tagged with comment "managed-by:public-dns-sync" to avoid touching manual records
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cloudflare-dns-sync
+  namespace: external-dns
+spec:
+  schedule: "*/5 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 600
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: external-dns
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sync
+              image: ${IMAGE_HOMELAB_TOOLING}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  # python3, requests, and kubectl are baked into homelab-tooling.
+                  python3 << 'PYTHON_SCRIPT'
+                  #!/usr/bin/env python3
+                  """
+                  Cloudflare Public DNS Sync
+
+                  Scans Kubernetes Ingress and Traefik IngressRoute resources for the
+                  label dns.example.com/public=true. For each labeled resource, creates
+                  or updates an A record in Cloudflare pointing to the current WAN IP.
+
+                  Records are tagged with comment "managed-by:public-dns-sync" so this
+                  script only manages its own records and never touches manually created ones.
+
+                  Sync policy: records for hostnames that lose the public label are deleted.
+                  """
+                  import json
+                  import os
+                  import subprocess
+                  import sys
+                  from datetime import datetime, timezone
+
+                  import requests
+
+                  # Configuration
+                  CF_API_TOKEN = os.environ.get('CF_API_TOKEN', '')
+                  CF_ZONE_NAME = os.environ.get('CF_ZONE_NAME', 'example.com')
+                  CF_API = "https://api.cloudflare.com/client/v4"
+                  MANAGED_TAG = "managed-by:public-dns-sync"
+                  KUBECTL = "/usr/local/bin/kubectl"
+                  WAN_IP_URL = "https://api.ipify.org"
+
+                  cf_headers = {
+                      "Authorization": f"Bearer {CF_API_TOKEN}",
+                      "Content-Type": "application/json",
+                  }
+
+
+                  def get_wan_ip():
+                      """Get current WAN IP via external service."""
+                      try:
+                          resp = requests.get(WAN_IP_URL, timeout=10)
+                          resp.raise_for_status()
+                          ip = resp.text.strip()
+                          print(f"Current WAN IP: {ip}")
+                          return ip
+                      except Exception as e:
+                          print(f"ERROR: Failed to get WAN IP: {e}")
+                          return None
+
+
+                  def get_cf_zone_id():
+                      """Get Cloudflare zone ID for the configured zone."""
+                      try:
+                          resp = requests.get(
+                              f"{CF_API}/zones",
+                              headers=cf_headers,
+                              params={"name": CF_ZONE_NAME},
+                              timeout=15,
+                          )
+                          resp.raise_for_status()
+                          zones = resp.json().get("result", [])
+                          if zones:
+                              zone_id = zones[0]["id"]
+                              print(f"Cloudflare zone: {CF_ZONE_NAME} ({zone_id})")
+                              return zone_id
+                          print(f"ERROR: Zone {CF_ZONE_NAME} not found in Cloudflare")
+                          return None
+                      except Exception as e:
+                          print(f"ERROR: Cloudflare API error: {e}")
+                          return None
+
+
+                  def get_cf_managed_records(zone_id):
+                      """Get all A records managed by this script (tagged with MANAGED_TAG)."""
+                      records = {}
+                      try:
+                          page = 1
+                          while True:
+                              resp = requests.get(
+                                  f"{CF_API}/zones/{zone_id}/dns_records",
+                                  headers=cf_headers,
+                                  params={
+                                      "type": "A",
+                                      "per_page": 100,
+                                      "page": page,
+                                      "comment": MANAGED_TAG,
+                                  },
+                                  timeout=15,
+                              )
+                              resp.raise_for_status()
+                              data = resp.json()
+                              for rec in data.get("result", []):
+                                  if rec.get("comment") == MANAGED_TAG:
+                                      records[rec["name"]] = {
+                                          "id": rec["id"],
+                                          "content": rec["content"],
+                                          "proxied": rec.get("proxied", False),
+                                      }
+                              info = data.get("result_info", {})
+                              if page >= info.get("total_pages", 1):
+                                  break
+                              page += 1
+                      except Exception as e:
+                          print(f"ERROR: Failed to list Cloudflare records: {e}")
+                      print(f"Cloudflare managed records: {len(records)}")
+                      return records
+
+
+                  def create_cf_record(zone_id, hostname, ip, proxied=False):
+                      """Create a new A record in Cloudflare."""
+                      try:
+                          resp = requests.post(
+                              f"{CF_API}/zones/{zone_id}/dns_records",
+                              headers=cf_headers,
+                              json={
+                                  "type": "A",
+                                  "name": hostname,
+                                  "content": ip,
+                                  "ttl": 1 if proxied else 300,
+                                  "proxied": proxied,
+                                  "comment": MANAGED_TAG,
+                              },
+                              timeout=15,
+                          )
+                          resp.raise_for_status()
+                          proxy_str = " (proxied)" if proxied else ""
+                          print(f"  + Created: {hostname} -> {ip}{proxy_str}")
+                          return True
+                      except Exception as e:
+                          print(f"  ! Failed to create {hostname}: {e}")
+                          return False
+
+
+                  def update_cf_record(zone_id, record_id, hostname, ip, proxied=False):
+                      """Update an existing A record in Cloudflare."""
+                      try:
+                          resp = requests.patch(
+                              f"{CF_API}/zones/{zone_id}/dns_records/{record_id}",
+                              headers=cf_headers,
+                              json={
+                                  "content": ip,
+                                  "ttl": 1 if proxied else 300,
+                                  "proxied": proxied,
+                                  "comment": MANAGED_TAG,
+                              },
+                              timeout=15,
+                          )
+                          resp.raise_for_status()
+                          proxy_str = " (proxied)" if proxied else ""
+                          print(f"  ~ Updated: {hostname} -> {ip}{proxy_str}")
+                          return True
+                      except Exception as e:
+                          print(f"  ! Failed to update {hostname}: {e}")
+                          return False
+
+
+                  def delete_cf_record(zone_id, record_id, hostname):
+                      """Delete a managed A record from Cloudflare."""
+                      try:
+                          resp = requests.delete(
+                              f"{CF_API}/zones/{zone_id}/dns_records/{record_id}",
+                              headers=cf_headers,
+                              timeout=15,
+                          )
+                          resp.raise_for_status()
+                          print(f"  - Deleted: {hostname}")
+                          return True
+                      except Exception as e:
+                          print(f"  ! Failed to delete {hostname}: {e}")
+                          return False
+
+
+                  def get_public_hostnames():
+                      """Scan K8s Ingress and Traefik IngressRoute for public-labeled resources.
+                      Returns dict of {hostname: {"proxied": bool}} to support Cloudflare proxy mode.
+
+                      Supported annotations on labeled resources:
+                        dns.example.com/proxied: "true"          — enable Cloudflare proxy (hide WAN IP)
+                        dns.example.com/public-hostname: "x.com" — override: use this hostname instead of Ingress host
+                                                                     (for when internal host differs from public DNS)
+
+                      Also includes EXTRA_HOSTNAMES env var for non-HTTP services (TURN, etc).
+                      """
+                      hostnames = {}
+
+                      # Extra hostnames for non-HTTP services (e.g., TURN servers)
+                      # These don't have Ingress/IngressRoute resources but still need DNS
+                      extra = os.environ.get('EXTRA_HOSTNAMES', '')
+                      if extra:
+                          for h in extra.split(','):
+                              h = h.strip()
+                              if h:
+                                  hostnames[h] = {"proxied": False}
+                                  print(f"  Extra hostname (non-HTTP): {h}")
+
+                      def _is_proxied(annotations):
+                          """Check if dns.example.com/proxied annotation is set to true."""
+                          return annotations.get("dns.example.com/proxied", "false").lower() == "true"
+
+                      def _public_hostname_override(annotations):
+                          """Check for public hostname override annotation."""
+                          return annotations.get("dns.example.com/public-hostname", "").strip() or None
+
+                      # Scan Ingress resources
+                      try:
+                          result = subprocess.run(
+                              [
+                                  KUBECTL, "get", "ingress", "-A",
+                                  "-l", "dns.example.com/public=true",
+                                  "-o", "json",
+                              ],
+                              capture_output=True, text=True, timeout=30,
+                          )
+                          if result.returncode == 0:
+                              data = json.loads(result.stdout)
+                              for item in data.get("items", []):
+                                  annotations = item.get("metadata", {}).get("annotations", {})
+                                  proxied = _is_proxied(annotations)
+                                  override = _public_hostname_override(annotations)
+                                  if override:
+                                      hostnames[override] = {"proxied": proxied}
+                                      print(f"  Ingress override: {override} (from {item['metadata']['name']})")
+                                  else:
+                                      for rule in item.get("spec", {}).get("rules", []):
+                                          host = rule.get("host")
+                                          if host:
+                                              hostnames[host] = {"proxied": proxied}
+                      except Exception as e:
+                          print(f"WARNING: Failed to scan Ingress: {e}")
+
+                      # Scan IngressRoute resources (Traefik CRD)
+                      try:
+                          result = subprocess.run(
+                              [
+                                  KUBECTL, "get", "ingressroute.traefik.io", "-A",
+                                  "-l", "dns.example.com/public=true",
+                                  "-o", "json",
+                              ],
+                              capture_output=True, text=True, timeout=30,
+                          )
+                          if result.returncode == 0:
+                              data = json.loads(result.stdout)
+                              for item in data.get("items", []):
+                                  annotations = item.get("metadata", {}).get("annotations", {})
+                                  proxied = _is_proxied(annotations)
+                                  override = _public_hostname_override(annotations)
+                                  if override:
+                                      hostnames[override] = {"proxied": proxied}
+                                      print(f"  IngressRoute override: {override} (from {item['metadata']['name']})")
+                                  else:
+                                      for route in item.get("spec", {}).get("routes", []):
+                                          match_str = route.get("match", "")
+                                          import re
+                                          hosts = re.findall(r"Host\(`([^`]+)`\)", match_str)
+                                          for host in hosts:
+                                              hostnames[host] = {"proxied": proxied}
+                      except Exception as e:
+                          print(f"WARNING: Failed to scan IngressRoute: {e}")
+
+                      proxied_hosts = [h for h, meta in hostnames.items() if meta["proxied"]]
+                      print(f"Public hostnames found: {sorted(hostnames.keys())}")
+                      if proxied_hosts:
+                          print(f"  Cloudflare-proxied: {sorted(proxied_hosts)}")
+                      return hostnames
+
+
+                  def update_state_configmap(wan_ip, managed):
+                      """Update the cloudflare-dns-state ConfigMap with current state."""
+                      now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                      patch = json.dumps({
+                          "data": {
+                              "last-wan-ip": wan_ip or "",
+                              "last-sync": now,
+                              "managed-records": json.dumps(sorted(managed)),
+                          }
+                      })
+                      try:
+                          subprocess.run(
+                              [
+                                  KUBECTL, "patch", "configmap", "cloudflare-dns-state",
+                                  "-n", "external-dns",
+                                  "--type", "merge",
+                                  "-p", patch,
+                              ],
+                              capture_output=True, text=True, timeout=15,
+                          )
+                      except Exception as e:
+                          print(f"WARNING: Failed to update state ConfigMap: {e}")
+
+
+                  def main():
+                      print(f"Cloudflare Public DNS Sync - {datetime.now(timezone.utc).isoformat()}")
+                      print("=" * 60)
+
+                      if not CF_API_TOKEN:
+                          print("ERROR: CF_API_TOKEN not set")
+                          sys.exit(1)
+
+                      # Step 1: Get current WAN IP
+                      wan_ip = get_wan_ip()
+                      if not wan_ip:
+                          sys.exit(1)
+
+                      # Step 2: Get Cloudflare zone
+                      zone_id = get_cf_zone_id()
+                      if not zone_id:
+                          sys.exit(1)
+
+                      # Step 3: Get managed records from Cloudflare
+                      cf_records = get_cf_managed_records(zone_id)
+
+                      # Step 4: Get public hostnames from K8s
+                      public_hosts = get_public_hostnames()
+
+                      # Step 5: Sync
+                      created = 0
+                      updated = 0
+                      deleted = 0
+
+                      # Create or update records for public hostnames
+                      for hostname in sorted(public_hosts):
+                          meta = public_hosts[hostname]
+                          proxied = meta.get("proxied", False)
+                          existing = cf_records.get(hostname)
+                          if existing is None:
+                              if create_cf_record(zone_id, hostname, wan_ip, proxied=proxied):
+                                  created += 1
+                          elif existing["content"] != wan_ip or existing["proxied"] != proxied:
+                              if update_cf_record(zone_id, existing["id"], hostname, wan_ip, proxied=proxied):
+                                  updated += 1
+                          else:
+                              print(f"  = Unchanged: {hostname} -> {wan_ip}")
+
+                      # Delete records for hostnames that lost the public label
+                      for hostname, rec in cf_records.items():
+                          if hostname not in public_hosts:
+                              if delete_cf_record(zone_id, rec["id"], hostname):
+                                  deleted += 1
+
+                      # Step 6: Update state ConfigMap
+                      update_state_configmap(wan_ip, list(public_hosts.keys()))
+
+                      print("=" * 60)
+                      print(f"Sync complete: {created} created, {updated} updated, {deleted} deleted")
+
+
+                  if __name__ == "__main__":
+                      main()
+                  PYTHON_SCRIPT
+              env:
+                - name: CF_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: cloudflare-api-token
+                      key: CF_API_TOKEN
+                - name: CF_ZONE_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: cloudflare-api-token
+                      key: CF_ZONE_NAME
+                # Non-HTTP services that need DNS but have no Ingress resource
+                # Comma-separated list of hostnames (never proxied — direct IP needed)
+                # Most services should use dns.example.com/public=true label instead
+                - name: EXTRA_HOSTNAMES
+                  value: ""
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "100m"

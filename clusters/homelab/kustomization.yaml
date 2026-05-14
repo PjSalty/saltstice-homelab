@@ -1,0 +1,32 @@
+---
+# =============================================================================
+# Homelab cluster Flux entry point
+# SSOT: All kustomizations use postBuild for variable substitution
+# SECRETS: Uses separate infrastructure/secrets repo for K8s secrets
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # Flux bootstrap
+  - flux-system/gotk-components.yaml
+  - flux-system/flux-system-kustomization.yaml
+  # Sources (GitRepository)
+  # Note: flux-system GitRepository is bootstrap-managed, not defined here
+  # Note: HelmRepositories consolidated in kubernetes/infrastructure/sources/
+  - sources/gitlab-source.yaml
+  - secrets-source.yaml
+  # Core infrastructure Kustomizations
+  - infrastructure.yaml
+  - infrastructure-kustomizations.yaml
+  # Secrets (from separate repo)
+  - secrets.yaml
+  # Applications
+  - apps.yaml
+  # Additional app kustomizations (not in apps.yaml)
+  - kustomizations/amp.yaml
+  - kustomizations/cluster-cleanup.yaml
+  - kustomizations/kyverno-policies.yaml
+  - kustomizations/ntfy.yaml
+  - kustomizations/sbom-manager.yaml
+  - kustomizations/seaweedfs.yaml
+  - kustomizations/trivy.yaml

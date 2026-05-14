@@ -1,0 +1,99 @@
+# Pipeline Notification Templates
+# Version: 2026-04-11
+#
+# Sends alerts via Pushover when pipelines fail or deploy
+#
+# Usage: include in .gitlab-ci.yml with:
+#   include:
+#     - project: 'infrastructure/homelab-ci-templates'
+#       file: '/notify.yml'
+#
+#   notify:failure:
+#     extends: .notify:failure
+#
+# Required Variables (set at group level):
+#   PUSHOVER_TOKEN:   Pushover application token
+#   PUSHOVER_USER:    Pushover user/group key
+#
+# Optional Variables:
+#   PUSHOVER_PRIORITY: Message priority (-2 to 2, default: 0 for deploy, 1 for failure)
+#   PUSHOVER_SOUND:    Notification sound (default: siren for failures)
+
+# =============================================================================
+# Pushover Failure Notification
+# =============================================================================
+# Runs in .post stage — after all other stages complete.
+# Only triggers when pipeline has failed jobs (when: on_failure).
+# Only on main branch — MR pipeline failures don't need alerts.
+
+.notify:failure:
+  stage: .post
+  image: harbor.example.com/dockerhub-proxy/curlimages/curl:8.18.0@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+  variables:
+    PUSHOVER_PRIORITY: "1"
+    PUSHOVER_SOUND: "siren"
+  script:
+    - |
+      if [ -z "${PUSHOVER_TOKEN:-}" ] || [ -z "${PUSHOVER_USER:-}" ]; then
+        echo "WARNING: PUSHOVER_TOKEN or PUSHOVER_USER not set — skipping notification"
+        exit 0
+      fi
+      curl -sf --form-string "token=${PUSHOVER_TOKEN}" \
+        --form-string "user=${PUSHOVER_USER}" \
+        --form-string "title=CI failed: ${CI_PROJECT_NAME}" \
+        --form-string "message=Branch: ${CI_COMMIT_REF_NAME} | ${CI_COMMIT_SHORT_SHA} | ${CI_COMMIT_TITLE}" \
+        --form-string "url=${CI_PIPELINE_URL}" \
+        --form-string "url_title=View Pipeline" \
+        --form-string "priority=${PUSHOVER_PRIORITY}" \
+        --form-string "sound=${PUSHOVER_SOUND}" \
+        https://api.pushover.net/1/messages.json
+  when: on_failure
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  dependencies: []
+  interruptible: false
+
+# =============================================================================
+# Pushover Deploy Notification
+# =============================================================================
+# Sends a success notification after deploy completes.
+
+.notify:deploy:
+  stage: .post
+  image: harbor.example.com/dockerhub-proxy/curlimages/curl:8.18.0@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+  variables:
+    PUSHOVER_PRIORITY: "0"
+    PUSHOVER_SOUND: "none"
+    DEPLOY_TARGET: "infrastructure"
+  script:
+    - |
+      if [ -z "${PUSHOVER_TOKEN:-}" ] || [ -z "${PUSHOVER_USER:-}" ]; then
+        echo "WARNING: PUSHOVER_TOKEN or PUSHOVER_USER not set — skipping notification"
+        exit 0
+      fi
+      curl -sf --form-string "token=${PUSHOVER_TOKEN}" \
+        --form-string "user=${PUSHOVER_USER}" \
+        --form-string "title=Deploy complete: ${CI_PROJECT_NAME}" \
+        --form-string "message=Deployed ${DEPLOY_TARGET} from ${CI_COMMIT_REF_NAME} (${CI_COMMIT_SHORT_SHA})" \
+        --form-string "url=${CI_PIPELINE_URL}" \
+        --form-string "url_title=View Pipeline" \
+        --form-string "priority=${PUSHOVER_PRIORITY}" \
+        --form-string "sound=${PUSHOVER_SOUND}" \
+        https://api.pushover.net/1/messages.json
+  when: on_success
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  dependencies: []
+  interruptible: false
+
+# =============================================================================
+# Backward-compatible aliases (deprecated — use .notify:failure / .notify:deploy)
+# =============================================================================
+# These aliases prevent breakage in repos still using the old ntfy job names.
+# Remove in a future cleanup pass once all repos have migrated.
+
+.notify:ntfy:
+  extends: .notify:failure
+
+.notify:ntfy-deploy:
+  extends: .notify:deploy

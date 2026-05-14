@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly Proxmox Hypervisor Maintenance Window
+Documentation=https://gitlab.example.com/infrastructure/homelab-ansible
+
+[Timer]
+OnCalendar={{ proxmox_maintenance_schedule }}
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

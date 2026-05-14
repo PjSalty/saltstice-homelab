@@ -1,0 +1,40 @@
+---
+# Traefik IngressRoute for AMP
+# Routes HTTPS traffic to AMP VM via manual Endpoints
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: amp
+  namespace: amp
+  labels:
+    app.kubernetes.io/name: amp
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`amp.example.com`)
+      kind: Rule
+      services:
+        - name: amp
+          port: 8081
+      middlewares:
+        - name: authentik-forward-auth
+          namespace: traefik
+        - name: amp-headers
+  tls:
+    secretName: wildcard-tls
+---
+# Security headers middleware
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: amp-headers
+  namespace: amp
+spec:
+  headers:
+    browserXssFilter: true
+    contentTypeNosniff: true
+    frameDeny: false  # AMP uses iframes for game server consoles
+    stsIncludeSubdomains: true
+    stsSeconds: 31536000

@@ -1,0 +1,47 @@
+---
+# democratic-csi needs access to TrueNAS for storage provisioning
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-democratic-csi
+  namespace: democratic-csi
+spec:
+  description: "Allow democratic-csi to communicate with TrueNAS"
+  endpointSelector: {}
+  ingress:
+    # Allow kubelet for CSI operations
+    - fromEntities:
+        - host
+  egress:
+    # Allow TrueNAS API (HTTP port 80) and iSCSI (port 3260)
+    - toCIDR:
+        - <host>/32  # TrueNAS
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+            - port: "3260"
+              protocol: TCP
+    # Allow Kubernetes API for CSI driver operations
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # Allow kubelet communication for CSI
+    - toEntities:
+        - host
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

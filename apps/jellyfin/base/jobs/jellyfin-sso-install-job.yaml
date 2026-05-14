@@ -1,0 +1,171 @@
+# Application: base
+# Version: 10.11.2
+# Updated: 2025-11-13
+# Source: https://github.com/jellyfin/jellyfin/releases
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-sso-install
+  namespace: media
+  labels:
+    app: jellyfin
+    component: sso-installer
+spec:
+  ttlSecondsAfterFinished: 86400  # Keep for 24 hours
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: jellyfin
+        component: sso-installer
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Download SSO plugin using a container with curl
+        - name: download-sso-plugin
+          image: ${IMAGE_CURL}
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "Downloading Jellyfin SSO plugin..."
+              cd /plugin-download
+              
+              # Get latest release download URL
+              PLUGIN_URL="https://github.com/9p4/jellyfin-plugin-sso/releases/latest/download/sso-authentication.zip"
+              
+              echo "Downloading from: $PLUGIN_URL"
+              curl -L -o sso-authentication.zip "$PLUGIN_URL"
+              
+              echo "Plugin downloaded successfully"
+              ls -lh /plugin-download/
+          volumeMounts:
+            - name: plugin-download
+              mountPath: /plugin-download
+      
+      containers:
+        - name: install-plugin
+          image: ${IMAGE_JELLYFIN}
+          env:
+            - name: JELLYFIN_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sso-client-secrets
+                  key: JELLYFIN_CLIENT_SECRET
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              
+              echo "=========================================="
+              echo "Jellyfin SSO Plugin Installation"
+              echo "=========================================="
+              echo ""
+              
+              # Wait for Jellyfin to be ready
+              echo "[1/5] Waiting for Jellyfin to be ready..."
+              until curl -s http://jellyfin-service:8096/health > /dev/null 2>&1; do
+                echo "  Waiting for Jellyfin service..."
+                sleep 5
+              done
+              echo " Jellyfin is ready"
+              
+              # Create plugin directory
+              echo ""
+              echo "[2/5] Creating plugin directory..."
+              mkdir -p "/config/plugins/SSO Authentication"
+              echo " Plugin directory created"
+              
+              # Extract plugin
+              echo ""
+              echo "[3/5] Installing SSO plugin..."
+              cd "/config/plugins/SSO Authentication"
+              
+              # Copy from download volume
+              cp /plugin-download/sso-authentication.zip .
+              
+              # Extract (jellyfin image has unzip)
+              unzip -o sso-authentication.zip
+              rm sso-authentication.zip
+              
+              echo " Plugin files extracted"
+              ls -la
+              
+              # Create SSO configuration
+              echo ""
+              echo "[4/5] Creating SSO configuration for Authentik..."
+              
+              cat > config.xml << EOFCONFIG
+<?xml version="1.0" encoding="utf-8"?>
+<PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <SamlConfigs />
+  <OidcConfigs>
+    <OidcConfig>
+      <oidClientId>jellyfin-sso</oidClientId>
+      <oidSecret>${JELLYFIN_CLIENT_SECRET}</oidSecret>
+      <oidEndpoint>https://auth.example.com/application/o/jellyfin/</oidEndpoint>
+      <enabled>true</enabled>
+      <enableAuthorization>false</enableAuthorization>
+      <enableAllFolders>true</enableAllFolders>
+      <enabledFolders />
+      <adminRoles />
+      <roles />
+      <enableFolderRoles>false</enableFolderRoles>
+      <folderRoleMapping />
+      <oidScheme>authentik</oidScheme>
+      <doNotValidateEndpoints>false</doNotValidateEndpoints>
+      <disableHttps>false</disableHttps>
+    </OidcConfig>
+  </OidcConfigs>
+  <pluginVersion>3</pluginVersion>
+</PluginConfiguration>
+EOFCONFIG
+              
+              echo " SSO configuration created"
+              
+              # Verify installation
+              echo ""
+              echo "[5/5] Verifying installation..."
+              if [ -f "SSO-Authentication.dll" ]; then
+                echo " Plugin DLL found"
+              else
+                echo " Plugin DLL not found, checking files..."
+                ls -la
+              fi
+              
+              if [ -f "config.xml" ]; then
+                echo " Configuration file created"
+              fi
+              
+              echo ""
+              echo "=========================================="
+              echo " SSO PLUGIN INSTALLATION COMPLETE"
+              echo "=========================================="
+              echo ""
+              echo "Plugin installed at: /config/plugins/SSO Authentication"
+              echo ""
+              echo "Next steps:"
+              echo "  1. Restart Jellyfin pod to load the plugin"
+              echo "  2. Configure OAuth2 provider in Authentik UI:"
+              echo "     - Application: Jellyfin"
+              echo "     - Provider: OAuth2/OpenID"
+              echo "     - Redirect URI: https://jellyfin.example.com/sso/OID/redirect/Authentik"
+              echo "  3. Enable SSO in Jellyfin Admin Dashboard > Plugins > SSO-Authentication"
+              echo ""
+              echo "=========================================="
+          
+          volumeMounts:
+            - name: jellyfin-config
+              mountPath: /config
+            - name: plugin-download
+              mountPath: /plugin-download
+      
+      volumes:
+        - name: jellyfin-config
+          persistentVolumeClaim:
+            claimName: jellyfin-config-pvc
+        - name: plugin-download
+          emptyDir: {}

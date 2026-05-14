@@ -1,0 +1,277 @@
+# Security Overview Dashboard - SIEM-style log analysis
+# Queries Loki for security events: auth failures, sudo, permission denials
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-security-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: grafana
+  annotations:
+    grafana_folder: "Security"
+data:
+  security-overview-dashboard.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": "-- Grafana --",
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "gnetId": null,
+      "graphTooltip": 0,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "datasource": "Loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 10},
+                  {"color": "red", "value": 50}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "id": 1,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false},
+            "textMode": "auto"
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "sum(count_over_time({job=~\".*\"} |~ \"(?i)failed password|authentication failure|invalid user\" [$__range]))",
+              "legendFormat": "Failed Auth",
+              "refId": "A"
+            }
+          ],
+          "title": "Failed Auth Attempts",
+          "type": "stat"
+        },
+        {
+          "datasource": "Loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "blue", "value": null}]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "id": 2,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false},
+            "textMode": "auto"
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "sum(count_over_time({job=~\".*\"} |~ \"(?i)sudo:.*command\" [$__range]))",
+              "legendFormat": "Sudo Commands",
+              "refId": "A"
+            }
+          ],
+          "title": "Sudo Commands",
+          "type": "stat"
+        },
+        {
+          "datasource": "Loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "orange", "value": 5},
+                  {"color": "red", "value": 20}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "id": 3,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false},
+            "textMode": "auto"
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "sum(count_over_time({job=~\".*\"} |~ \"(?i)forbidden|denied|unauthorized|permission denied\" [$__range]))",
+              "legendFormat": "Permission Denied",
+              "refId": "A"
+            }
+          ],
+          "title": "Permission Denied",
+          "type": "stat"
+        },
+        {
+          "datasource": "Loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "red", "value": 1}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "id": 4,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false},
+            "textMode": "auto"
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "sum(count_over_time({job=~\".*\"} |~ \"(?i)oomkill|out of memory\" [$__range]))",
+              "legendFormat": "OOM Events",
+              "refId": "A"
+            }
+          ],
+          "title": "OOM Events",
+          "type": "stat"
+        },
+        {
+          "datasource": "Loki",
+          "gridPos": {"h": 10, "w": 12, "x": 0, "y": 4},
+          "id": 5,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "{job=~\".*\"} |~ \"(?i)failed password|authentication failure|invalid user\"",
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "Failed Authentication Attempts",
+          "type": "logs"
+        },
+        {
+          "datasource": "Loki",
+          "gridPos": {"h": 10, "w": 12, "x": 12, "y": 4},
+          "id": 6,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "{job=~\".*\"} |~ \"(?i)sudo:.*command\"",
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "Sudo Command Usage",
+          "type": "logs"
+        },
+        {
+          "datasource": "Loki",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 14},
+          "id": 7,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "<internal-net>",
+          "targets": [
+            {
+              "datasource": "Loki",
+              "expr": "{job=~\".*\"} |~ \"(?i)error|critical|fatal\" |~ \"(?i)security|auth|certificate|tls|permission\"",
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "Critical Security Errors",
+          "type": "logs"
+        }
+      ],
+      "refresh": "5m",
+      "schemaVersion": 38,
+      "style": "dark",
+      "tags": ["security", "siem", "loki", "logs"],
+      "templating": {"list": []},
+      "time": {"from": "now-24h", "to": "now"},
+      "timepicker": {},
+      "timezone": "",
+      "title": "Security Overview",
+      "uid": "security-overview",
+      "version": 1
+    }

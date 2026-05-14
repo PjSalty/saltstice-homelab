@@ -1,0 +1,112 @@
+---
+# SeaweedFS → TrueNAS NFS backup CronJob
+# Mirrors all S3 buckets to NFS for secondary copy of:
+#   - Velero K8s backups
+#   - GitLab Runner cache
+#   - AMP game server backups
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: seaweedfs-nfs-backup
+  namespace: storage
+  labels:
+    app.kubernetes.io/name: seaweedfs-backup
+    app.kubernetes.io/component: backup
+spec:
+  schedule: "0 3 * * *"  # Daily at 3 AM
+  # TrueNAS: dataset tank/backups/seaweedfs needs permissions fixed:
+  #   chmod 777 /mnt/tank/backups/seaweedfs (or chown nobody:nogroup)
+  #   NFS share mapall_user=nobody maps all K8s writes to nobody UID
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 14400  # 4 hour timeout (velero/kopia bucket has many small files)
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: seaweedfs-backup
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            fsGroup: 65534
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: mc-mirror
+              image: ${IMAGE_ALPINE}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "=== SeaweedFS S3 → NFS Backup ==="
+
+                  # Download mc binary
+                  wget -q "https://dl.min.io/client/mc/release/linux-amd64/mc" -O /tmp/mc
+                  chmod +x /tmp/mc
+
+                  # Extract admin S3 credentials (first identity in multi-line JSON)
+                  S3_ACCESS_KEY=$(awk -F'"' '/"accessKey"/{print $4; exit}' /config/s3.json)
+                  S3_SECRET_KEY=$(awk -F'"' '/"secretKey"/{print $4; exit}' /config/s3.json)
+
+                  if [ -z "$S3_ACCESS_KEY" ] || [ -z "$S3_SECRET_KEY" ]; then
+                    echo "ERROR: Failed to extract S3 credentials"
+                    exit 1
+                  fi
+
+                  echo "Configuring SeaweedFS S3 alias..."
+                  /tmp/mc alias set seaweedfs http://seaweedfs-s3.storage.svc.cluster.local:8333 "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
+
+                  echo "Mirroring all buckets to NFS backup..."
+                  # --parallel 32: utilise multiple workers (velero/kopia has many small files)
+                  # No --overwrite: mc mirror skips identical files by default; --overwrite forces
+                  # re-upload of every file even when unchanged, blowing past the deadline.
+                  for bucket in $(/tmp/mc ls seaweedfs/ --json | sed -n 's/.*"key":"\([^"]*\)".*/\1/p' | tr -d '/'); do
+                    echo "Mirroring bucket: $bucket"
+                    /tmp/mc mirror --parallel 32 seaweedfs/$bucket /backup/$bucket
+                  done
+
+                  echo "Backup complete at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 256Mi
+                limits:
+                  cpu: 2000m  # mc --parallel 32 needs cores to actually run them concurrently
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: backup-nfs
+                  mountPath: /backup
+                - name: mc-config
+                  mountPath: /.mc
+                - name: tmp
+                  mountPath: /tmp
+                - name: s3-config
+                  mountPath: /config
+                  readOnly: true
+          volumes:
+            - name: backup-nfs
+              nfs:
+                server: <internal-ip>
+                path: /mnt/tank/backups/seaweedfs
+            - name: mc-config
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
+            - name: s3-config
+              secret:
+                secretName: seaweedfs-s3-config

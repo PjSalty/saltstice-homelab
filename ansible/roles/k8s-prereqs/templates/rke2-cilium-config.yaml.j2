@@ -1,0 +1,44 @@
+---
+# HelmChartConfig for RKE2 bundled Cilium
+# Matches running Cilium v1.18.6 configuration
+# Deployed to: /var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-cilium
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    kubeProxyReplacement: true
+    k8sServiceHost: {{ rke2_api_ip }}
+    k8sServicePort: 6443
+    routingMode: native
+    autoDirectNodeRoutes: true
+    ipv4NativeRoutingCIDR: {{ rke2_cluster_cidr | first }}
+    operator:
+      replicas: 1
+    ipam:
+      mode: kubernetes
+    hubble:
+      enabled: true
+      relay:
+        enabled: true
+      ui:
+        enabled: true
+    loadBalancer:
+      mode: dsr
+      algorithm: maglev
+      dsrDispatch: opt
+    bpf:
+      masquerade: true
+      lbMapMax: 131072
+      hostLegacyRouting: false
+    externalIPs:
+      enabled: true
+    nodePort:
+      enabled: true
+    hostPort:
+      enabled: true
+    socketLB:
+      enabled: true
+      hostNamespaceOnly: false

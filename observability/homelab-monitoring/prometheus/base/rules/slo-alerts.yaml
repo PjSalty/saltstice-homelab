@@ -1,0 +1,244 @@
+---
+# Service Level Objectives (SLOs) and Service Level Indicators (SLIs)
+# Defines availability, latency, and error rate targets for critical services
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # Recording Rules for SLI Calculations
+    # =========================================================================
+    - name: sli-recording-rules
+      interval: 1m
+      rules:
+        # Traefik availability (requests with non-5xx responses)
+        - record: sli:traefik:availability:rate5m
+          expr: |
+            sum(rate(traefik_service_requests_total{code!~"5.."}[5m]))
+            /
+            sum(rate(traefik_service_requests_total[5m]))
+
+        # Traefik latency (p95)
+        - record: sli:traefik:latency_p95:5m
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(traefik_service_request_duration_seconds_bucket[5m])) by (le)
+            )
+
+        # Traefik latency (p99)
+        - record: sli:traefik:latency_p99:5m
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(traefik_service_request_duration_seconds_bucket[5m])) by (le)
+            )
+
+        # Kubernetes API availability
+        - record: sli:kubernetes_api:availability:rate5m
+          expr: |
+            sum(rate(apiserver_request_total{code!~"5.."}[5m]))
+            /
+            sum(rate(apiserver_request_total[5m]))
+
+        # Per-service availability (for services with HTTP probes)
+        - record: sli:service:availability:rate5m
+          expr: |
+            avg_over_time(probe_success[5m])
+          labels:
+            sli: availability
+
+    # =========================================================================
+    # SLO Definitions
+    # =========================================================================
+    # Traefik Ingress: 99.9% availability, p95 < 500ms
+    - name: slo-traefik
+      interval: 1m
+      rules:
+        - alert: TraefikSLOAvailabilityBreach
+          expr: |
+            sli:traefik:availability:rate5m < 0.999
+          for: 5m
+          labels:
+            severity: warning
+            category: slo
+            service: traefik
+            slo: availability
+          annotations:
+            summary: "Traefik availability SLO breach (< 99.9%)"
+            description: |
+              Traefik ingress availability is {{ printf "%.3f" $value | float64 | mulf 100 }}%
+              which is below the 99.9% SLO target.
+            slo_target: "99.9%"
+            current_value: "{{ printf \"%.3f\" $value | float64 | mulf 100 }}%"
+
+        - alert: TraefikSLOLatencyBreach
+          expr: |
+            sli:traefik:latency_p95:5m > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            category: slo
+            service: traefik
+            slo: latency_p95
+          annotations:
+            summary: "Traefik latency SLO breach (p95 > 500ms)"
+            description: |
+              Traefik p95 latency is {{ printf "%.0f" $value | float64 | mulf 1000 }}ms
+              which exceeds the 500ms SLO target.
+            slo_target: "< 500ms"
+            current_value: "{{ printf \"%.0f\" $value | float64 | mulf 1000 }}ms"
+
+    # Kubernetes API: 99.99% availability
+    - name: slo-kubernetes-api
+      interval: 1m
+      rules:
+        - alert: KubernetesAPISLOBreach
+          expr: |
+            sli:kubernetes_api:availability:rate5m < 0.9999
+          for: 5m
+          labels:
+            severity: critical
+            category: slo
+            service: kubernetes-api
+            slo: availability
+          annotations:
+            summary: "Kubernetes API availability SLO breach (< 99.99%)"
+            description: |
+              Kubernetes API availability is {{ printf "%.4f" $value | float64 | mulf 100 }}%
+              which is below the 99.99% SLO target.
+            slo_target: "99.99%"
+
+    # Core Infrastructure Services: 99.5% availability
+    - name: slo-infrastructure
+      interval: 5m
+      rules:
+        - alert: GitLabSLOBreach
+          expr: |
+            avg_over_time(probe_success{job="blackbox-http", instance=~".*gitlab.*"}[5m]) < 0.995
+          for: 15m
+          labels:
+            severity: warning
+            category: slo
+            service: gitlab
+            slo: availability
+          annotations:
+            summary: "GitLab availability SLO breach (< 99.5%)"
+            description: |
+              GitLab availability is below the 99.5% SLO target.
+            slo_target: "99.5%"
+
+        - alert: HarborSLOBreach
+          expr: |
+            avg_over_time(probe_success{job="blackbox-http", instance=~".*harbor.*"}[5m]) < 0.995
+          for: 15m
+          labels:
+            severity: warning
+            category: slo
+            service: harbor
+            slo: availability
+          annotations:
+            summary: "Harbor availability SLO breach (< 99.5%)"
+            description: |
+              Harbor registry availability is below the 99.5% SLO target.
+            slo_target: "99.5%"
+
+        - alert: AuthentikSLOBreach
+          expr: |
+            avg_over_time(probe_success{job="blackbox-http", instance=~".*authentik.*|.*auth.*"}[5m]) < 0.995
+          for: 15m
+          labels:
+            severity: warning
+            category: slo
+            service: authentik
+            slo: availability
+          annotations:
+            summary: "Authentik availability SLO breach (< 99.5%)"
+            description: |
+              Authentik SSO availability is below the 99.5% SLO target.
+              This may affect authentication for all services.
+            slo_target: "99.5%"
+
+    # Storage Services: 99.9% availability
+    - name: slo-storage
+      interval: 1m
+      rules:
+        - alert: NFSSLOBreach
+          expr: |
+            avg_over_time(probe_success{job="blackbox-nfs"}[5m]) < 0.999
+          for: 5m
+          labels:
+            severity: critical
+            category: slo
+            service: nfs-storage
+            slo: availability
+          annotations:
+            summary: "NFS storage availability SLO breach (< 99.9%)"
+            description: |
+              NFS storage availability is below the 99.9% SLO target.
+              This affects all Kubernetes persistent volumes.
+            slo_target: "99.9%"
+
+        - alert: SeaweedFSSLOBreach
+          expr: |
+            avg_over_time(up{job="seaweedfs"}[5m]) < 0.999
+          for: 5m
+          labels:
+            severity: warning
+            category: slo
+            service: seaweedfs
+            slo: availability
+          annotations:
+            summary: "SeaweedFS availability SLO breach (< 99.9%)"
+            description: |
+              SeaweedFS S3 storage availability is below the 99.9% SLO target.
+            slo_target: "99.9%"
+
+    # =========================================================================
+    # Error Budget Tracking
+    # =========================================================================
+    - name: error-budget
+      interval: 5m
+      rules:
+        # Calculate error budget remaining (monthly window)
+        # 99.9% SLO = 0.1% error budget = ~43 minutes/month
+        - record: error_budget:traefik:remaining
+          expr: |
+            1 - (
+              (1 - avg_over_time(sli:traefik:availability:rate5m[30d]))
+              / 0.001
+            )
+
+        - alert: TraefikErrorBudgetLow
+          expr: |
+            error_budget:traefik:remaining < 0.25
+          for: 1h
+          labels:
+            severity: warning
+            category: slo
+            service: traefik
+          annotations:
+            summary: "Traefik error budget < 25% remaining"
+            description: |
+              Only {{ printf "%.0f" $value | float64 | mulf 100 }}% of the monthly
+              error budget remains for Traefik. Consider reducing deployments
+              until next month.
+
+        - alert: TraefikErrorBudgetExhausted
+          expr: |
+            error_budget:traefik:remaining < 0
+          for: 15m
+          labels:
+            severity: critical
+            category: slo
+            service: traefik
+          annotations:
+            summary: "Traefik error budget exhausted"
+            description: |
+              Traefik has exceeded its monthly error budget. SLO is breached.
+              Immediate action required to restore service reliability.

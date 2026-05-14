@@ -1,0 +1,352 @@
+---
+- name: Disable Proxmox enterprise repository
+  ansible.builtin.apt_repository:
+    repo: "deb https://enterprise.proxmox.com/debian/pve {{ ansible_distribution_release }} pve-enterprise"
+    state: absent
+  when: not proxmox_enterprise_repo
+  become: true
+  tags:
+    - proxmox
+    - packages
+
+- name: Enable Proxmox no-subscription repository
+  ansible.builtin.apt_repository:
+    repo: "deb http://download.proxmox.com/debian/pve {{ ansible_distribution_release }} pve-no-subscription"
+    filename: pve-no-subscription
+    state: present
+  when: not proxmox_enterprise_repo
+  become: true
+  tags:
+    - proxmox
+    - packages
+
+- name: Blacklist kernel modules for GPU passthrough
+  ansible.builtin.template:
+    src: module-blacklist.conf.j2
+    dest: /etc/modprobe.d/blacklist-homelab.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags:
+    - proxmox
+    - gpu
+
+- name: Configure IOMMU kernel parameters
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+    line: 'GRUB_CMDLINE_LINUX_DEFAULT="{{ proxmox_grub_cmdline }}"'
+  when: proxmox_iommu_enabled
+  become: true
+  tags:
+    - proxmox
+    - iommu
+
+- name: Load vfio modules
+  ansible.builtin.lineinfile:
+    path: /etc/modules
+    line: "{{ item }}"
+    regexp: "^{{ item }}$"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - vfio
+    - vfio_iommu_type1
+    - vfio_pci
+    - vfio_virqfd
+  when: proxmox_iommu_enabled
+  become: true
+  tags:
+    - proxmox
+    - iommu
+
+- name: Configure Proxmox sysctl
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ proxmox_sysctl | dict2items }}"
+  become: true
+  tags:
+    - proxmox
+    - sysctl
+
+# Allow VM-to-VM bridge traffic through UFW FORWARD chain (IPv4 + IPv6).
+# pve-firewall sets bridge-nf-call-ip[6]tables=1, so bridged frames traverse
+# the host netfilter stack. UFW default FORWARD policy is DROP, so without
+# these rules all inter-VM traffic on vmbr+ is dropped and logged.
+# Incident: 2026-04-11 — full K8s outage (IPv4). IPv6 parity added 2026-04-14
+# after UFW BLOCK spam from VM IPv6 Router Solicitations / DHCPv6 on vmbr1.
+- name: Allow VM bridge forwarding in UFW (IPv4 + IPv6)
+  ansible.builtin.lineinfile:
+    path: "{{ item.path }}"
+    insertbefore: "-A {{ item.chain }} -m conntrack --ctstate RELATED,ESTABLISHED"
+    line: "-A {{ item.chain }} -i vmbr+ -o vmbr+ -j ACCEPT"
+    state: present
+  loop:
+    - { path: /etc/ufw/before.rules, chain: ufw-before-forward }
+    - { path: /etc/ufw/before6.rules, chain: ufw6-before-forward }
+  become: true
+  notify: Reload UFW
+  tags:
+    - proxmox
+    - firewall
+    - network
+
+# Clean up workarounds from initial incident response (no longer needed).
+# The UFW vmbr forward rule is the proper fix.
+- name: Remove obsolete modprobe hook (bridge-nf workaround)
+  ansible.builtin.file:
+    path: /etc/modprobe.d/bridge-nf-disable.conf
+    state: absent
+  become: true
+  tags:
+    - proxmox
+    - cleanup
+
+- name: Remove obsolete pve-firewall systemd override
+  ansible.builtin.file:
+    path: /etc/systemd/system/pve-firewall.service.d/bridge-nf-fix.conf
+    state: absent
+  become: true
+  notify: Reload systemd
+  tags:
+    - proxmox
+    - cleanup
+
+# Remove the systemd override directory if empty
+- name: Remove empty pve-firewall override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/pve-firewall.service.d
+    state: absent
+  become: true
+  tags:
+    - proxmox
+    - cleanup
+
+# ---- ZFS Performance Tuning ----
+
+- name: Set ZFS ARC max
+  ansible.builtin.lineinfile:
+    path: /etc/modprobe.d/zfs.conf
+    regexp: '^options zfs zfs_arc_max='
+    line: "options zfs zfs_arc_max={{ proxmox_zfs_arc_max_gb * 1073741824 }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags:
+    - proxmox
+    - zfs
+    - performance
+
+- name: Apply ZFS ARC max at runtime
+  ansible.builtin.shell: "echo {{ proxmox_zfs_arc_max_gb * 1073741824 }} > /sys/module/zfs/parameters/zfs_arc_max"
+  changed_when: false
+  become: true
+  tags:
+    - proxmox
+    - zfs
+    - performance
+
+- name: Set ZFS atime off on rpool
+  ansible.builtin.command: zfs set atime={{ proxmox_zfs_atime }} rpool
+  changed_when: false
+  become: true
+  tags:
+    - proxmox
+    - zfs
+    - performance
+
+- name: Enable ZFS autotrim on rpool
+  ansible.builtin.command: zpool set autotrim=on rpool
+  changed_when: false
+  when: proxmox_zfs_autotrim
+  become: true
+  tags:
+    - proxmox
+    - zfs
+    - performance
+
+# ---- Static route cleanup: Traefik VIP via K8s VLAN ----
+# Removed in 2026-04-30 after the post-Proxmox-cycle Cilium recovery
+# revealed the route had become a single point of failure: it pinned
+# Proxmox -> Authentik traffic through k8s-master-1, and after Cilium
+# reset its BPF state on a host cycle, master-1's datapath rejected
+# packets destined for <internal-ip> with TCP RST until the BPF maps
+# repopulated -- breaking Proxmox SSO every reboot.
+#
+# Background: original 348cff6 added the route to bypass MikroTik
+# fasttrack/conntrack which was breaking inter-VLAN TLS forwarding.
+# That MikroTik issue was resolved separately (see firewall audit
+# 2026-03-17). Default gateway path via <mgmt-ip> -> BGP-from-MetalLB
+# is now the supported route to <internal-ip>, with normal latency
+# (~115ms vs ~0.1ms direct, which is irrelevant for human SSO flows).
+#
+# These two `state: absent` tasks ensure the route is removed from any
+# host that previously had it. They become no-ops once the line and
+# kernel route are gone.
+
+- name: Remove obsolete persistent static route to Traefik VIP
+  ansible.builtin.lineinfile:
+    path: /etc/network/interfaces
+    regexp: 'up ip route.*{{ proxmox_traefik_vip }}'
+    state: absent
+  become: true
+  tags:
+    - proxmox
+    - network
+    - routing
+
+- name: Remove obsolete static route at runtime (idempotent)
+  ansible.builtin.command:
+    cmd: "ip route del {{ proxmox_traefik_vip }}/32"
+  register: _proxmox_route_del
+  changed_when: _proxmox_route_del.rc == 0
+  failed_when:
+    - _proxmox_route_del.rc != 0
+    - "'No such process' not in (_proxmox_route_del.stderr | default(''))"
+  become: true
+  tags:
+    - proxmox
+    - network
+    - routing
+
+# ---- SSD I/O Scheduler ----
+
+- name: Set SSD I/O scheduler to none
+  ansible.builtin.shell: "echo none > /sys/block/{{ item }}/queue/scheduler"
+  loop: "{{ proxmox_ssd_devices }}"
+  changed_when: false
+  become: true
+  tags:
+    - proxmox
+    - performance
+
+# ---- Authentik SSO — OpenID Connect Realm ----
+#
+# Uses argv form (list, not folded scalar) so that empty/whitespace values
+# can't silently shift adjacent flags into each other and produce
+# "400 too many arguments" from pveum.
+
+- name: Assert Authentik OIDC client secret is present
+  ansible.builtin.assert:
+    that:
+      - proxmox_oidc_client_secret is defined
+      - proxmox_oidc_client_secret | length > 0
+    fail_msg: >-
+      proxmox_oidc_client_secret is empty. Expected SSOT path:
+      kubernetes.authentik_sso_clients.proxmox_client_secret. Confirm
+      load-ssot.yml ran and the SOPS file was decrypted.
+  when: proxmox_oidc_enabled
+  tags:
+    - proxmox
+    - sso
+    - oidc
+
+- name: Configure Authentik OpenID Connect realm
+  ansible.builtin.command:
+    argv:
+      - pveum
+      - realm
+      - add
+      - "{{ proxmox_oidc_realm }}"
+      - --type
+      - openid
+      - --issuer-url
+      - "{{ proxmox_oidc_issuer_url }}"
+      - --client-id
+      - "{{ proxmox_oidc_client_id }}"
+      - --client-key
+      - "{{ proxmox_oidc_client_secret }}"
+      - --username-claim
+      - preferred_username
+      - --scopes
+      - "openid profile email"
+      - --autocreate
+      - "1"
+      - --default
+      - "0"
+  when: proxmox_oidc_enabled
+  become: true
+  register: proxmox_oidc_realm_result
+  changed_when: proxmox_oidc_realm_result.rc == 0
+  failed_when:
+    - proxmox_oidc_realm_result.rc != 0
+    - "'already exists' not in (proxmox_oidc_realm_result.stderr | default(''))"
+  no_log: true
+  tags:
+    - proxmox
+    - sso
+    - oidc
+
+- name: Update Authentik OpenID Connect realm (if exists)
+  # `pveum realm modify` does not accept --username-claim — that field is
+  # fixed at realm creation time. The add task above already passes it,
+  # so drift here only matters if the realm is recreated, in which case
+  # add runs (rc=0 with changed) and this update is skipped.
+  ansible.builtin.command:
+    argv:
+      - pveum
+      - realm
+      - modify
+      - "{{ proxmox_oidc_realm }}"
+      - --issuer-url
+      - "{{ proxmox_oidc_issuer_url }}"
+      - --client-id
+      - "{{ proxmox_oidc_client_id }}"
+      - --client-key
+      - "{{ proxmox_oidc_client_secret }}"
+      - --scopes
+      - "openid profile email"
+      - --autocreate
+      - "1"
+  when:
+    - proxmox_oidc_enabled
+    - proxmox_oidc_realm_result.rc != 0
+  register: proxmox_oidc_realm_set
+  changed_when: false
+  failed_when: false
+  become: true
+  no_log: true
+  tags:
+    - proxmox
+    - sso
+    - oidc
+
+# Surface only stderr (and rc), with the client secret masked, so a
+# realm-set failure produces actionable output without leaking the secret.
+- name: Report realm modify result
+  ansible.builtin.fail:
+    msg: |
+      pveum realm modify failed (rc={{ proxmox_oidc_realm_set.rc }}):
+      {{ (proxmox_oidc_realm_set.stderr | default('')) | replace(proxmox_oidc_client_secret, '***') }}
+  when:
+    - proxmox_oidc_enabled
+    - proxmox_oidc_realm_result.rc != 0
+    - proxmox_oidc_realm_set.rc | default(0) != 0
+  tags:
+    - proxmox
+    - sso
+    - oidc
+
+- name: Persist SSD I/O scheduler via udev rule
+  ansible.builtin.copy:
+    dest: /etc/udev/rules.d/60-ssd-scheduler.rules
+    content: |
+      {% for dev in proxmox_ssd_devices %}
+      ACTION=="add|change", KERNEL=="{{ dev }}", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="none"
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags:
+    - proxmox
+    - performance

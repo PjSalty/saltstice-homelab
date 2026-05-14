@@ -1,0 +1,145 @@
+---
+# DMZ Security Headers — stricter than internal
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-security-headers
+  namespace: traefik-dmz
+spec:
+  headers:
+    frameDeny: true
+    browserXssFilter: true
+    contentTypeNosniff: true
+    forceSTSHeader: true
+    stsIncludeSubdomains: true
+    stsPreload: true
+    stsSeconds: 31536000
+    customFrameOptionsValue: "DENY"
+    referrerPolicy: "no-referrer"
+    permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
+    contentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' wss: https://*.example.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+---
+# DMZ Compression
+# Excludes text/event-stream (SSE) and text/plain (MSC4108 rendezvous uses
+# ETag-based concurrency control — compression breaks ETag headers)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-compression
+  namespace: traefik-dmz
+spec:
+  compress:
+    excludedContentTypes:
+      - text/event-stream
+      - text/plain
+---
+# DMZ Rate Limit — 10 req/s default for community services
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-rate-limit
+  namespace: traefik-dmz
+spec:
+  rateLimit:
+    average: 10
+    burst: 20
+---
+# DMZ Rate Limit Strict — 3 req/s for auth/registration endpoints
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-rate-limit-strict
+  namespace: traefik-dmz
+spec:
+  rateLimit:
+    average: 3
+    burst: 5
+---
+# DMZ Body Size Limit — 50MB for Matrix media uploads
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-body-size-limit
+  namespace: traefik-dmz
+spec:
+  buffering:
+    maxRequestBodyBytes: 52428800
+---
+# DMZ Default Chain — security headers + compression + rate limit
+# Note: dmz-body-size-limit (buffering) intentionally excluded — Traefik's
+# buffering middleware breaks on empty-body 302 redirects (SSO, OIDC).
+# Apps enforce their own upload limits (e.g. Synapse max_upload_size: 50M).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-default-chain
+  namespace: traefik-dmz
+spec:
+  chain:
+    middlewares:
+      - name: dmz-security-headers
+      - name: dmz-compression
+      - name: dmz-rate-limit
+---
+# DMZ Chain with Strict Rate Limiting (for auth endpoints)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-chain-strict
+  namespace: traefik-dmz
+spec:
+  chain:
+    middlewares:
+      - name: dmz-security-headers
+      - name: dmz-compression
+      - name: dmz-rate-limit-strict
+---
+# DMZ Security Headers for Auth Services (MAS) — no CSP override
+# Auth services redirect to external IdPs (Authentik) and manage their own CSP.
+# Traefik's generic CSP (form-action 'self') blocks OIDC redirects to upstream.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-security-headers-auth
+  namespace: traefik-dmz
+spec:
+  headers:
+    browserXssFilter: true
+    contentTypeNosniff: true
+    forceSTSHeader: true
+    stsIncludeSubdomains: true
+    stsPreload: true
+    stsSeconds: 31536000
+    referrerPolicy: "no-referrer"
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+---
+# DMZ Chain for Auth Services — relaxed headers + compression + rate limit
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-chain-auth
+  namespace: traefik-dmz
+spec:
+  chain:
+    middlewares:
+      - name: dmz-security-headers-auth
+      - name: dmz-compression
+      - name: dmz-rate-limit
+---
+# DMZ Internal-Only — blocks requests not from internal subnets
+# Used to protect admin endpoints from Cloudflare Tunnel access
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dmz-internal-only
+  namespace: traefik-dmz
+spec:
+  ipAllowList:
+    sourceRange:
+      - <internal-ip>/16
+      - <mgmt-ip>/24
+      - 10.42.0.0/16
+      - 10.43.0.0/16

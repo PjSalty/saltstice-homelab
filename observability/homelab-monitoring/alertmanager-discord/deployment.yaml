@@ -1,0 +1,181 @@
+---
+# Alertmanager Discord Adapter
+# Converts AlertManager webhooks to nicely formatted Discord embeds
+# Researched: 2025-12-08
+# Source: https://github.com/benjojo/alertmanager-discord
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager-discord-critical
+  namespace: monitoring
+  labels:
+    app: alertmanager-discord
+    severity: critical
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager-discord
+      severity: critical
+  template:
+    metadata:
+      labels:
+        app: alertmanager-discord
+        severity: critical
+    spec:
+      containers:
+        - name: alertmanager-discord
+          image: ${IMAGE_ALERTMANAGER_DISCORD}
+          ports:
+            - containerPort: 9094
+              name: http
+          env:
+            - name: DISCORD_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: discord-webhooks
+                  key: critical-webhook
+            - name: DISCORD_USERNAME
+              value: "Homelab Critical"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager-discord-warning
+  namespace: monitoring
+  labels:
+    app: alertmanager-discord
+    severity: warning
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager-discord
+      severity: warning
+  template:
+    metadata:
+      labels:
+        app: alertmanager-discord
+        severity: warning
+    spec:
+      containers:
+        - name: alertmanager-discord
+          image: ${IMAGE_ALERTMANAGER_DISCORD}
+          ports:
+            - containerPort: 9094
+              name: http
+          env:
+            - name: DISCORD_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: discord-webhooks
+                  key: warning-webhook
+            - name: DISCORD_USERNAME
+              value: "Homelab Warning"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager-discord-info
+  namespace: monitoring
+  labels:
+    app: alertmanager-discord
+    severity: info
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager-discord
+      severity: info
+  template:
+    metadata:
+      labels:
+        app: alertmanager-discord
+        severity: info
+    spec:
+      containers:
+        - name: alertmanager-discord
+          image: ${IMAGE_ALERTMANAGER_DISCORD}
+          ports:
+            - containerPort: 9094
+              name: http
+          env:
+            - name: DISCORD_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: discord-webhooks
+                  key: info-webhook
+            - name: DISCORD_USERNAME
+              value: "Homelab Info"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-discord-critical
+  namespace: monitoring
+  labels:
+    app: alertmanager-discord
+    severity: critical
+spec:
+  selector:
+    app: alertmanager-discord
+    severity: critical
+  ports:
+    - port: 9094
+      targetPort: 9094
+      name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-discord-warning
+  namespace: monitoring
+  labels:
+    app: alertmanager-discord
+    severity: warning
+spec:
+  selector:
+    app: alertmanager-discord
+    severity: warning
+  ports:
+    - port: 9094
+      targetPort: 9094
+      name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-discord-info
+  namespace: monitoring
+  labels:
+    app: alertmanager-discord
+    severity: info
+spec:
+  selector:
+    app: alertmanager-discord
+    severity: info
+  ports:
+    - port: 9094
+      targetPort: 9094
+      name: http

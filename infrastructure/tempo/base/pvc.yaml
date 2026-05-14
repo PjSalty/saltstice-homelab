@@ -1,0 +1,17 @@
+---
+# Tempo Data Storage
+# Uses NFS for persistence
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tempo-data
+  namespace: tempo
+  labels:
+    app.kubernetes.io/name: tempo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 50Gi

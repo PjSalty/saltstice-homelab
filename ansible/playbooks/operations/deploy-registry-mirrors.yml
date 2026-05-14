@@ -1,0 +1,35 @@
+---
+# Deploy containerd registry mirrors to K8s nodes
+# Templates registries.yaml from group_vars and restarts RKE2 to apply
+#
+# Usage: ansible-playbook playbooks/operations/deploy-registry-mirrors.yml
+
+- name: Load SSOT credentials
+  ansible.builtin.import_playbook: ../includes/load-ssot.yml
+
+- name: Deploy containerd registry mirrors
+  hosts: k8s_cluster
+  become: true
+  gather_facts: false
+  tags:
+    - registry-mirrors
+  tasks:
+    - name: Template registries.yaml
+      ansible.builtin.template:
+        src: registries.yaml.j2
+        dest: /etc/rancher/rke2/registries.yaml
+        owner: root
+        group: root
+        mode: "0600"
+      register: registries_config
+
+    - name: Determine RKE2 service name
+      ansible.builtin.set_fact:
+        _rke2_service: "{{ 'rke2-server' if 'masters' in group_names else 'rke2-agent' }}"
+
+    - name: Restart RKE2 to apply registry config  # noqa: no-handler — throttled serial restart, not suited for handlers
+      ansible.builtin.systemd:
+        name: "{{ _rke2_service }}"
+        state: restarted
+      when: registries_config.changed
+      throttle: 1

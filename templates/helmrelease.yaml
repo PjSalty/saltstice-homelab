@@ -1,0 +1,66 @@
+# Generic Flux HelmRelease starter.
+# Replace the bracketed placeholders. Defaults match the conventions
+# the rest of the cluster follows.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: <APP-NAME>
+  namespace: <APP-NAMESPACE>
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: <CHART-NAME>
+      version: "${HELM_<APP_NAME_UPPER>}" # tracked in image-versions ConfigMap
+      sourceRef:
+        kind: HelmRepository
+        name: <CHART-REPO>
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    image:
+      repository: ${IMAGE_<APP_NAME_UPPER>_REPO}
+      tag: ${IMAGE_<APP_NAME_UPPER>_TAG}
+
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: ["ALL"]
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    serviceMonitor:
+      enabled: true
+
+    persistence:
+      enabled: true
+      storageClass: <iscsi-csi or nfs-csi> # iscsi for stateful, nfs for shared-read
+      size: <SIZE>
+
+  # Optional postBuild substitution from SSOT ConfigMaps
+  postBuild:
+    substituteFrom:
+      - name: image-versions
+        kind: ConfigMap
+      - name: network-config
+        kind: ConfigMap

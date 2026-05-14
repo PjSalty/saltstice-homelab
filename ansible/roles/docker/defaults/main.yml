@@ -1,0 +1,13 @@
+---
+# docker role defaults
+
+docker_edition: ce
+docker_users:
+  - debian
+
+docker_log_driver: json-file
+docker_log_max_size: "50m"
+docker_log_max_file: "3"
+
+docker_registry_mirrors:
+  - "https://harbor.{{ domain }}"

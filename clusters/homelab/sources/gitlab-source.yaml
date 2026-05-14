@@ -1,0 +1,14 @@
+---
+# Main Kubernetes manifests repository
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: homelab
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: ssh://git@<internal-ip>:2222/infrastructure/homelab-kubernetes.git
+  ref:
+    branch: main
+  secretRef:
+    name: gitlab-ssh

@@ -1,0 +1,68 @@
+# Per-app CiliumNetworkPolicy starter. Default-deny on the namespace
+# (assumed already in place) plus explicit allow for the things this
+# app needs.
+#
+# Egress to in-cluster Service VIPs needs toEndpoints, NOT toCIDR —
+# Cilium evaluates policy pre-DNAT, so the destination port checked
+# is the ClusterIP port, not the actual node port behind it.
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: <APP-NAME>
+  namespace: <APP-NAMESPACE>
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: <APP-NAME>
+
+  ingress:
+    # Web traffic from Traefik
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - { port: "<APP-PORT>", protocol: TCP }
+
+    # Prometheus scrape
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - { port: "<METRICS-PORT>", protocol: TCP }
+
+  egress:
+    # DNS — kube-dns specifically. toCIDR doesn't match in-cluster
+    # Service VIPs because Cilium evaluates pre-DNAT.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+
+    # OIDC callback to Authentik
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: authentik
+      toPorts:
+        - ports:
+            - { port: "9000", protocol: TCP }
+
+    # Database (if external to namespace)
+    - toCIDR: ["<DB-CIDR>"]
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+
+    # External APIs (FQDN-based; FQDN policies are evaluated at the
+    # DNS proxy layer, requires DNS visibility — see Cilium docs)
+    - toFQDNs:
+        - matchPattern: "*.example.com"
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }

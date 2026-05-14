@@ -1,0 +1,29 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: authentik
+  namespace: authentik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # 100 req/s, burst 50. The stricter 10/s middleware was too
+    # aggressive — Authentik's SPA loads ~30 JS chunks concurrently
+    # on first paint and was getting 429d.
+    traefik.ingress.kubernetes.io/router.middlewares: traefik-default-chain-with-ratelimit@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [auth.example.com]
+      secretName: wildcard-tls
+  rules:
+    - host: auth.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: authentik-server
+                port:
+                  number: 80

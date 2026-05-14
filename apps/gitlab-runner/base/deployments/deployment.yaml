@@ -1,0 +1,202 @@
+---
+# GitLab Runner Deployment - Kubernetes Executor with SOPS
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab-runner
+  namespace: gitlab-runner
+  labels:
+    app: gitlab-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitlab-runner
+  template:
+    metadata:
+      labels:
+        app: gitlab-runner
+    spec:
+      serviceAccountName: gitlab-runner
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: gitlab-runner
+        image: ${IMAGE_GITLAB_RUNNER}
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # GitLab Runner with token-based authentication (GitLab 16+)
+          # Token is created by the runner-auto-register Job via GitLab API
+
+          # Check if we have a runner token (created by auto-register job)
+          # Note: Use $${} to escape shell variables from Flux substitution
+          if [ -n "$${RUNNER_TOKEN}" ] && [ "$${RUNNER_TOKEN}" != "" ]; then
+            echo "Using pre-registered runner token"
+
+            # Generate config.toml with the authentication token
+            cat > /etc/gitlab-runner/config.toml <<EOF
+          concurrent = 8
+          check_interval = 3
+          shutdown_timeout = 30
+
+          # Prometheus metrics endpoint
+          listen_address = ":9252"
+
+          [[runners]]
+            name = "Kubernetes Runner for Homelab"
+            url = "https://gitlab.${DOMAIN}/"
+            token = "$${RUNNER_TOKEN}"
+            executor = "kubernetes"
+            environment = ["HOME=/home/gitlab-runner", "GIT_CONFIG_GLOBAL=/home/gitlab-runner/.gitconfig"]
+            # Output limit for job logs (50MB)
+            output_limit = 52428800
+
+            # S3 Cache using in-cluster SeaweedFS
+            # SeaweedFS deployed at: apps/storage/seaweedfs
+            # S3 API runs on port 8333
+            [runners.cache]
+              Type = "s3"
+              Shared = true
+              [runners.cache.s3]
+                ServerAddress = "seaweedfs-s3.storage.svc:8333"
+                BucketName = "gitlab-runner-cache"
+                BucketLocation = "us-east-1"
+                Insecure = true  # Internal cluster traffic
+                AccessKey = "$${S3_ACCESS_KEY}"
+                SecretKey = "$${S3_SECRET_KEY}"
+
+            [runners.kubernetes]
+              host = ""
+              bearer_token_overwrite_allowed = false
+              image = "$${DEFAULT_IMAGE}"
+              helper_image = "${IMAGE_GITLAB_RUNNER_HELPER}"
+              namespace = "gitlab-runner"
+              namespace_overwrite_allowed = ""
+              # Required for Docker-in-Docker builds (BuildKit)
+              privileged = true
+              service_account = "gitlab-runner"
+              pull_policy = ["if-not-present"]
+              # Image pull secrets for private Harbor registry
+              image_pull_secrets = ["harbor-pull-secret"]
+              # Pod cleanup timeout
+              poll_timeout = 3600
+              # Resource limits for job pods
+              cpu_limit = "2"
+              cpu_limit_overwrite_max_allowed = "4"
+              memory_limit = "4Gi"
+              memory_limit_overwrite_max_allowed = "8Gi"
+              cpu_request = "100m"
+              memory_request = "256Mi"
+              # Helper container resources
+              helper_cpu_limit = "500m"
+              helper_memory_limit = "512Mi"
+              helper_cpu_request = "50m"
+              helper_memory_request = "128Mi"
+              # Security context relaxed for DinD (Docker-in-Docker) builds
+              # DinD service container requires root and privileged mode
+              [runners.kubernetes.pod_security_context]
+                fs_group = 1000
+              [runners.kubernetes.affinity]
+                [runners.kubernetes.affinity.node_affinity]
+                  [[runners.kubernetes.affinity.node_affinity.preferred_during_scheduling_ignored_during_execution]]
+                    weight = 100
+                    [runners.kubernetes.affinity.node_affinity.preferred_during_scheduling_ignored_during_execution.preference]
+                      [[runners.kubernetes.affinity.node_affinity.preferred_during_scheduling_ignored_during_execution.preference.match_expressions]]
+                        key = "node-role.kubernetes.io/worker"
+                        operator = "Exists"
+              [[runners.kubernetes.volumes.empty_dir]]
+                name = "repo"
+                mount_path = "/builds"
+                medium = ""
+              [[runners.kubernetes.volumes.empty_dir]]
+                name = "home"
+                mount_path = "/home/gitlab-runner"
+              [[runners.kubernetes.volumes.secret]]
+                name = "automation-ssh-key"
+                mount_path = "/secrets/ssh"
+                read_only = true
+                [runners.kubernetes.volumes.secret.items]
+                  "ssh-private-key" = "id_rsa"
+              [runners.kubernetes.pod_labels]
+                ci = "true"
+                app = "gitlab-runner-job"
+              [runners.kubernetes.pod_annotations]
+                "prometheus.io/scrape" = "false"
+          EOF
+
+            echo "Config generated, verifying runner..."
+            gitlab-runner verify --delete || true
+
+          else
+            echo "WARNING: No runner token found. Waiting for auto-register job..."
+            echo "The runner-auto-register Job should create the token via GitLab API"
+
+            # Copy template config and wait
+            cp /configmaps/config.toml /etc/gitlab-runner/config.toml
+
+            # Wait a bit for the job to potentially run
+            sleep 30
+          fi
+
+          # Start runner
+          echo "Starting GitLab Runner..."
+          gitlab-runner run --user=gitlab-runner --working-directory=/home/gitlab-runner
+        env:
+        - name: RUNNER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitlab-runner-token
+              key: runner-token
+              optional: true
+        - name: DEFAULT_IMAGE
+          value: "${IMAGE_ALPINE}"
+        # SeaweedFS S3 credentials for cache
+        - name: S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: seaweedfs-s3-credentials
+              key: access-key
+              optional: true
+        - name: S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: seaweedfs-s3-credentials
+              key: secret-key
+              optional: true
+        volumeMounts:
+        - name: config
+          mountPath: /configmaps
+        - name: runner-data
+          mountPath: /etc/gitlab-runner
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          exec:
+            command:
+            - /usr/bin/pgrep
+            - gitlab-runner
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - /usr/bin/pgrep
+            - gitlab-runner
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: gitlab-runner-config
+      - name: runner-data
+        persistentVolumeClaim:
+          claimName: gitlab-runner-data

@@ -1,0 +1,14 @@
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: democratic-csi-controller-pdb
+  namespace: democratic-csi
+spec:
+  # Single-replica CSI controller; drain restart causes a brief gap in
+  # provisioning new PVCs but does not affect already-mounted volumes.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: democratic-csi
+      app.kubernetes.io/csi-role: controller

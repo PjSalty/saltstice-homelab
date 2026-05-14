@@ -1,0 +1,84 @@
+---
+# Jellyfin config — iSCSI block storage for SQLite database performance.
+# Migrated from NFS, which caused locking issues and UI lag.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jellyfin-config-iscsi
+  namespace: media
+  labels:
+    app: jellyfin
+    component: config
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iscsi-csi
+  resources:
+    requests:
+      storage: 30Gi
+---
+# Jellyfin cache — persistent across restarts (avoids re-downloading 1300+ artworks)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jellyfin-cache-persistent
+  namespace: media
+  labels:
+    app: jellyfin
+    component: cache
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iscsi-csi
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Media — NFS, read-only, with mount options tuned for streaming
+# - actimeo=3600: cache file/dir attributes for 1h (media rarely changes)
+# - noatime: skip access time updates on reads
+# - nfsvers=4.1: pNFS support, fewer round-trips than v3
+# - rsize/wsize=1048576: 1MB R/W blocks for streaming throughput
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jellyfin-media-nfs
+  labels:
+    app: jellyfin
+    component: media
+spec:
+  capacity:
+    storage: 50Ti
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+    - intr
+    - noatime
+    - actimeo=3600
+    - rsize=1048576
+    - wsize=1048576
+  nfs:
+    server: ${NFS_SERVER}
+    path: /mnt/tank/media
+    readOnly: true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jellyfin-media
+  namespace: media
+  labels:
+    app: jellyfin
+    component: media
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: ""
+  volumeName: jellyfin-media-nfs
+  resources:
+    requests:
+      storage: 50Ti

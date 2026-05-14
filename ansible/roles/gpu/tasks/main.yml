@@ -1,0 +1,160 @@
+---
+- name: Install NVIDIA driver packages
+  ansible.builtin.apt:
+    name: "{{ gpu_driver_packages }}"
+    state: present
+    update_cache: true
+  become: true
+  tags:
+    - gpu
+    - packages
+
+- name: Find all NVIDIA APT source files
+  ansible.builtin.find:
+    paths: /etc/apt/sources.list.d/
+    patterns: '*'
+    contains: 'nvidia.github.io'
+  register: gpu_nvidia_sources_found
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - packages
+
+- name: Remove all NVIDIA APT source files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ gpu_nvidia_sources_found.files | default([]) }}"
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - packages
+
+- name: Remove NVIDIA keys from all locations
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/share/keyrings/nvidia-container-toolkit-keyring.asc
+    - /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    - /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
+    - /etc/apt/keyrings/nvidia-container-toolkit-keyring.asc
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - packages
+
+- name: Remove NVIDIA entries from main sources.list
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list
+    regexp: 'nvidia\.github\.io'
+    state: absent
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - packages
+
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - packages
+
+- name: Download NVIDIA container toolkit GPG key
+  ansible.builtin.get_url:
+    url: https://nvidia.github.io/libnvidia-container/gpgkey
+    dest: /tmp/nvidia-container-toolkit-key.asc
+    mode: "0644"
+    force: true
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - packages
+
+- name: Dearmor NVIDIA GPG key to binary format
+  ansible.builtin.command:
+    cmd: gpg --batch --yes --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg /tmp/nvidia-container-toolkit-key.asc
+  become: true
+  when: gpu_container_toolkit
+  changed_when: true
+  tags:
+    - gpu
+    - packages
+
+- name: Set NVIDIA GPG key permissions
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
+    mode: "0644"
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - packages
+
+- name: Configure NVIDIA container toolkit repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    content: "deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/amd64/ /\n"
+    mode: "0644"
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - packages
+
+- name: Install NVIDIA container toolkit
+  ansible.builtin.apt:
+    name: "{{ gpu_container_toolkit_packages }}"
+    state: present
+    update_cache: true
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - packages
+
+- name: Check containerd NVIDIA runtime configuration
+  ansible.builtin.command:
+    cmd: grep -q 'nvidia' /etc/containerd/config.toml
+  register: gpu_runtime_check
+  changed_when: false
+  failed_when: false
+  become: true
+  when: gpu_container_toolkit
+  tags:
+    - gpu
+    - config
+
+- name: Configure NVIDIA container runtime for containerd
+  ansible.builtin.command:
+    cmd: nvidia-ctk runtime configure --runtime=containerd
+  changed_when: true
+  become: true
+  when:
+    - gpu_container_toolkit
+    - gpu_runtime_check.rc != 0
+  notify: Restart containerd
+  tags:
+    - gpu
+    - config
+
+- name: Verify NVIDIA GPU is accessible
+  ansible.builtin.command:
+    cmd: nvidia-smi
+  register: gpu_smi_output
+  changed_when: false
+  failed_when: gpu_smi_output.rc != 0
+  become: true
+  tags:
+    - gpu
+    - verify

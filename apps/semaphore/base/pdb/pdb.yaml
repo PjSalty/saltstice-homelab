@@ -1,0 +1,12 @@
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: semaphore-pdb
+  namespace: semaphore
+spec:
+  # Single-replica job runner; drain restart is acceptable.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: semaphore

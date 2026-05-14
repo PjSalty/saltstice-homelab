@@ -1,0 +1,11 @@
+---
+# firewall role defaults
+
+firewall_enabled: true
+firewall_default_policy: deny
+
+firewall_base_ports:
+  - { port: 22, proto: tcp, comment: "SSH" }
+
+# Override per group_vars
+firewall_extra_ports: []

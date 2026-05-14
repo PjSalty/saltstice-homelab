@@ -1,0 +1,68 @@
+# Cross-Repo Orchestration Pipeline
+# Version: 2026-04-11
+#
+# Coordinates deployments across terraform → ansible → verify
+#
+# Usage: Triggered manually or by upstream pipelines via trigger tokens
+#
+# Variables:
+#   DEPLOY_TERRAFORM: "true" to run terraform stage
+#   DEPLOY_ANSIBLE: "true" to run ansible stage (auto-set after terraform)
+
+stages:
+  - terraform
+  - ansible
+  - verify
+
+terraform:deploy:
+  stage: terraform
+  trigger:
+    project: infrastructure/homelab-terraform
+    branch: main
+    strategy: depend
+  rules:
+    - if: $DEPLOY_TERRAFORM == "true"
+
+ansible:deploy:
+  stage: ansible
+  trigger:
+    project: infrastructure/homelab-ansible
+    branch: main
+    strategy: depend
+  needs:
+    - job: terraform:deploy
+      optional: true
+  rules:
+    - if: $DEPLOY_ANSIBLE == "true"
+    - if: $DEPLOY_TERRAFORM == "true"
+
+verify:infrastructure:
+  stage: verify
+  # Pinned to digest for reproducibility
+  image: harbor.example.com/dockerhub-proxy/alpine/k8s:1.35.0@sha256:18bc02c1e0df04451f4f9194eb7b7341c1165da5495459b52f85f72fb9545032
+  interruptible: true
+  # Verification is lightweight; 10 minutes is generous
+  timeout: 10 minutes
+  needs:
+    - job: ansible:deploy
+      optional: true
+  before_script:
+    - mkdir -p $(dirname ${KUBECONFIG:-/tmp/kubeconfig})
+    - |
+      if [ -n "$KUBE_CONFIG" ]; then
+        if ! echo "$KUBE_CONFIG" | base64 -d > ${KUBECONFIG:-/tmp/kubeconfig} 2>/dev/null; then
+          echo "ERROR: Failed to decode KUBE_CONFIG"
+          exit 1
+        fi
+        chmod 600 ${KUBECONFIG:-/tmp/kubeconfig}
+      fi
+  script:
+    - echo "=== Infrastructure Verification ==="
+    - kubectl get nodes -o wide || echo "WARNING: Cannot reach K8s API"
+    - kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded | head -20 || true
+    - echo "=== Verification complete ==="
+  rules:
+    - if: $DEPLOY_TERRAFORM == "true"
+    - if: $DEPLOY_ANSIBLE == "true"
+  # Verification is informational — infrastructure is already deployed
+  allow_failure: true

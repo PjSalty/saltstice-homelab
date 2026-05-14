@@ -1,0 +1,41 @@
+---
+# NVIDIA Device Plugin DaemonSet — registers GPU resources with kubelet
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-nvidia-device-plugin
+  namespace: nvidia-device-plugin
+spec:
+  description: "Allow NVIDIA device plugin to register GPUs with kubelet"
+  endpointSelector: {}
+  ingress:
+    # Allow kubelet to communicate with device plugin
+    - fromEntities:
+        - host
+    # Allow Prometheus to scrape dcgm-exporter metrics
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9400"
+              protocol: TCP
+  egress:
+    # Allow Kubernetes API for device registration
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

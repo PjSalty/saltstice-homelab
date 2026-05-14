@@ -1,0 +1,84 @@
+---
+# NetBox Initialization Job
+# Runs once to populate NetBox with infrastructure
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: netbox-init
+  namespace: netbox
+  labels:
+    app: netbox-init
+spec:
+  ttlSecondsAfterFinished: 86400  # Clean up after 24 hours
+  template:
+    metadata:
+      labels:
+        app: netbox-init
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+      - name: wait-for-netbox
+        image: ${IMAGE_BUSYBOX}
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for NetBox to be ready..."
+          until wget -q --spider http://netbox.netbox.svc.cluster.local/login/; do
+            echo "NetBox not ready, waiting..."
+            sleep 5
+          done
+          echo "NetBox is ready!"
+      containers:
+      - name: populate
+        image: ${IMAGE_PYTHON_SLIM}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+
+          # Install dependencies
+          pip install --no-cache-dir requests==2.32.3 pyyaml==6.0.2
+
+          echo "Using NetBox API token from secret..."
+          echo " Got NetBox token"
+
+          # Run population script
+          python3 /scripts/netbox-populate-infrastructure.py
+
+          echo " NetBox initialization complete!"
+        env:
+        - name: NETBOX_URL
+          value: "http://netbox.netbox.svc.cluster.local"
+        - name: NETBOX_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: netbox-automation-token
+              key: token
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: inventory
+          mountPath: /ansible/inventory
+      volumes:
+      - name: scripts
+        configMap:
+          name: netbox-scripts
+      - name: inventory
+        configMap:
+          name: ansible-inventory

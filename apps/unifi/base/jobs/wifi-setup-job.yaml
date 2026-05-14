@@ -1,0 +1,120 @@
+# UniFi WiFi Setup Job
+# Runs after bootstrap job to configure WiFi networks via API
+# Supports AP-less operation - creates networks/SSIDs without adopted APs
+# Version: 2.0.0
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: unifi-wifi-setup
+  namespace: unifi
+  annotations:
+    description: "Configure Unifi WiFi networks via API (AP-less compatible)"
+spec:
+  ttlSecondsAfterFinished: 86400  # Keep completed job for 24 hours
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        app: unifi-wifi-setup
+    spec:
+      restartPolicy: OnFailure
+      # Wait for Unifi deployment to be ready AND bootstrap job to complete
+      initContainers:
+        - name: wait-for-bootstrap
+          image: ${IMAGE_BUSYBOX}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for UniFi Controller and bootstrap job..."
+              # First wait for port to be open
+              for i in $(seq 1 90); do
+                if nc -z unifi.unifi.svc.cluster.local 8443 2>/dev/null; then
+                  echo "UniFi port 8443 is open"
+                  break
+                fi
+                echo "Attempt $i/90 - waiting for port 8443..."
+                sleep 10
+              done
+
+              # Then wait for login page to respond (indicates controller is ready)
+              for i in $(seq 1 60); do
+                HTTP_CODE=$(wget -q -O /dev/null --no-check-certificate \
+                  https://unifi.unifi.svc.cluster.local:8443/manage/account/login 2>&1 \
+                  | grep -o "HTTP/[0-9.]* [0-9]*" | grep -o "[0-9]*$" || echo "000")
+                # Accept 200 or 302 (redirect)
+                if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
+                  echo "UniFi Controller is ready (HTTP $HTTP_CODE)"
+                  # Extra wait for bootstrap job to complete
+                  echo "Waiting 60s for bootstrap job to create admin user..."
+                  sleep 60
+                  exit 0
+                fi
+                echo "Attempt $i/60 - HTTP code: $HTTP_CODE"
+                sleep 10
+              done
+              echo "Timeout waiting for UniFi Controller"
+              exit 1
+      containers:
+        - name: wifi-setup
+          image: ${IMAGE_ALPINE}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Install dependencies
+              apk add --no-cache curl jq bash
+              # Make script executable and run
+              chmod +x /scripts/setup-wifi.sh
+              /scripts/setup-wifi.sh
+          env:
+            - name: UNIFI_URL
+              value: "https://unifi.unifi.svc.cluster.local:8443"
+            - name: UNIFI_USER
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: UNIFI_USER
+            - name: UNIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: UNIFI_PASS
+            - name: NACHO_WIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: NACHO_WIFI_PASS
+            - name: IOT_WIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: IOT_WIFI_PASS
+            - name: GUEST_WIFI_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: unifi-credentials
+                  key: GUEST_WIFI_PASS
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: script
+          configMap:
+            name: unifi-wifi-setup-script
+            defaultMode: 0755

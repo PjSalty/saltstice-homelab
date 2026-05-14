@@ -1,0 +1,18 @@
+---
+# Trivy Reports Persistent Storage
+# Stores vulnerability scan reports with 30-day retention
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: trivy-reports
+  namespace: security
+  labels:
+    app: trivy
+    purpose: vulnerability-reports
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 10Gi

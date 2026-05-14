@@ -1,0 +1,15 @@
+# Loki Logging Stack Namespace
+# Part of Phase 2: Centralized Logging
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loki
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/part-of: observability
+    # privileged required: alloy DaemonSet mounts hostPath for /var/log
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/audit: baseline
+    goldilocks.fairwinds.com/enabled: "true"

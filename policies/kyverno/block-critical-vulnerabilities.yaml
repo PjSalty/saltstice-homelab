@@ -1,0 +1,69 @@
+---
+# Kyverno Policy: Block Critical Vulnerabilities
+# Checks Trivy VulnerabilityReports in the target namespace.
+# If any report for the same container name has CRITICAL findings,
+# the pod update/recreation is blocked.
+#
+# New images with no prior scan are ALLOWED — Trivy scans post-admission
+# and AlertManager fires ntfy notifications on findings.
+#
+# Mode: Audit initially — switch to Enforce after validation
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-critical-vulnerabilities
+  annotations:
+    policies.kyverno.io/title: Block Critical Vulnerabilities
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Prevents pods from being created or updated when Trivy
+      VulnerabilityReports in the same namespace show CRITICAL
+      findings for the same container name. Works on pod recreations
+      where a prior scan result exists.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: check-trivy-vulns
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              operations:
+                - CREATE
+                - UPDATE
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - flux-system
+                - kyverno
+                - karpenter
+                - security
+                - velero
+                - vpa
+                - goldilocks
+                - default
+                - gitlab-runner
+      context:
+        - name: criticalCount
+          apiCall:
+            urlPath: "/apis/aquasecurity.github.io/v1alpha1/namespaces/{{request.namespace}}/vulnerabilityreports"
+            jmesPath: "items[].report.summary.criticalCount | sum(@) || `0`"
+      validate:
+        message: >-
+          Namespace {{request.namespace}} has containers with CRITICAL
+          vulnerabilities. Check: kubectl get vulnerabilityreports -n {{request.namespace}}
+          Update affected images to patched versions before deploying.
+        deny:
+          conditions:
+            any:
+              - key: "{{ criticalCount }}"
+                operator: GreaterThan
+                value: 0

@@ -1,0 +1,97 @@
+---
+# Patch the Proxmox VE host — apt update + dist-upgrade, no host cycle.
+#
+# Excluded from the broader playbooks/operations/patch-systems.yml because
+# PVE's apt cadence differs from a stock Debian VM:
+#   - dist-upgrade is the recommended verb (PVE ships kernel package
+#     `proxmox-kernel-*`; safe-upgrade can hold it back behind dependency
+#     pinning)
+#   - the proxmox-no-subscription repo is the source of truth for the
+#     home setup (no enterprise key)
+#   - host downtime cycles every guest VM, so the actual cycle is a
+#     deliberate maintenance-window decision the operator makes by
+#     setting `cycle_host=true`. Default leaves the new kernel staged
+#     until the next planned reboot.
+#
+# Usage (Semaphore template "Patch Proxmox" runs the no-cycle form):
+#   ansible-playbook playbooks/operations/patch-proxmox.yml
+#   ansible-playbook playbooks/operations/patch-proxmox.yml -e cycle_host=true
+
+- name: Patch Proxmox VE host
+  hosts: proxmox
+  gather_facts: true
+  tasks:
+    - name: Apply CVE-2026-31431 mitigation (algif_aead blacklist)
+      ansible.builtin.import_role:
+        name: cve-2026-31431-mitigation
+      tags:
+        - patch
+        - cve-2026-31431
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+      tags:
+        - patch
+
+    - name: Run apt dist-upgrade (PVE-aware verb — pulls kernel updates)
+      ansible.builtin.apt:
+        upgrade: dist
+      register: upgrade_result
+      tags:
+        - patch
+
+    - name: Display upgraded packages # noqa: no-handler
+      ansible.builtin.debug:
+        var: upgrade_result.stdout_lines
+      when: upgrade_result.changed
+      tags:
+        - patch
+
+    - name: Check whether a kernel cycle is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: kernel_pending
+      tags:
+        - patch
+
+    - name: Notify when a kernel cycle is staged but skipped
+      ansible.builtin.debug:
+        msg: >-
+          New kernel is installed but the host is still running the old one.
+          Schedule a maintenance window and re-run with -e cycle_host=true,
+          or cycle the host manually via the Proxmox UI when ready.
+      when:
+        - kernel_pending.stat.exists
+        - not (cycle_host | default(false) | bool)
+      tags:
+        - patch
+
+    - name: Cycle the Proxmox host (host downtime — affects every guest VM)
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        msg: "Kernel update — Proxmox host cycle"
+        # PVE startup is slow because every storage backend re-mounts; 10 min
+        # ceiling avoids tripping on a normal boot.
+      when:
+        - kernel_pending.stat.exists
+        - cycle_host | default(false) | bool
+      tags:
+        - cycle
+
+    - name: Verify host is back and pveversion responds
+      ansible.builtin.command:
+        cmd: pveversion
+      register: pve_post
+      changed_when: false
+      when: cycle_host | default(false) | bool
+      tags:
+        - cycle
+
+    - name: Display post-cycle PVE version
+      ansible.builtin.debug:
+        var: pve_post.stdout_lines
+      when: cycle_host | default(false) | bool
+      tags:
+        - cycle

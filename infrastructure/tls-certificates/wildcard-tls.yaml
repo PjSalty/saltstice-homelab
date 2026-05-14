@@ -1,0 +1,17 @@
+# Wildcard TLS Certificate for *.example.com
+# This certificate is replicated to all namespaces that need it
+apiVersion: v1
+kind: Namespace
+metadata:
+    name: kube-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+    name: saltstice-wildcard-tls
+    namespace: kube-system
+type: kubernetes.io/tls
+data:
+    tls.crt: <sops-encrypted-in-private-repo>
+    tls.key: <sops-encrypted-in-private-repo>
+# (sops metadata block stripped — see templates/sops-secret.example.yaml for the canonical pattern)

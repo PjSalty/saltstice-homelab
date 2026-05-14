@@ -1,0 +1,24 @@
+---
+# =============================================================================
+# Load Balancer Variables (HAProxy + keepalived)
+# =============================================================================
+
+# HAProxy — haproxy_vip defined in all.yml
+haproxy_stats_port: 9000
+haproxy_stats_user: admin
+
+# Firewall
+firewall_extra_ports:
+  - { port: 6443, proto: tcp, comment: "K8s API" }
+  - { port: 9345, proto: tcp, comment: "RKE2 supervisor" }
+  - { port: 9000, proto: tcp, comment: "HAProxy stats UI" }
+  - { port: 8405, proto: tcp, comment: "HAProxy Prometheus" }
+  - { port: 9100, proto: tcp, comment: "node_exporter" }
+
+# Sudo — HAProxy/keepalived commands
+sudo_extra_commands:
+  - /usr/bin/systemctl restart haproxy
+  - /usr/bin/systemctl reload haproxy
+  - /usr/bin/systemctl restart keepalived
+  - /usr/sbin/ufw *
+  - /usr/bin/fail2ban-client *

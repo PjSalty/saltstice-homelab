@@ -1,0 +1,25 @@
+# Authentik ServiceMonitor
+# Researched: 2025-12-02
+# Authentik exposes Prometheus metrics on /metrics endpoint
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: authentik
+  namespace: monitoring
+  labels:
+    app: authentik
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - authentik
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: authentik
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      # Increased from 10s to handle slow Authentik responses during outpost reloads
+      scrapeTimeout: 30s

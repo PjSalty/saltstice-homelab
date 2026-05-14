@@ -1,0 +1,125 @@
+---
+# Monitoring (Prometheus/Grafana) needs cluster-wide scraping access
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-monitoring
+  namespace: monitoring
+spec:
+  description: "Allow monitoring to scrape metrics cluster-wide"
+  endpointSelector: {}
+  ingress:
+    # Allow Traefik for Grafana/Alertmanager/Prometheus UI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "9090"
+              protocol: TCP
+            - port: "9093"
+              protocol: TCP
+    # Allow MCP server read-only API access (Prometheus, AlertManager, Grafana)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp-server
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "9090"
+              protocol: TCP
+            - port: "9093"
+              protocol: TCP
+    # Allow intra-namespace (Grafana→Prometheus, Alertmanager→Prometheus, etc.)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "9090"
+              protocol: TCP
+            - port: "9093"
+              protocol: TCP
+            - port: "9094"
+              protocol: TCP
+            - port: "9100"
+              protocol: TCP
+            - port: "9115"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+            - port: "10250"
+              protocol: TCP
+            - port: "9221"
+              protocol: TCP
+            - port: "9348"
+              protocol: TCP
+            - port: "49090"
+              protocol: TCP
+  egress:
+    # Allow scraping all pods and host-network services (ACCEPTED RISK —
+    # Prometheus scrapes dozens of different metrics ports; restricting
+    # would break on every new exporter)
+    - toEntities:
+        - cluster
+        - host
+        - remote-node
+    # Allow management VLAN access for monitoring exporters:
+    # - MKTXP: MikroTik API-SSL (8729)
+    # - idrac_exporter: iDRAC Redfish HTTPS (443)
+    # - pve-exporter: Proxmox API (8006)
+    - toCIDR:
+        - <mgmt-ip>/24
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "8006"
+              protocol: TCP
+            - port: "8729"
+              protocol: TCP
+    # Allow Prometheus to scrape infrastructure VMs (non-K8s nodes)
+    # Allow pve-exporter to reach Proxmox API (port 8006)
+    # Allow blackbox probes to reach VM web UIs (port 80 for AdGuard HTTP)
+    # Allow blackbox-nfs probe to reach TrueNAS NFS (port 2049)
+    # K8s nodes (10.x0.0/24) covered by toEntities: remote-node above
+    - toCIDR:
+        - <vlan-cidr>
+        - <vlan-cidr>
+        - 10.x0.100/32  # Proxmox (bare metal, not a K8s node)
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "2049"
+              protocol: TCP
+            - port: "8006"
+              protocol: TCP
+            - port: "9100"
+              protocol: TCP
+            - port: "8405"
+              protocol: TCP
+    # Allow external alerting (ntfy, PagerDuty, etc.)
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

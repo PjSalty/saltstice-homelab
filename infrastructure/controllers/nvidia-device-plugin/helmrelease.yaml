@@ -1,0 +1,72 @@
+---
+# File: kubernetes/infrastructure/controllers/nvidia-device-plugin/helmrelease.yaml
+# Purpose: Deploy NVIDIA device plugin for GPU workloads
+# Researched: 2025-11-27
+# Source: https://github.com/NVIDIA/k8s-device-plugin
+# Version: 0.17.4 (latest stable)
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: nvidia-device-plugin
+  namespace: nvidia-device-plugin
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: nvidia-device-plugin
+      version: "0.19.1"
+      sourceRef:
+        kind: HelmRepository
+        name: nvdp
+        namespace: flux-system
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    # Only run on nodes with NVIDIA GPUs (k8s-worker-3 per automation.md)
+    nodeSelector:
+      nvidia.com/gpu.present: "true"
+    # Tolerate GPU taints
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    # Resource limits for the plugin
+    resources:
+      requests:
+        cpu: 50m
+        memory: 50Mi
+      limits:
+        cpu: 100m
+        memory: 100Mi
+    # Sidecar (config-manager) resources
+    sidecarContainers:
+      - name: nvidia-device-plugin-sidecar
+        resources:
+          requests:
+            cpu: 25m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+    # Enable compatibility with default runtime
+    compatWithCPUManager: true
+    # Use nvidia RuntimeClass so plugin can access NVML library
+    runtimeClassName: nvidia
+    # Enable time-slicing if multiple pods need GPU access
+    config:
+      default: "default"
+      map:
+        default: |
+          version: v1
+          sharing:
+            timeSlicing:
+              renameByDefault: false
+              failRequestsGreaterThanOne: false
+              resources:
+                - name: nvidia.com/gpu
+                  replicas: 2

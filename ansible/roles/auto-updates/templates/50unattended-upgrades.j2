@@ -1,0 +1,29 @@
+// {{ ansible_managed }}
+
+Unattended-Upgrade::Origins-Pattern {
+{% if auto_updates_type == 'security' %}
+    "origin=Debian,codename=${distro_codename},label=Debian-Security";
+    "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+{% else %}
+    "origin=Debian,codename=${distro_codename}";
+    "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+{% endif %}
+{% for origin in auto_updates_extra_origins %}
+    "{{ origin }}";
+{% endfor %}
+};
+
+Unattended-Upgrade::Package-Blacklist {
+};
+
+Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+Unattended-Upgrade::MinimalSteps "true";
+{% if auto_updates_mail %}
+Unattended-Upgrade::Mail "{{ auto_updates_mail }}";
+{% endif %}
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "{{ auto_updates_auto_reboot | lower }}";
+{% if auto_updates_auto_reboot %}
+Unattended-Upgrade::Automatic-Reboot-Time "{{ auto_updates_reboot_time }}";
+{% endif %}

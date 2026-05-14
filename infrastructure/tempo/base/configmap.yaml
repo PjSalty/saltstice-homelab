@@ -1,0 +1,78 @@
+---
+# Tempo Configuration
+# Monolithic mode for homelab simplicity
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+  namespace: tempo
+data:
+  tempo.yaml: |
+    # Tempo configuration for monolithic mode
+    # Docs: https://grafana.com/docs/tempo/latest/configuration/
+
+    server:
+      http_listen_port: 3200
+      grpc_listen_port: 9095
+      log_level: info
+
+    # Distributor receives traces
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            http:
+              endpoint: "0.0.0.0:4318"
+            grpc:
+              endpoint: "0.0.0.0:4317"
+        zipkin:
+          endpoint: "0.0.0.0:9411"
+        jaeger:
+          protocols:
+            thrift_http:
+              endpoint: "0.0.0.0:14268"
+            grpc:
+              endpoint: "0.0.0.0:14250"
+
+    # Ingester batches and compresses traces
+    ingester:
+      max_block_duration: 5m
+
+    # Compactor manages trace storage
+    compactor:
+      compaction:
+        block_retention: 168h  # 7 days retention
+
+    # Metrics generator for trace-derived metrics
+    metrics_generator:
+      registry:
+        external_labels:
+          source: tempo
+          cluster: homelab
+      storage:
+        path: /var/tempo/wal
+        remote_write:
+          - url: http://monitoring-kube-prometheus-prometheus.monitoring.svc:9090/api/v1/write
+            send_exemplars: true
+
+    # Storage configuration (local filesystem for homelab)
+    storage:
+      trace:
+        backend: local
+        wal:
+          path: /var/tempo/wal
+        local:
+          path: /var/tempo/blocks
+
+    # Querier for trace lookups
+    querier:
+      frontend_worker:
+        frontend_address: localhost:9095
+
+    # Overrides for rate limiting
+    overrides:
+      defaults:
+        metrics_generator:
+          processors:
+            - service-graphs
+            - span-metrics

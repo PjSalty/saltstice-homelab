@@ -1,0 +1,68 @@
+---
+# Kyverno ClusterPolicy: require-run-as-non-root
+# Enforces that pods set runAsNonRoot — blocks new pods that run as root
+# Exceptions: PolicyException resources for workloads with legitimate root needs
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-run-as-non-root
+  annotations:
+    policies.kyverno.io/title: Require runAsNonRoot
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Containers must set securityContext.runAsNonRoot to true or
+      pod-level securityContext.runAsNonRoot to true. Running as
+      root increases attack surface and container escape risk.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                # System namespaces — managed by RKE2/CNI
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - cilium-secrets
+                # PSA privileged — require host/device access
+                - democratic-csi       # iSCSI/NFS CSI driver
+                - nvidia-device-plugin # GPU device access
+                - metallb-system       # Speaker host networking
+                - crowdsec             # IDS/IPS network access
+                - falco                # eBPF syscall tracing
+                - velero               # node-agent DaemonSet hostPath
+                - loki                 # alloy DaemonSet hostPath /var/log
+                - gitlab-runner        # Docker-in-Docker builds
+                - media                # NVIDIA GPU + NFS volumes
+                - monitoring           # node-exporter hostPath
+                - security             # Trivy scan pods
+                - nfs-system           # NFS provisioner
+                # GitOps — managed by Flux bootstrap
+                - flux-system
+                # Kyverno itself
+                - kyverno
+      validate:
+        message: >-
+          Running as root is not allowed. Set spec.securityContext.runAsNonRoot
+          to true or container-level securityContext.runAsNonRoot to true.
+          If this workload genuinely requires root, create a PolicyException.
+        anyPattern:
+          # Pod-level runAsNonRoot covers all containers
+          - spec:
+              securityContext:
+                runAsNonRoot: true
+          # Container-level runAsNonRoot
+          - spec:
+              containers:
+                - securityContext:
+                    runAsNonRoot: true

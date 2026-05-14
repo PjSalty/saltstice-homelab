@@ -1,0 +1,15 @@
+---
+dependencies:
+  - docker
+
+galaxy_info:
+  author: salty
+  license: MIT
+  role_name: netbox
+  description: Deploy NetBox IPAM/DCIM via Docker Compose
+  company: Salty Homelab
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie

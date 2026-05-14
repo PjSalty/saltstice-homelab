@@ -1,0 +1,21 @@
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: jellyfin-pdb
+  namespace: media
+spec:
+  # Single-replica media server; drain restart interrupts streams briefly.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: jellyfin
+    # Exclude the authentik-user-sync CronJob pods — they share the
+    # `app: jellyfin` label, but PDBs cannot compute a budget for Job
+    # pods ("jobs.batch does not implement the scale subresource"),
+    # which would leave the PDB stuck DisruptionAllowed=False and block
+    # the Kustomization from going Ready. Job pods always carry
+    # batch.kubernetes.io/job-name; Deployment pods never do.
+    matchExpressions:
+      - key: batch.kubernetes.io/job-name
+        operator: DoesNotExist

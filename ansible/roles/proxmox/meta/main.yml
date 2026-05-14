@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: proxmox
+  author: salty
+  license: "Proprietary"
+  description: Proxmox hypervisor hardening — IOMMU, module blacklist, PVE firewall
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

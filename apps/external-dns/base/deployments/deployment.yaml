@@ -1,0 +1,121 @@
+# External-DNS with AdGuard Webhook Provider
+# Researched: 2025-12-03
+# external-dns: v0.18.0 (https://github.com/kubernetes-sigs/external-dns/releases)
+# adguard-webhook: v9.1.0 (https://github.com/muhlba91/external-dns-provider-adguard/releases)
+# Source: https://github.com/muhlba91/external-dns-provider-adguard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-dns
+  namespace: external-dns
+  labels:
+    app: external-dns
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: external-dns
+  template:
+    metadata:
+      labels:
+        app: external-dns
+    spec:
+      serviceAccountName: external-dns
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # Main External-DNS container
+        - name: external-dns
+          image: ${IMAGE_EXTERNAL_DNS}
+          args:
+            - --source=ingress
+            - --source=service
+            - --source=traefik-proxy
+            - --domain-filter=example.com
+            - --provider=webhook
+            - --webhook-provider-url=http://localhost:8888
+            - --policy=sync
+            - --registry=txt
+            - --txt-owner-id=external-dns-homelab
+            - --txt-prefix=_external-dns.
+            - --log-level=info
+            - --interval=1m
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+        # AdGuard Webhook Provider Sidecar
+        - name: adguard-webhook
+          image: ${IMAGE_ADGUARD_PROVIDER}
+          ports:
+            - containerPort: 8888
+              name: http
+              protocol: TCP
+          env:
+            - name: ADGUARD_URL
+              valueFrom:
+                secretKeyRef:
+                  name: adguard-credentials
+                  key: ADGUARD_URL
+            - name: ADGUARD_USER
+              valueFrom:
+                secretKeyRef:
+                  name: adguard-credentials
+                  key: ADGUARD_USER
+            - name: ADGUARD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: adguard-credentials
+                  key: ADGUARD_PASSWORD
+            - name: SERVER_HOST
+              value: "0.0.0.0"
+            - name: SERVER_PORT
+              value: "8888"
+            - name: LOG_LEVEL
+              value: "info"
+            # Set important flag for AdGuard rules (overrides other DNS rules)
+            - name: ADGUARD_SET_IMPORTANT_FLAG
+              value: "true"
+            # Dry run mode - set to false to actually create DNS records
+            - name: DRY_RUN
+              value: "false"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "25m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

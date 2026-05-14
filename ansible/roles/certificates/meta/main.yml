@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: certificates
+  author: salty
+  license: "Proprietary"
+  description: TLS certificate deployment — extract from K8s cert-manager, deploy to VMs
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

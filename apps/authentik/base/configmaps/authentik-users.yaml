@@ -1,0 +1,25 @@
+---
+# File: apps/authentik/base/configmaps/authentik-users.yaml
+# Purpose: Data-driven user and group definitions for Authentik
+# To add a user: add entry to users.json, add password to secrets repo
+# Validates: kubectl get configmap -n authentik authentik-users
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-users
+  namespace: authentik
+data:
+  groups.json: |
+    ["jellyfin-admins", "jellyfin-users", "platform-admins"]
+
+  users.json: |
+    [
+      {"username": "alice", "name": "Alice", "email": "alice@example.com", "groups": ["jellyfin-users"]},
+      {"username": "bob", "name": "Bob", "email": "bob@example.com", "groups": ["jellyfin-users"]},
+      {"username": "carol", "name": "Carol", "email": "carol@example.com", "groups": ["jellyfin-users"]},
+      {"username": "dave", "name": "Dave", "email": "dave@example.com", "groups": ["jellyfin-users"]},
+      {"username": "eve", "name": "Eve", "email": "eve@example.com", "groups": ["jellyfin-users"]}
+    ]
+
+  admin-groups.json: |
+    {"Salty": ["jellyfin-admins", "platform-admins"]}

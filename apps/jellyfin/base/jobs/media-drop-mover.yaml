@@ -1,0 +1,175 @@
+---
+# Media Drop Watcher Deployment
+# Go-native media organizer — replaces Python ConfigMap watcher
+#
+# Runs: homelab-cli media organize (long-running watcher)
+# Classifies media (movies/TV/anime/music) and moves to proper Jellyfin structure
+#
+# Classification tiers:
+#   1. Extension-based (audio → music, companion → skip)
+#   2. Anime detection (fansub groups, CRC32, anime DB, brackets)
+#   3. TV episode patterns (SxxExx, NxNN, anime " - 01")
+#   4. TV regex fallback (Season/Series keywords)
+#   5. Default to movies for unresolved video files
+#
+# Movie organizer: collection splitting, 4K multi-version, year enforcement
+# TV organizer: Show Name (Year)/Season N/Show - SxxExx.ext
+# Duplicate detection: normalized folder comparison
+#
+# Jellyfin library scan triggered after moves complete
+# Prometheus metrics on port 9091 (TODO: implement in Go)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: media-drop-watcher
+  namespace: media
+  labels:
+    app.kubernetes.io/name: media-drop-watcher
+    app.kubernetes.io/component: automation
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: media-drop-watcher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: media-drop-watcher
+    spec:
+      securityContext:
+        runAsUser: 568
+        runAsGroup: 568
+        fsGroup: 568
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups: [3000]  # Bob's SMB group — needed to read uploaded files via NFS
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Download anime-offline-database and preprocess to compact title index
+        # Full DB is 61MB JSON — preprocessed to {title: type} map (~3MB)
+        - name: anime-db
+          image: ${IMAGE_BUSYBOX}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Downloading anime-offline-database..."
+              wget -q -O /data/anime-titles.json \
+                "https://github.com/manami-project/anime-offline-database/releases/latest/download/anime-offline-database-minified.json" \
+                2>/dev/null
+              if [ -f /data/anime-titles.json ] && [ -s /data/anime-titles.json ]; then
+                echo "Anime DB: $(wc -c < /data/anime-titles.json) bytes"
+              else
+                echo "{}" > /data/anime-titles.json
+                echo "Download failed (non-fatal — Go parses raw format)"
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 768Mi
+        # Download NSFW detection ONNX model (~100MB) via Harbor proxy
+        # Model: Falconsai/nsfw_image_detection (ViT-base, 98% accuracy)
+        - name: nsfw-model
+          image: ${IMAGE_BUSYBOX}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              MODEL_URL="https://huggingface.co/onnx-community/nsfw_image_detection-ONNX/resolve/main/onnx/model_quantized.onnx"
+              echo "Downloading NSFW detection model..."
+              wget -q -O /data/nsfw-model.onnx "$MODEL_URL" 2>/dev/null
+              if [ -f /data/nsfw-model.onnx ] && [ -s /data/nsfw-model.onnx ]; then
+                echo "NSFW model: $(wc -c < /data/nsfw-model.onnx) bytes"
+              else
+                echo "Download failed (non-fatal — NSFW scanning disabled)"
+                rm -f /data/nsfw-model.onnx
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      containers:
+        - name: watcher
+          image: ${IMAGE_HOMELAB_CLI_MEDIA}
+          command:
+            - homelab-cli
+            - media
+            - organize
+            - --drop-dir=/media-drop
+            - --media-dir=/media
+            - --anime-db=/data/anime-titles.json
+            - --fail-dir=/tmp/fail_counts
+            - --scan-interval=30s
+            - --jellyfin-url=http://jellyfin.media.svc.cluster.local:8096
+            - --jellyfin-api-key=$(JELLYFIN_API_KEY)
+            - --nsfw-model=/data/nsfw-model.onnx
+          env:
+            - name: JELLYFIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jellyfin-api-key
+                  key: key
+                  optional: true
+            - name: TMDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tmdb-api-key
+                  key: key
+                  optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              readOnly: true
+            - name: media-drop
+              mountPath: /media-drop
+            - name: media
+              mountPath: /media
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi  # ONNX NSFW scanner uses ~200MB during inference
+      volumes:
+        - name: media-drop
+          nfs:
+            server: <internal-ip>
+            path: /mnt/tank/users/bob/media-drop
+        - name: media
+          nfs:
+            server: <internal-ip>
+            path: /mnt/tank/media
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+      restartPolicy: Always

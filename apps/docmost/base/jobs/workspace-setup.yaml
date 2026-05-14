@@ -1,0 +1,143 @@
+---
+# Docmost Workspace Setup Job
+# Creates the initial workspace and admin user via POST /api/auth/setup
+# Idempotent: gracefully handles 403 "already completed" response
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: docmost-workspace-setup-script
+  namespace: docmost
+data:
+  setup.sh: |
+    #!/bin/sh
+    set -eu
+
+    # NOTE: Every $ in this script is doubled ($$) because Flux postBuild
+    # envsubst processes all $ patterns in rendered YAML. Flux converts
+    # $$ back to $ in the final ConfigMap content.
+
+    DOCMOST_URL="http://docmost.docmost.svc.cluster.local:3000"
+    MAX_RETRIES=60
+    RETRY_INTERVAL=5
+
+    echo "=== Docmost Workspace Setup ==="
+    echo "Waiting for Docmost to be ready..."
+
+    # Wait for Docmost health endpoint
+    retries=0
+    while [ $$retries -lt $$MAX_RETRIES ]; do
+      status=$$(wget -q -O /dev/null -S "$${DOCMOST_URL}/api/health" 2>&1 | grep "HTTP/" | awk '{print $$2}' || echo "000")
+      if [ "$$status" = "200" ]; then
+        echo "Docmost is ready!"
+        break
+      fi
+      retries=$$((retries + 1))
+      echo "  Attempt $${retries}/$${MAX_RETRIES} - status: $${status}"
+      sleep $$RETRY_INTERVAL
+    done
+
+    if [ $$retries -ge $$MAX_RETRIES ]; then
+      echo "ERROR: Timeout waiting for Docmost to be ready"
+      exit 1
+    fi
+
+    # Attempt workspace setup
+    echo ""
+    echo "Creating workspace '$${WORKSPACE_NAME}' with admin user..."
+
+    PAYLOAD=$$(cat <<EOJSON
+    {
+      "name": "$${ADMIN_NAME}",
+      "email": "$${ADMIN_EMAIL}",
+      "password": "$${ADMIN_PASSWORD}",
+      "workspaceName": "$${WORKSPACE_NAME}"
+    }
+    EOJSON
+    )
+
+    RESPONSE=$$(wget -q -O - -S \
+      --header="Content-Type: application/json" \
+      --post-data="$${PAYLOAD}" \
+      "$${DOCMOST_URL}/api/auth/setup" 2>&1 || true)
+
+    # Check for success or already-completed
+    if echo "$$RESPONSE" | grep -q "403"; then
+      echo "Workspace setup already completed (403 Forbidden) - idempotent success"
+      exit 0
+    elif echo "$$RESPONSE" | grep -q "HTTP/.*200\|HTTP/.*201"; then
+      echo "Workspace created successfully!"
+      echo "  Workspace: $${WORKSPACE_NAME}"
+      echo "  Admin: $${ADMIN_EMAIL}"
+      echo "  Password: ********"
+      exit 0
+    else
+      echo "Unexpected response:"
+      echo "$$RESPONSE" | head -20
+      # Still exit 0 if we got a 403 anywhere in the response
+      if echo "$$RESPONSE" | grep -qi "already completed\|setup already"; then
+        echo "Setup already completed - idempotent success"
+        exit 0
+      fi
+      exit 1
+    fi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: docmost-workspace-setup-v3
+  namespace: docmost
+  annotations:
+    description: "Initial Docmost workspace and admin user creation"
+    job-trigger/timestamp: "2026-02-07T14:45:00Z"
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: setup
+          image: ${IMAGE_ALPINE}
+          command: ["/bin/sh", "/scripts/setup.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          env:
+            - name: WORKSPACE_NAME
+              value: "Salty Homelab"
+            - name: ADMIN_NAME
+              value: "Salty"
+            - name: ADMIN_EMAIL
+              value: "admin@example.com"
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: docmost-secrets
+                  key: admin-password
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: docmost-workspace-setup-script
+            defaultMode: 0555
+        - name: tmp
+          emptyDir: {}

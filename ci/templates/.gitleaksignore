@@ -1,0 +1,63 @@
+# Gitleaks Ignore Patterns
+# This file defines patterns to exclude from secret scanning
+#
+# Copy this file to repositories that use SOPS encryption
+# to prevent false positives on encrypted values.
+
+# =============================================================================
+# SOPS Encrypted Values
+# =============================================================================
+# SOPS encrypts values with AES256-GCM, producing patterns like:
+# ENC[AES256_GCM,data:...,iv:...,tag:...,type:str]
+#
+# These are intentionally encrypted and safe to commit.
+# The actual secrets are protected by Age/GPG keys.
+
+# Match SOPS encrypted strings (single-line)
+ENC\[AES256_GCM,data:[A-Za-z0-9+/=]+,iv:[A-Za-z0-9+/=]+,tag:[A-Za-z0-9+/=]+,type:(str|int|float|bool|bytes)\]
+
+# =============================================================================
+# SOPS Metadata
+# =============================================================================
+# SOPS adds metadata to encrypted files that may trigger detection
+
+# Age recipient public keys (not secrets - public keys)
+age1[a-z0-9]{58}
+
+# SOPS MAC (message authentication code)
+mac: ENC\[AES256_GCM,data:[A-Za-z0-9+/=]+
+
+# =============================================================================
+# Kubernetes Secret Patterns
+# =============================================================================
+# Base64-encoded secret data in Kubernetes manifests (when using SOPS)
+# These are encrypted by SOPS, not plaintext
+
+# Encrypted base64 data fields
+data:
+  [a-zA-Z_-]+: ENC\[AES256_GCM
+
+# =============================================================================
+# File Exclusions
+# =============================================================================
+# Exclude entire files that are known to contain only encrypted data
+
+# SOPS-encrypted secret files (handled by SOPS, not plaintext)
+**/secrets/**/*.yaml
+**/secrets/**/*.yml
+
+# Terraform state (should never be committed, but if it is, it's encrypted)
+*.tfstate
+*.tfstate.backup
+
+# =============================================================================
+# Test/Example Data
+# =============================================================================
+# Exclude test files and examples that may contain fake credentials
+
+**/test/**
+**/tests/**
+**/fixtures/**
+**/examples/**
+**/*_test.go
+**/*_test.py

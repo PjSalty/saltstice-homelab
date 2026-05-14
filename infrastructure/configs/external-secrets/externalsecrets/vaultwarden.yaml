@@ -1,0 +1,60 @@
+# vaultwarden-admin-credentials: Vaultwarden admin token (Argon2 hashed)
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: vaultwarden-admin-credentials
+  namespace: vaultwarden
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: vaultwarden-admin-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/managed-by: "external-secrets"
+      data:
+        ADMIN_TOKEN: "{{ .admin_token }}"
+  data:
+  - secretKey: admin_token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_VAULTWARDEN_ADMIN_TOKEN
+---
+# sso-client-secrets: Vaultwarden SSO client secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: sso-client-secrets-vaultwarden
+  namespace: vaultwarden
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: sso-client-secrets
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        AUTHENTIK_CLIENT_SECRET: "{{ .sso_client_secret }}"
+        VAULTWARDEN_CLIENT_SECRET: "{{ .sso_client_secret }}"
+  data:
+  - secretKey: sso_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_VAULTWARDEN_SSO_CLIENT_SECRET
+---
+# SKIPPED: ssot-credentials (vaultwarden/ssot-credentials)
+# This secret contains the FULL credentials.sops.yaml tree as embedded YAML.
+# It cannot be reconstructed from individual CRED_* keys because it contains
+# the entire infrastructure credential hierarchy (proxmox, truenas, gitlab,
+# harbor, netbox, kubernetes, sso_clients).
+# This secret MUST remain as a SOPS-encrypted secret until a dedicated
+# ESO pattern for full-tree credential distribution is implemented.
+# Keep in: secrets/kubernetes/vaultwarden/ssot-credentials.yaml

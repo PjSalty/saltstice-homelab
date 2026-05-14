@@ -1,0 +1,7 @@
+# SSOT ConfigMaps for Flux postBuild variable substitution
+# Generated from config/versions.yaml and config/network.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - image-versions.yaml
+  - network-config.yaml

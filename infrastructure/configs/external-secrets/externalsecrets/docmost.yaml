@@ -1,0 +1,35 @@
+# docmost-secrets: Docmost application credentials
+# database-url is composed from postgres-password (credential) + static config
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: docmost-secrets
+  namespace: docmost
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-media
+    kind: SecretStore
+  target:
+    name: docmost-secrets
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        admin-password: "{{ .admin_password }}"
+        app-secret: "{{ .app_secret }}"
+        postgres-password: "{{ .postgres_password }}"
+        database-url: "postgresql://docmost:{{ .postgres_password }}@docmost-postgresql:5432/docmost?schema=public"
+  data:
+  - secretKey: admin_password
+    remoteRef:
+      key: cred-ssot-media
+      property: CRED_DOCMOST_ADMIN_PASSWORD
+  - secretKey: app_secret
+    remoteRef:
+      key: cred-ssot-media
+      property: CRED_DOCMOST_APP_SECRET
+  - secretKey: postgres_password
+    remoteRef:
+      key: cred-ssot-media
+      property: CRED_DOCMOST_POSTGRES_PASSWORD

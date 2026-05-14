@@ -1,0 +1,7 @@
+---
+- name: Restart pveproxy
+  ansible.builtin.systemd:
+    name: pveproxy
+    state: restarted
+  become: true
+  when: cert_name | default('') == 'proxmox'

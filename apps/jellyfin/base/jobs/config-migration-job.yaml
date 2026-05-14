@@ -1,0 +1,94 @@
+---
+# One-time migration job: copies Jellyfin config from NFS → iSCSI
+# Run AFTER Jellyfin is stopped (scale to 0) and new PVCs are bound.
+# Delete this job after successful migration.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-config-migration
+  namespace: media
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: merge
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 44
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups: [44, 109]
+      containers:
+        - name: migrate
+          image: ${IMAGE_ALPINE}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              apk add --no-cache rsync
+
+              echo "=== Jellyfin Config Migration: NFS → iSCSI ==="
+
+              echo "Checking source (NFS)..."
+              ls -la /src/
+              SRC_FILES=$(find /src -type f | wc -l)
+              echo "Source files: $${SRC_FILES}"
+
+              if [ "$${SRC_FILES}" -eq 0 ]; then
+                echo "ERROR: Source is empty — aborting"
+                exit 1
+              fi
+
+              echo "Copying config NFS → iSCSI..."
+              rsync -av --progress /src/ /dst/
+              echo "Config migration complete"
+
+              echo ""
+              echo "Copying cache NFS → iSCSI..."
+              rsync -av --progress /cache-src/ /cache-dst/
+              echo "Cache migration complete"
+
+              DST_FILES=$(find /dst -type f | wc -l)
+              echo ""
+              echo "=== Migration Summary ==="
+              echo "Source files: $${SRC_FILES}"
+              echo "Dest files:   $${DST_FILES}"
+
+              if [ "$${DST_FILES}" -lt "$${SRC_FILES}" ]; then
+                echo "WARNING: Destination has fewer files than source!"
+                exit 1
+              fi
+              echo "Migration successful!"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          volumeMounts:
+            - name: config-nfs
+              mountPath: /src
+              readOnly: true
+            - name: config-iscsi
+              mountPath: /dst
+            - name: cache-nfs
+              mountPath: /cache-src
+              readOnly: true
+            - name: cache-iscsi
+              mountPath: /cache-dst
+      volumes:
+        - name: config-nfs
+          persistentVolumeClaim:
+            claimName: jellyfin-config
+        - name: config-iscsi
+          persistentVolumeClaim:
+            claimName: jellyfin-config-iscsi
+        - name: cache-nfs
+          persistentVolumeClaim:
+            claimName: jellyfin-cache
+        - name: cache-iscsi
+          persistentVolumeClaim:
+            claimName: jellyfin-cache-persistent

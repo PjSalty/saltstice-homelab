@@ -1,0 +1,148 @@
+---
+# pve-exporter - Prometheus Exporter for Proxmox VE
+# Exports VM, node, storage, and cluster metrics via Proxmox API
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pve-exporter-config
+  namespace: monitoring
+  labels:
+    app: pve-exporter
+data:
+  pve.yml: |
+    default:
+      user: monitoring@pve
+      token_name: __TOKEN_NAME_PLACEHOLDER__
+      token_value: __TOKEN_VALUE_PLACEHOLDER__
+      verify_ssl: false
+      timeout: 30
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pve-exporter
+  namespace: monitoring
+  labels:
+    app: pve-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pve-exporter
+  template:
+    metadata:
+      labels:
+        app: pve-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9221"
+        prometheus.io/path: "/pve"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: config-init
+          image: ${IMAGE_BUSYBOX}
+          command: ['sh', '-c']
+          args:
+            - |
+              cp /config-template/pve.yml /etc/pve-exporter/pve.yml
+              sed -i "s|__TOKEN_NAME_PLACEHOLDER__|$PVE_TOKEN_NAME|g" /etc/pve-exporter/pve.yml
+              sed -i "s|__TOKEN_VALUE_PLACEHOLDER__|$PVE_TOKEN_VALUE|g" /etc/pve-exporter/pve.yml
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          env:
+            - name: PVE_TOKEN_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: pve-exporter-credentials
+                  key: token_name
+            - name: PVE_TOKEN_VALUE
+              valueFrom:
+                secretKeyRef:
+                  name: pve-exporter-credentials
+                  key: token_value
+          volumeMounts:
+            - name: config-template
+              mountPath: /config-template
+            - name: config
+              mountPath: /etc/pve-exporter
+      containers:
+        - name: pve-exporter
+          image: ${IMAGE_PVE_EXPORTER}
+          args:
+            - --config.file=/etc/pve-exporter/pve.yml
+          ports:
+            - containerPort: 9221
+              name: metrics
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pve-exporter
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9221
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9221
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: config-template
+          configMap:
+            name: pve-exporter-config
+        - name: config
+          emptyDir: {}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pve-exporter
+  namespace: monitoring
+  labels:
+    app: pve-exporter
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9221"
+spec:
+  selector:
+    app: pve-exporter
+  ports:
+    - port: 9221
+      targetPort: 9221
+      name: metrics

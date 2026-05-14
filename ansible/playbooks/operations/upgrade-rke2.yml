@@ -1,0 +1,820 @@
+---
+# Operations: Rolling RKE2 Upgrade
+#
+# Industry-standard rolling upgrade of the RKE2 cluster with auto-safety:
+#   - Masters upgraded serial=1 (etcd quorum preserved)
+#   - Workers upgraded serial={{ rke2_worker_batch_size }} (configurable, default 1)
+#   - Cordon + drain + wait gates enabled automatically during upgrade
+#   - Drain respects PodDisruptionBudgets
+#   - Pre-flight: cluster health + Velero backup freshness
+#   - Post-validation: all nodes on target, all pods Running, Flux reconciled
+#
+# Trigger: manual only via .gitlab-ci.yml `ansible:upgrade-rke2` job.
+# Target version comes from inventory/group_vars/k8s_cluster.yml → rke2_version.
+#
+# Optional extra-vars:
+#   rke2_worker_batch_size=N           Override worker batch size for this run
+#   rke2_require_recent_backup=false   Skip the Velero backup freshness gate
+#   rke2_drain_timeout=15m             Drain timeout per node (default 10m)
+#
+# Rollback:
+#   RKE2 does NOT support in-place downgrade. If a master upgrade fails after
+#   etcd has accepted new writes, rollback requires Velero etcd-snapshot restore.
+#   Keep `rke2_allow_downgrade: false` (role default) to prevent accidental
+#   re-runs pointed at older versions.
+
+- name: Load SSOT credentials
+  ansible.builtin.import_playbook: ../includes/load-ssot.yml
+
+# =============================================================================
+# Phase 1 — Pre-flight: cluster health + backup freshness
+# =============================================================================
+- name: Pre-flight validation
+  hosts: masters[0]
+  become: true
+  gather_facts: true
+  vars:
+    _kubectl: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+  tasks:
+    # A node is Ready whether or not it is cordoned (SchedulingDisabled is
+    # operational state, not kubelet health). Strip that suffix before comparing,
+    # so a leftover cordon from a canceled upgrade run doesn't block preflight.
+    - name: Assert all nodes Ready (cordoned-OK)
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _kubectl }} get nodes --no-headers \
+          | awk '{s=$2; sub(/,SchedulingDisabled$/,"",s); print s}' \
+          | grep -cv '^Ready$' || true
+      args:
+        executable: /bin/bash
+      register: not_ready
+      changed_when: false
+      failed_when: not_ready.stdout | int > 0
+
+    # Exclude transient helm-install-rke2-* crashloops that are inevitable
+    # during a mixed-version rolling upgrade: RKE2's bundled charts (rke2-cilium,
+    # rke2-coredns) require kubeVersion >= target_version, and will fail any
+    # API LB call that hits a not-yet-upgraded master. These self-resolve once
+    # all masters finish — blocking on them prevents the upgrade that fixes them.
+    #
+    # rke2_preflight_max_crashloops (default 0) lets a partial-health cluster
+    # still upgrade when pre-existing chronic crashloops are known and tolerated
+    # (e.g. goldilocks, crowdsec with upstream config bugs). Set via extra-vars
+    # or CI variable RKE2_MAX_CRASHLOOPS to bypass this gate.
+    - name: Count unexpected CrashLoopBackOff pods
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _kubectl }} get pods -A --no-headers \
+          -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,REASON:.status.containerStatuses[*].state.waiting.reason \
+          | awk '$3 ~ /CrashLoopBackOff/' \
+          | awk '!($1=="kube-system" && $2 ~ /^helm-install-rke2-/)' \
+          | tee /tmp/rke2-preflight-crashloops.txt \
+          | wc -l
+      args:
+        executable: /bin/bash
+      register: crashloop
+      changed_when: false
+
+    - name: Show unexpected CrashLoopBackOff pods (if any)
+      ansible.builtin.command: cat /tmp/rke2-preflight-crashloops.txt
+      register: crashloop_detail
+      changed_when: false
+      when: crashloop.stdout | int > 0
+
+    - name: Assert crashloop count within tolerance
+      ansible.builtin.assert:
+        that:
+          - crashloop.stdout | int <= (rke2_preflight_max_crashloops | default(0) | int)
+        fail_msg: >-
+          Found {{ crashloop.stdout }} CrashLoopBackOff pods, tolerance is
+          {{ rke2_preflight_max_crashloops | default(0) }}.
+          Detail:
+          {{ crashloop_detail.stdout | default('(none)') }}
+          Fix the underlying workloads, or raise rke2_preflight_max_crashloops.
+        success_msg: >-
+          {{ crashloop.stdout }} CrashLoopBackOff pod(s) within tolerance
+          ({{ rke2_preflight_max_crashloops | default(0) }}).
+
+    - name: Check latest Velero backup age
+      ansible.builtin.shell: |
+        set -o pipefail
+        LAST=$({{ _kubectl }} -n velero get backups.velero.io -o json 2>/dev/null \
+               | jq -r '[.items[] | select(.status.phase=="Completed") | .status.completionTimestamp] | max // "none"')
+        if [ "$LAST" = "none" ] || [ -z "$LAST" ]; then
+          echo "NO_BACKUP"
+          exit 1
+        fi
+        LAST_EPOCH=$(date -d "$LAST" +%s)
+        NOW_EPOCH=$(date +%s)
+        AGE_HOURS=$(( (NOW_EPOCH - LAST_EPOCH) / 3600 ))
+        echo "last=$LAST age_hours=$AGE_HOURS"
+        if [ "$AGE_HOURS" -gt "{{ rke2_require_backup_max_age_hours | default(24) }}" ]; then
+          echo "BACKUP_TOO_OLD"
+          exit 1
+        fi
+      args:
+        executable: /bin/bash
+      register: backup_check
+      changed_when: false
+      when: rke2_require_recent_backup | default(true) | bool
+
+    - name: Guard against unsafe worker batch size (>50% of workers)
+      ansible.builtin.assert:
+        that:
+          - (rke2_worker_batch_size | default(1) | int) * 2 <= (groups['workers'] | length | int)
+            or (groups['workers'] | length | int) <= 1
+        fail_msg: >-
+          rke2_worker_batch_size={{ rke2_worker_batch_size | default(1) }} would disrupt
+          more than 50% of {{ groups['workers'] | length }} workers simultaneously.
+          Reduce batch size to preserve serving capacity.
+
+    # SSOT drift check: image-versions ConfigMap → RKE2_VERSION is the cluster-wide
+    # source of truth (consumed by Karpenter cloud-init at boot). The static-node
+    # rke2_version in group_vars MUST match. If the ConfigMap key is missing
+    # (pre-SSOT-rollout), warn but allow the run — the static cluster and Karpenter
+    # nodes will simply not be SSOT-linked yet.
+    - name: Read RKE2_VERSION from SSOT ConfigMap (image-versions)
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _kubectl }} -n flux-system get configmap image-versions -o json 2>/dev/null \
+          | jq -r '.data.RKE2_VERSION // ""'
+      args:
+        executable: /bin/bash
+      register: ssot_rke2_version
+      changed_when: false
+      failed_when: false
+
+    - name: Warn if SSOT has no RKE2_VERSION key
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: image-versions ConfigMap has no RKE2_VERSION key.
+          Drift detection between static nodes and Karpenter template is DISABLED for this run.
+          Add RKE2_VERSION to infrastructure/configs/ssot/image-versions.yaml to enable SSOT.
+      when: ssot_rke2_version.stdout | default('') | length == 0
+
+    - name: Assert group_vars rke2_version matches SSOT
+      ansible.builtin.assert:
+        that:
+          - ssot_rke2_version.stdout == rke2_version
+        fail_msg: >-
+          DRIFT DETECTED: group_vars rke2_version={{ rke2_version }}
+          != SSOT RKE2_VERSION={{ ssot_rke2_version.stdout }}.
+          Update infrastructure/configs/ssot/image-versions.yaml to match, or
+          update inventory/group_vars/k8s_cluster.yml — both must agree to prevent
+          version skew between static nodes and Karpenter-provisioned workers.
+      when: ssot_rke2_version.stdout | default('') | length > 0
+
+    # Flux pre-flight gate: don't enter the upgrade with a degraded GitOps
+    # control plane. A wedged source-controller or stuck Kustomization will
+    # cascade into application-level CrashLoops once nodes start cycling, and
+    # the surface area is unbounded. Fix Flux first, then upgrade.
+    # Bypass via -e rke2_skip_flux_preflight=true ONLY in break-glass scenarios.
+    - name: Assert flux-system Deployments fully Ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _kubectl }} -n flux-system get deploy -o json \
+          | jq -r '[.items[] | select((.status.readyReplicas // 0) < (.spec.replicas // 1)) | .metadata.name] | join(",")'
+      args:
+        executable: /bin/bash
+      register: flux_unhealthy
+      changed_when: false
+      failed_when: flux_unhealthy.stdout | length > 0
+      when: not (rke2_skip_flux_preflight | default(false) | bool)
+
+    - name: Assert flux-system GitRepository Ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _kubectl }} -n flux-system get gitrepository flux-system -o json \
+          | jq -r '[.status.conditions[]? | select(.type=="Ready" and .status=="True")] | length'
+      args:
+        executable: /bin/bash
+      register: flux_gr_ready
+      changed_when: false
+      failed_when: flux_gr_ready.stdout | int < 1
+      when: not (rke2_skip_flux_preflight | default(false) | bool)
+
+    - name: Assert no Flux Kustomization in failed (Ready=False) state
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _kubectl }} -n flux-system get kustomization -o json \
+          | jq -r '[.items[] | select(.status.conditions[]? | select(.type=="Ready" and .status=="False")) | .metadata.name] | join(",")'
+      args:
+        executable: /bin/bash
+      register: flux_failed_kust
+      changed_when: false
+      failed_when: flux_failed_kust.stdout | length > 0
+      when: not (rke2_skip_flux_preflight | default(false) | bool)
+
+    - name: Pre-flight summary
+      ansible.builtin.debug:
+        msg:
+          - "Target RKE2 version: {{ rke2_version }}"
+          - "SSOT RKE2_VERSION: {{ ssot_rke2_version.stdout if (ssot_rke2_version.stdout | length > 0) else '(not yet in ConfigMap — drift check disabled)' }}"
+          - "Masters: {{ groups['masters'] | length }} (serial=1)"
+          - "Workers: {{ groups['workers'] | length }} (serial={{ rke2_worker_batch_size | default(1) }})"
+          - "Backup gate: {{ 'enforced' if rke2_require_recent_backup | default(true) | bool else 'SKIPPED' }}"
+          - "Flux pre-flight: {{ 'SKIPPED (rke2_skip_flux_preflight=true)' if rke2_skip_flux_preflight | default(false) | bool else 'PASSED' }}"
+          - "{{ backup_check.stdout | default('backup-check-skipped') }}"
+
+# =============================================================================
+# Phase 1.5 — Prevention: refresh Flux controllers before any node disruption
+# =============================================================================
+# Rolling-restart all flux-system Deployments so leader-election leases are
+# owned by fresh container instances entering the upgrade. Mitigates the class
+# of failure where a controller pod is killed during node drain, the
+# replacement can't take over its prior lease cleanly, and the manager exits
+# in a self-perpetuating loop until manually restarted.
+# Bypass via -e rke2_skip_flux_refresh=true.
+- name: Pre-upgrade Flux controller refresh
+  hosts: masters[0]
+  become: true
+  gather_facts: false
+  vars:
+    _kubectl: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+  tasks:
+    - name: Rolling-restart all flux-system Deployments
+      ansible.builtin.command: "{{ _kubectl }} -n flux-system rollout restart deployment"
+      changed_when: true
+      when: not (rke2_skip_flux_refresh | default(false) | bool)
+
+    - name: Wait for flux-system Deployments to roll out
+      ansible.builtin.command: "{{ _kubectl }} -n flux-system rollout status deployment --timeout=5m"
+      changed_when: false
+      when: not (rke2_skip_flux_refresh | default(false) | bool)
+
+# =============================================================================
+# Phase 2 — Upgrade control plane (serial=1, etcd quorum preserved)
+# =============================================================================
+- name: Upgrade masters
+  hosts: masters
+  become: true
+  gather_facts: true
+  serial: 1
+  vars:
+    # Auto-enable safety during upgrade (overrides role defaults for this play)
+    rke2_drain_node_during_upgrade: true
+    rke2_wait_for_all_pods_to_be_ready: true
+    rke2_wait_for_all_pods_to_be_healthy: true
+    # Template-required role vars — lablabs.rke2 defaults only load inside role
+    # context. Rendering config.yaml.j2 directly from a play needs these set.
+    rke2_servers_group_name: masters
+    rke2_agents_group_name: workers
+    rke2_type: server
+    rke2_node_name: "{{ inventory_hostname }}"
+    rke2_snapshotter: overlayfs
+    rke2_config: templates/config.yaml.j2
+    rke2_additional_sans: []
+    rke2_server_node_taints: []
+    rke2_agent_node_taints: []
+    _kubectl: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+    _delegate: "{{ groups['masters'] | difference([inventory_hostname]) | first }}"
+    _drain_timeout: "{{ rke2_drain_timeout | default('10m') }}"
+  tasks:
+    - name: Read installed RKE2 version on this node
+      ansible.builtin.shell: |
+        set -o pipefail
+        if [ -x /usr/local/bin/rke2 ]; then
+          /usr/local/bin/rke2 --version | awk '/rke2 version/ {print $3}'
+        elif [ -x /opt/rke2/bin/rke2 ]; then
+          /opt/rke2/bin/rke2 --version | awk '/rke2 version/ {print $3}'
+        else
+          echo "not-installed"
+        fi
+      args:
+        executable: /bin/bash
+      register: _installed
+      changed_when: false
+      check_mode: false
+
+    # Detect server-scoped config drift on masters. rke2_disable and
+    # rke2_ingress_controller are emitted to /etc/rancher/rke2/config.yaml
+    # ONLY for `rke2_type == 'server'` (see lablabs.rke2 config.yaml.j2).
+    # If either field drifted from desired state, reconcile this master
+    # even when the binary version already matches.
+    - name: Check for server-scoped config drift on master
+      ansible.builtin.shell: |
+        set -o pipefail
+        CONF=/etc/rancher/rke2/config.yaml
+        [ -f "$CONF" ] || { echo "missing-config"; exit 0; }
+        EXP_IC="{{ rke2_ingress_controller | default('ingress-nginx') }}"
+        ACT_IC=$(awk -F': ' '/^ingress-controller:/ {print $2}' "$CONF" | tr -d '"' | xargs || echo "")
+        if [ "$ACT_IC" != "$EXP_IC" ]; then
+          echo "drift:ingress-controller=${ACT_IC}!=${EXP_IC}"
+          exit 0
+        fi
+        EXP_DISABLE="{{ (rke2_disable | default([])) | to_json }}"
+        if [ "$EXP_DISABLE" != "[]" ]; then
+          if ! grep -q "^disable:" "$CONF"; then
+            echo "drift:missing-disable"
+            exit 0
+          fi
+          for item in {{ (rke2_disable | default([])) | map('quote') | join(' ') }}; do
+            if ! grep -qE "^disable:.*${item}" "$CONF"; then
+              echo "drift:disable-missing-${item}"
+              exit 0
+            fi
+          done
+        fi
+        echo "ok"
+      args:
+        executable: /bin/bash
+      register: _config_state
+      changed_when: false
+
+    - name: Compute reconcile decision — {{ inventory_hostname }}
+      ansible.builtin.set_fact:
+        _needs_reconcile: >-
+          {{ _installed.stdout != rke2_version or _config_state.stdout != 'ok' }}
+        _reconcile_reason: >-
+          {%- if _installed.stdout != rke2_version -%}
+          binary {{ _installed.stdout }} -> {{ rke2_version }}{%- elif _config_state.stdout != 'ok' -%} config {{ _config_state.stdout }}{%- else -%} in-sync{%- endif -%}
+
+    - name: Skip this host if already in desired state
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} is in desired state ({{ _reconcile_reason }}) — skipping"
+      when: not (_needs_reconcile | bool)
+
+    - name: Continue only if reconcile needed
+      ansible.builtin.meta: end_host
+      when: not (_needs_reconcile | bool)
+
+    - name: Reconcile reason — {{ inventory_hostname }}
+      ansible.builtin.debug:
+        msg: "Reconciling {{ inventory_hostname }}: {{ _reconcile_reason }}"
+
+    - name: Cordon {{ inventory_hostname }}
+      ansible.builtin.command: "{{ _kubectl }} cordon {{ inventory_hostname }}"
+      delegate_to: "{{ _delegate }}"
+      changed_when: true
+
+    # rke2_drain_force=true adds `--disable-eviction` so kubectl uses delete
+    # instead of eviction — bypasses PodDisruptionBudgets that would otherwise
+    # block the drain on single-replica Deployments with minAvailable: 1.
+    # Default false: respects PDBs, fails the drain if blocked (safe).
+    # Operator opt-in via -e rke2_drain_force=true or CI var RKE2_DRAIN_FORCE=true
+    # for runs where node throughput matters more than per-app HA guarantees.
+    - name: Drain node {{ inventory_hostname + ' (force/PDB-bypass)' if rke2_drain_force | default(false) | bool else inventory_hostname + ' (respects PDBs)' }}
+      ansible.builtin.command: >-
+        {{ _kubectl }} drain {{ inventory_hostname }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --timeout={{ _drain_timeout }}
+        {{ '--disable-eviction' if rke2_drain_force | default(false) | bool else '' }}
+      delegate_to: "{{ _delegate }}"
+      register: drain_result
+      changed_when: true
+      retries: 2
+      delay: 30
+      until: drain_result.rc == 0
+
+    # `public: true` exports role defaults to play scope at role-defaults
+    # precedence — strictly lower than group_vars — so rke2_version from
+    # group_vars still wins while the template below can resolve undefined
+    # role-scoped vars (rke2_servers_group_name, disable_kube_proxy, etc).
+    # Without public:true, defaults go out of scope when include_role returns
+    # and the inline template task raises AnsibleUndefinedVariable.
+    - name: Install RKE2 binary — {{ rke2_version }}
+      ansible.builtin.include_role:
+        name: lablabs.rke2
+        tasks_from: rke2.yml
+        public: true
+
+    # Re-render server config so rke2_disable / rke2_ingress_controller land on disk.
+    # The role's tasks_from: rke2.yml only installs the binary — config templating
+    # lives in first_server.yml / remaining_nodes.yml. Without this step, config
+    # changes in group_vars never reach /etc/rancher/rke2/config.yaml on upgrade,
+    # silently producing binary-updated-but-config-stale nodes.
+    - name: Set server taints for config template
+      ansible.builtin.set_fact:
+        combined_node_taints: "{{ rke2_server_node_taints | default([]) }}"
+
+    # The template's `{% if active_server is defined %}` gate on the `server:`
+    # directive requires this fact. find_active_server.yml (the role's normal
+    # path) populates it; we bypass that here, so set it statically to the
+    # first master. Only its *existence* matters to the template — the value
+    # is not dereferenced for agents, only for the server: URL construction
+    # which already uses rke2_api_ip. Without this, masters render config OK
+    # (they don't need `server:`) but agents fail with "--server is required".
+    - name: Set active_server for config template
+      ansible.builtin.set_fact:
+        active_server: "{{ groups['masters'] | first }}"
+
+    # Read the cluster's join token from master-1's rke2-server. group_vars
+    # `rke2_token` falls back to creds.infrastructure.rke2.token, but that
+    # key isn't in the SSOT — leaving the template to render `token:` empty.
+    # Empty tokens are tolerated by servers (they generate/read their own)
+    # but agents would fail to authenticate. Read directly from the source
+    # of truth to keep masters and workers in sync.
+    - name: Read cluster token from master-1 # noqa: run-once[task]
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/rke2/server/token
+      delegate_to: "{{ groups['masters'] | first }}"
+      run_once: true
+      register: _cluster_token
+      no_log: true
+
+    - name: Set rke2_token for config template
+      ansible.builtin.set_fact:
+        rke2_token: "{{ _cluster_token.content | b64decode | trim }}"
+      no_log: true
+
+    - name: Render /etc/rancher/rke2/config.yaml from lablabs template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../roles/lablabs.rke2/templates/config.yaml.j2"
+        dest: /etc/rancher/rke2/config.yaml
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Render /etc/rancher/rke2/registries.yaml (if custom registries configured)
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../roles/lablabs.rke2/templates/registries.yaml.j2"
+        dest: /etc/rancher/rke2/registries.yaml
+        owner: root
+        group: root
+        mode: "0600"
+      when: (rke2_custom_registry_mirrors | default([]) | length > 0)
+            or (rke2_custom_registry_configs | default([]) | length > 0)
+
+    - name: Restart rke2-server
+      ansible.builtin.service:
+        name: rke2-server
+        state: restarted
+        daemon_reload: true
+
+    - name: Wait for node Ready — {{ inventory_hostname }}
+      ansible.builtin.command: >-
+        {{ _kubectl }} wait --for=condition=Ready
+        node/{{ inventory_hostname }} --timeout=10m
+      delegate_to: "{{ _delegate }}"
+      changed_when: false
+
+    # Wait only for the critical control-plane static pods on THIS node —
+    # etcd, kube-apiserver, kube-controller-manager, kube-scheduler.
+    # `--all` was too broad: helm-install-* Jobs for RKE2-bundled charts
+    # (e.g. rke2-cilium for v1.35.4) fail kubeVersion checks mid-rolling-upgrade
+    # because the apiserver endpoints still include non-upgraded masters.
+    # These will self-resolve once all masters finish upgrading.
+    - name: Wait for control-plane static pods Ready — {{ inventory_hostname }}
+      ansible.builtin.command: >-
+        {{ _kubectl }} wait --for=condition=Ready pod
+        --field-selector=spec.nodeName={{ inventory_hostname }}
+        -l 'tier in (control-plane)'
+        -n kube-system --timeout=5m
+      delegate_to: "{{ _delegate }}"
+      changed_when: false
+      register: ctrl_plane_wait
+      retries: 2
+      delay: 30
+      until: ctrl_plane_wait.rc == 0
+      failed_when: false
+
+    - name: Ensure etcd on this node is Ready
+      ansible.builtin.command: >-
+        {{ _kubectl }} wait --for=condition=Ready pod/etcd-{{ inventory_hostname }}
+        -n kube-system --timeout=5m
+      delegate_to: "{{ _delegate }}"
+      changed_when: false
+
+    - name: Uncordon {{ inventory_hostname }}
+      ansible.builtin.command: "{{ _kubectl }} uncordon {{ inventory_hostname }}"
+      delegate_to: "{{ _delegate }}"
+      changed_when: true
+
+    # Per-node Flux recovery: this node's drain may have evicted Flux
+    # controllers; if any didn't return to Ready within 2m, restart them.
+    # Prevents a stale-lease wedge from persisting across the remaining
+    # nodes' upgrades and cascading into application-level CrashLoops.
+    - name: Flux settle wait (best-effort) — {{ inventory_hostname }}
+      ansible.builtin.command: "{{ _kubectl }} -n flux-system rollout status deployment --timeout=2m"
+      delegate_to: "{{ _delegate }}"
+      register: flux_settle
+      changed_when: false
+      failed_when: false
+
+    - name: Recovery — restart any flux-system Deployment not Ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        UNHEALTHY=$({{ _kubectl }} -n flux-system get deploy -o json \
+          | jq -r '.items[] | select((.status.readyReplicas // 0) < (.spec.replicas // 1)) | .metadata.name')
+        if [ -z "$UNHEALTHY" ]; then
+          echo "no recovery needed"
+          exit 0
+        fi
+        for d in $UNHEALTHY; do
+          echo "restarting deployment/$d (stale-lease recovery)"
+          {{ _kubectl }} -n flux-system rollout restart deployment "$d"
+        done
+        {{ _kubectl }} -n flux-system rollout status deployment --timeout=3m
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ _delegate }}"
+      register: flux_recovery
+      changed_when: "'restarting deployment' in flux_recovery.stdout"
+      when: flux_settle.rc != 0
+
+# =============================================================================
+# Phase 3 — Upgrade workers (serial=rke2_worker_batch_size, default 1)
+# =============================================================================
+- name: Upgrade workers
+  hosts: workers
+  become: true
+  gather_facts: true
+  serial: "{{ rke2_worker_batch_size | default(1) }}"
+  vars:
+    rke2_drain_node_during_upgrade: true
+    rke2_wait_for_all_pods_to_be_ready: true
+    rke2_wait_for_all_pods_to_be_healthy: true
+    # Template-required role vars (see Phase 2 comment).
+    rke2_servers_group_name: masters
+    rke2_agents_group_name: workers
+    rke2_type: agent
+    rke2_node_name: "{{ inventory_hostname }}"
+    rke2_snapshotter: overlayfs
+    rke2_config: templates/config.yaml.j2
+    rke2_additional_sans: []
+    rke2_server_node_taints: []
+    rke2_agent_node_taints: []
+    _kubectl: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+    _delegate: "{{ groups['masters'] | first }}"
+    _drain_timeout: "{{ rke2_drain_timeout | default('10m') }}"
+  tasks:
+    - name: Read installed RKE2 version on this node
+      ansible.builtin.shell: |
+        set -o pipefail
+        if [ -x /usr/local/bin/rke2 ]; then
+          /usr/local/bin/rke2 --version | awk '/rke2 version/ {print $3}'
+        elif [ -x /opt/rke2/bin/rke2 ]; then
+          /opt/rke2/bin/rke2 --version | awk '/rke2 version/ {print $3}'
+        else
+          echo "not-installed"
+        fi
+      args:
+        executable: /bin/bash
+      register: _installed
+      changed_when: false
+      check_mode: false
+
+    - name: Skip this host if already on target version
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} is already on {{ rke2_version }} — skipping"
+      when: _installed.stdout == rke2_version
+
+    - name: Continue only if upgrade needed
+      ansible.builtin.meta: end_host
+      when: _installed.stdout == rke2_version
+
+    - name: Cordon {{ inventory_hostname }}
+      ansible.builtin.command: "{{ _kubectl }} cordon {{ inventory_hostname }}"
+      delegate_to: "{{ _delegate }}"
+      changed_when: true
+
+    # rke2_drain_force=true adds `--disable-eviction` so kubectl uses delete
+    # instead of eviction — bypasses PodDisruptionBudgets that would otherwise
+    # block the drain on single-replica Deployments with minAvailable: 1.
+    # Default false: respects PDBs, fails the drain if blocked (safe).
+    # Operator opt-in via -e rke2_drain_force=true or CI var RKE2_DRAIN_FORCE=true
+    # for runs where node throughput matters more than per-app HA guarantees.
+    - name: Drain node {{ inventory_hostname + ' (force/PDB-bypass)' if rke2_drain_force | default(false) | bool else inventory_hostname + ' (respects PDBs)' }}
+      ansible.builtin.command: >-
+        {{ _kubectl }} drain {{ inventory_hostname }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --timeout={{ _drain_timeout }}
+        {{ '--disable-eviction' if rke2_drain_force | default(false) | bool else '' }}
+      delegate_to: "{{ _delegate }}"
+      register: drain_result
+      changed_when: true
+      retries: 2
+      delay: 30
+      until: drain_result.rc == 0
+
+    # public:true exports role defaults at role-defaults precedence so the
+    # inline template tasks below can resolve them (see Phase 2 comment).
+    - name: Install RKE2 binary — {{ rke2_version }}
+      ansible.builtin.include_role:
+        name: lablabs.rke2
+        tasks_from: rke2.yml
+        public: true
+
+    - name: Set agent taints for config template
+      ansible.builtin.set_fact:
+        combined_node_taints: "{{ rke2_agent_node_taints | default([]) }}"
+
+    # See Phase 2 comment — required so the template renders the `server:`
+    # directive for the agent. Without this, rke2-agent exits with
+    # "Error: --server is required" on restart.
+    - name: Set active_server for config template
+      ansible.builtin.set_fact:
+        active_server: "{{ groups['masters'] | first }}"
+
+    # Agents need the cluster join token to authenticate (see Phase 2 comment).
+    - name: Read cluster token from master-1 # noqa: run-once[task]
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/rke2/server/token
+      delegate_to: "{{ groups['masters'] | first }}"
+      run_once: true
+      register: _cluster_token
+      no_log: true
+
+    - name: Set rke2_token for config template
+      ansible.builtin.set_fact:
+        rke2_token: "{{ _cluster_token.content | b64decode | trim }}"
+      no_log: true
+
+    - name: Render /etc/rancher/rke2/config.yaml from lablabs template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../roles/lablabs.rke2/templates/config.yaml.j2"
+        dest: /etc/rancher/rke2/config.yaml
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Render /etc/rancher/rke2/registries.yaml (if custom registries configured)
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../roles/lablabs.rke2/templates/registries.yaml.j2"
+        dest: /etc/rancher/rke2/registries.yaml
+        owner: root
+        group: root
+        mode: "0600"
+      when: (rke2_custom_registry_mirrors | default([]) | length > 0)
+            or (rke2_custom_registry_configs | default([]) | length > 0)
+
+    - name: Restart rke2-agent
+      ansible.builtin.service:
+        name: rke2-agent
+        state: restarted
+        daemon_reload: true
+
+    - name: Wait for node Ready — {{ inventory_hostname }}
+      ansible.builtin.command: >-
+        {{ _kubectl }} wait --for=condition=Ready
+        node/{{ inventory_hostname }} --timeout=10m
+      delegate_to: "{{ _delegate }}"
+      changed_when: false
+
+    - name: Uncordon {{ inventory_hostname }}
+      ansible.builtin.command: "{{ _kubectl }} uncordon {{ inventory_hostname }}"
+      delegate_to: "{{ _delegate }}"
+      changed_when: true
+
+    # Per-node Flux recovery (same rationale as Phase 2). Worker drains
+    # are equally capable of disrupting flux-system controllers, so the
+    # same settle-and-restart logic applies after each worker uncordon.
+    - name: Flux settle wait (best-effort) — {{ inventory_hostname }}
+      ansible.builtin.command: "{{ _kubectl }} -n flux-system rollout status deployment --timeout=2m"
+      delegate_to: "{{ _delegate }}"
+      register: flux_settle
+      changed_when: false
+      failed_when: false
+
+    - name: Recovery — restart any flux-system Deployment not Ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        UNHEALTHY=$({{ _kubectl }} -n flux-system get deploy -o json \
+          | jq -r '.items[] | select((.status.readyReplicas // 0) < (.spec.replicas // 1)) | .metadata.name')
+        if [ -z "$UNHEALTHY" ]; then
+          echo "no recovery needed"
+          exit 0
+        fi
+        for d in $UNHEALTHY; do
+          echo "restarting deployment/$d (stale-lease recovery)"
+          {{ _kubectl }} -n flux-system rollout restart deployment "$d"
+        done
+        {{ _kubectl }} -n flux-system rollout status deployment --timeout=3m
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ _delegate }}"
+      register: flux_recovery
+      changed_when: "'restarting deployment' in flux_recovery.stdout"
+      when: flux_settle.rc != 0
+
+# =============================================================================
+# Phase 4 — Post-validation
+# =============================================================================
+- name: Post-validation
+  hosts: masters[0]
+  become: true
+  gather_facts: false
+  vars:
+    _kubectl: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+  tasks:
+    # Retry the kubeletVersion assertion: status.nodeInfo.kubeletVersion is
+    # populated asynchronously after kubelet restarts, so a node uncordoned
+    # seconds before this check may still report the old version momentarily.
+    # 6 attempts × 10s = 60s window covers the propagation race.
+    - name: Assert every node reports kubeletVersion = {{ rke2_version }}
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _kubectl }} get nodes -o json \
+          | jq -r --arg v "{{ rke2_version }}" \
+              '[.items[] | select(.status.nodeInfo.kubeletVersion != $v) | .metadata.name] | length'
+      args:
+        executable: /bin/bash
+      register: mismatched
+      changed_when: false
+      retries: 6
+      delay: 10
+      until: mismatched.stdout | int == 0
+      failed_when: mismatched.stdout | int > 0
+
+    # Reconcile disabled RKE2 components.
+    # RKE2's `disable:` directive prevents (re)install of bundled components
+    # but does NOT remove already-running instances. For each component in
+    # rke2_disable, delete its Addon (owner) — cascades to the HelmChart, whose
+    # wrangler finalizer runs `helm uninstall` and removes DS/SVC/SA/RBAC.
+    - name: Purge disabled RKE2 component addons
+      ansible.builtin.shell: |
+        set -o pipefail
+        COMP="{{ item }}"
+        if {{ _kubectl }} -n kube-system get addon "${COMP}" >/dev/null 2>&1; then
+          echo "purging Addon kube-system/${COMP}"
+          {{ _kubectl }} -n kube-system delete addon "${COMP}" --wait=false
+          # Wait up to 2 min for the HelmChart (owned by the Addon) to finish
+          # its uninstall finalizer. After that, wait for the DaemonSet (if any)
+          # to clear.
+          for i in $(seq 1 24); do
+            HC=$({{ _kubectl }} -n kube-system get helmchart "${COMP}" --ignore-not-found -o name 2>/dev/null)
+            DS=$({{ _kubectl }} -n kube-system get daemonset -l app.kubernetes.io/instance="${COMP}" -o name 2>/dev/null)
+            if [ -z "${HC}" ] && [ -z "${DS}" ]; then
+              echo "purge complete: ${COMP}"
+              exit 0
+            fi
+            sleep 5
+          done
+          # Fallback: force-remove leftover resources
+          echo "fallback force-delete for ${COMP}"
+          {{ _kubectl }} -n kube-system delete helmchart "${COMP}" --ignore-not-found --wait=false || true
+          {{ _kubectl }} -n kube-system delete daemonset -l app.kubernetes.io/instance="${COMP}" --ignore-not-found || true
+          {{ _kubectl }} -n kube-system delete svc,cm,sa,role,rolebinding -l app.kubernetes.io/instance="${COMP}" --ignore-not-found || true
+        else
+          echo "no Addon found for ${COMP} — nothing to purge"
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ rke2_disable | default([]) }}"
+      register: purge_result
+      changed_when: "'purging Addon' in purge_result.stdout"
+
+    - name: Assert no pods stuck in non-Running/Succeeded phases
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _kubectl }} get pods -A \
+          --field-selector=status.phase!=Running,status.phase!=Succeeded \
+          --no-headers | wc -l
+      args:
+        executable: /bin/bash
+      register: unready
+      changed_when: false
+      failed_when: unready.stdout | int > 0
+
+    # Wait for Flux to converge on the latest GitRepository revision before
+    # declaring the upgrade complete. Without this gate, the playbook can exit
+    # successfully while Kustomizations are still mid-reconcile — masking
+    # failures (CrashLoops, broken Helm releases) that surface minutes later.
+    # 10 attempts × 30s = 5min convergence window.
+    - name: Wait for Flux Kustomizations to converge on latest revision
+      ansible.builtin.shell: |
+        set -o pipefail
+        LATEST_REV=$({{ _kubectl }} -n flux-system get gitrepository flux-system \
+          -o jsonpath='{.status.artifact.revision}')
+        if [ -z "$LATEST_REV" ]; then
+          echo "no GitRepository revision — Flux not Ready"
+          exit 1
+        fi
+        OUT_OF_DATE=$({{ _kubectl }} -n flux-system get kustomization -o json \
+          | jq -r --arg r "$LATEST_REV" '
+              [.items[]
+                | select(.spec.sourceRef.name == "flux-system")
+                | select((.status.lastAppliedRevision // "") != $r)
+                | .metadata.name] | join(",")')
+        if [ -n "$OUT_OF_DATE" ]; then
+          echo "out-of-date: $OUT_OF_DATE (target $LATEST_REV)"
+          exit 1
+        fi
+        echo "all Kustomizations on $LATEST_REV"
+      args:
+        executable: /bin/bash
+      register: flux_convergence
+      changed_when: false
+      retries: 10
+      delay: 30
+      until: flux_convergence.rc == 0
+
+    - name: Assert Flux kustomizations are Ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ _kubectl }} -n flux-system get kustomization -o json \
+          | jq -r '[.items[] | select(.status.conditions[]? | select(.type=="Ready" and .status!="True"))] | length'
+      args:
+        executable: /bin/bash
+      register: flux_notready
+      changed_when: false
+      failed_when: flux_notready.stdout | int > 0
+
+    - name: Upgrade complete
+      ansible.builtin.debug:
+        msg: >-
+          RKE2 upgrade to {{ rke2_version }} complete.
+          All {{ groups['k8s_cluster'] | length }} nodes on target version,
+          all pods Running, Flux kustomizations Ready.

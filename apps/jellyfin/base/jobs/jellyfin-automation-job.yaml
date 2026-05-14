@@ -1,0 +1,135 @@
+---
+# File: kubernetes/apps/jellyfin/base/jobs/jellyfin-automation-job.yaml
+# Purpose: Kubernetes Job for zero-touch Jellyfin setup
+# Validates: kubectl get job -n media jellyfin-automation
+---
+# Service Account for Jellyfin setup
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jellyfin-setup
+  namespace: media
+---
+# Role for pod operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jellyfin-setup
+  namespace: media
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+# RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jellyfin-setup
+  namespace: media
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jellyfin-setup
+subjects:
+  - kind: ServiceAccount
+    name: jellyfin-setup
+    namespace: media
+---
+# Kubernetes Job for automated setup
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-automation
+  namespace: media
+  labels:
+    app: jellyfin-setup
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: jellyfin-setup
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: jellyfin-setup
+      containers:
+        - name: setup
+          image: ${IMAGE_PYTHON_SLIM}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "Installing kubectl via HTTPS (no apt-get/curl needed)..."
+              python3 -c "
+              import urllib.request, os
+              v = urllib.request.urlopen('https://dl.k8s.io/release/stable.txt').read().decode().strip()
+              print(f'  Downloading kubectl {v}...')
+              urllib.request.urlretrieve(f'https://dl.k8s.io/release/{v}/bin/linux/amd64/kubectl', '/usr/local/bin/kubectl')
+              os.chmod('/usr/local/bin/kubectl', 0o755)
+              print('  kubectl installed')
+              "
+
+              echo ""
+              echo "Starting Jellyfin zero-touch automation..."
+              echo ""
+              python3 /scripts/jellyfin-setup.py
+          env:
+            - name: ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: jellyfin-admin-credentials
+                  key: ADMIN_USERNAME
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jellyfin-admin-credentials
+                  key: ADMIN_PASSWORD
+            - name: SERVER_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: jellyfin-admin-credentials
+                  key: SERVER_NAME
+            - name: JELLYFIN_URL
+              value: "http://jellyfin.media.svc.cluster.local:8096"
+            # SSO Configuration (Authentik OIDC) - uses sso-client-secrets
+            - name: ENABLE_SSO
+              value: "true"
+            - name: SSO_CLIENT_ID
+              value: "jellyfin-sso"
+            - name: SSO_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sso-client-secrets
+                  key: JELLYFIN_CLIENT_SECRET
+            - name: SSO_ENDPOINT
+              value: "https://auth.example.com/application/o/jellyfin/"
+            # Theme Configuration
+            - name: ENABLE_THEME
+              value: "true"
+          volumeMounts:
+            - name: automation-script
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: automation-script
+          configMap:
+            name: jellyfin-automation-script
+            defaultMode: 0755

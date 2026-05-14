@@ -1,0 +1,26 @@
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: netbox-token-unifi
+  namespace: unifi
+spec:
+  data:
+  - remoteRef:
+      key: cred-ssot-network
+      property: CRED_EXTERNAL_DNS_NETBOX_TOKEN
+    secretKey: netbox_token
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: SecretStore
+    name: credential-network
+  target:
+    creationPolicy: Owner
+    name: netbox-token
+    template:
+      metadata:
+        labels:
+          ssot.example.com/source: "credentials-sops"
+      data:
+        token: '{{ .netbox_token }}'
+        url: http://<internal-ip>
+      type: Opaque

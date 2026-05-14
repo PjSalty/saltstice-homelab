@@ -1,0 +1,266 @@
+---
+# Semaphore Proxy Provider Setup for Authentik ForwardAuth
+# Uses existing API token for authentication
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: semaphore-proxy-setup-script
+  namespace: authentik
+data:
+  setup.py: |
+    #!/usr/bin/env python3
+    """
+    Setup Semaphore as a Proxy Provider in Authentik for ForwardAuth
+    Uses existing API token from sso-client-secrets
+    """
+    import os
+    import sys
+    import json
+    import time
+    import urllib.request
+    import urllib.error
+
+    # Configuration from environment
+    AUTHENTIK_URL = "http://authentik-server"
+    API_TOKEN = os.environ.get("AUTHENTIK_API_TOKEN", "")
+    DOMAIN = "example.com"
+
+    def api_request(method, endpoint, data=None):
+        """Make API request to Authentik using Bearer token"""
+        url = f"{AUTHENTIK_URL}/api/v3/{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {API_TOKEN}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        body = json.dumps(data).encode() if data else None
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_text = response.read().decode()
+                return json.loads(resp_text) if resp_text else {}
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else ""
+            print(f"API Error {e.code} on {endpoint}: {error_body[:500]}")
+            return None
+        except Exception as e:
+            print(f"Request error on {endpoint}: {e}")
+            return None
+
+    def wait_for_authentik():
+        """Wait for Authentik to be ready"""
+        print("Waiting for Authentik...")
+        for i in range(30):
+            try:
+                req = urllib.request.Request(
+                    f"{AUTHENTIK_URL}/-/health/ready/",
+                    headers={"Accept": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    if response.status == 200:
+                        print("Authentik is ready!")
+                        return True
+            except:
+                pass
+            time.sleep(2)
+        return False
+
+    def setup_auth():
+        """Verify API token works"""
+        print("Testing API token...")
+
+        # Test auth
+        result = api_request("GET", "core/users/me/")
+        if result and result.get("user", {}).get("pk"):
+            user = result.get("user", {})
+            print(f"Authenticated as: {user.get('username')} (pk={user.get('pk')})")
+            return True
+        elif result and result.get("pk"):
+            print(f"Authenticated as: {result.get('username')} (pk={result.get('pk')})")
+            return True
+        print("Authentication failed!")
+        return False
+
+    def get_authorization_flow():
+        """Get the default authorization flow"""
+        result = api_request("GET", "flows/instances/?slug=default-provider-authorization-implicit-consent")
+        if result and result.get("results"):
+            return result["results"][0]["pk"]
+        result = api_request("GET", "flows/instances/?slug=default-provider-authorization-explicit-consent")
+        if result and result.get("results"):
+            return result["results"][0]["pk"]
+        # Try any authorization flow
+        result = api_request("GET", "flows/instances/?designation=authorization")
+        if result and result.get("results"):
+            return result["results"][0]["pk"]
+        return None
+
+    def create_proxy_provider():
+        """Create Proxy Provider for Semaphore"""
+        print("\n=== Creating Proxy Provider for Semaphore ===")
+
+        result = api_request("GET", "providers/proxy/?name=Semaphore%20Proxy")
+        if result and result.get("results"):
+            provider = result["results"][0]
+            print(f"Provider already exists: pk={provider['pk']}")
+            return provider["pk"]
+
+        auth_flow = get_authorization_flow()
+        if not auth_flow:
+            print("ERROR: No authorization flow found!")
+            # List available flows
+            flows = api_request("GET", "flows/instances/")
+            if flows:
+                print(f"Available flows: {[f['slug'] for f in flows.get('results', [])]}")
+            return None
+
+        print(f"Using authorization flow: {auth_flow}")
+
+        provider_data = {
+            "name": "Semaphore Proxy",
+            "authorization_flow": auth_flow,
+            "mode": "forward_single",
+            "external_host": f"https://semaphore.{DOMAIN}",
+            "access_token_validity": "hours=24"
+        }
+
+        result = api_request("POST", "providers/proxy/", provider_data)
+        if result and result.get("pk"):
+            print(f"Created proxy provider: pk={result['pk']}")
+            return result["pk"]
+        return None
+
+    def create_application(provider_pk):
+        """Create Application for Semaphore"""
+        print("\n=== Creating Application for Semaphore ===")
+
+        result = api_request("GET", "core/applications/?slug=semaphore-proxy")
+        if result and result.get("results"):
+            app = result["results"][0]
+            print(f"Application already exists: slug={app['slug']}")
+            return app["pk"]
+
+        app_data = {
+            "name": "Semaphore",
+            "slug": "semaphore-proxy",
+            "provider": provider_pk,
+            "meta_launch_url": f"https://semaphore.{DOMAIN}",
+            "meta_description": "Ansible Automation UI",
+            "policy_engine_mode": "any",
+            "open_in_new_tab": True
+        }
+
+        result = api_request("POST", "core/applications/", app_data)
+        if result and result.get("pk"):
+            print(f"Created application: pk={result['pk']}, slug={result.get('slug')}")
+            return result["pk"]
+        return None
+
+    def add_to_outpost(provider_pk):
+        """Add Semaphore provider to the embedded outpost"""
+        print("\n=== Adding Semaphore to Embedded Outpost ===")
+
+        result = api_request("GET", "outposts/instances/")
+        if not result or not result.get("results"):
+            print("No outposts found!")
+            return False
+
+        outpost = result["results"][0]
+        outpost_pk = outpost["pk"]
+        current_providers = outpost.get("providers", [])
+
+        print(f"Outpost: {outpost['name']} (pk={outpost_pk})")
+        print(f"Current providers: {current_providers}")
+
+        if provider_pk not in current_providers:
+            current_providers.append(provider_pk)
+            update_data = {"providers": current_providers}
+            result = api_request("PATCH", f"outposts/instances/{outpost_pk}/", update_data)
+            if result:
+                print(f"Added Semaphore provider to outpost!")
+                return True
+            return False
+        else:
+            print("Provider already in outpost")
+            return True
+
+    def main():
+        print("=" * 60)
+        print("Semaphore Proxy Provider Setup (Code-Only)")
+        print("=" * 60)
+
+        if not API_TOKEN:
+            print("ERROR: AUTHENTIK_API_TOKEN not set!")
+            return 1
+
+        if not wait_for_authentik():
+            print("Authentik not ready!")
+            return 1
+
+        if not setup_auth():
+            print("Failed to authenticate!")
+            return 1
+
+        provider_pk = create_proxy_provider()
+        if not provider_pk:
+            print("Failed to create provider!")
+            return 1
+
+        app_pk = create_application(provider_pk)
+        if not app_pk:
+            print("Failed to create application!")
+            return 1
+
+        if not add_to_outpost(provider_pk):
+            print("Warning: Could not add to outpost")
+
+        print("\n" + "=" * 60)
+        print("SETUP COMPLETE!")
+        print("=" * 60)
+        print(f"\nSemaphore is now protected by Authentik ForwardAuth")
+        print(f"Access: https://semaphore.{DOMAIN}")
+        print("Login with your Authentik credentials")
+        print("=" * 60)
+
+        return 0
+
+    if __name__ == "__main__":
+        sys.exit(main())
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: semaphore-proxy-setup
+  namespace: authentik
+  annotations:
+    description: "Setup Semaphore as Proxy Provider for ForwardAuth"
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: setup
+        image: ${IMAGE_PYTHON_SLIM}
+        command: ["python", "/scripts/setup.py"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        env:
+        - name: AUTHENTIK_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: sso-client-secrets
+              key: AUTHENTIK_API_TOKEN
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+      volumes:
+      - name: scripts
+        configMap:
+          name: semaphore-proxy-setup-script

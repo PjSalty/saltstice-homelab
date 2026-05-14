@@ -1,0 +1,579 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: semaphore
+    namespace: semaphore
+    labels:
+        app: semaphore
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+            app: semaphore
+    template:
+        metadata:
+            labels:
+                app: semaphore
+        spec:
+            automountServiceAccountToken: false
+            securityContext:
+                seccompProfile:
+                    type: RuntimeDefault
+            initContainers:
+                - name: wait-for-postgres
+                  image: ${IMAGE_POSTGRES_15}
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      until pg_isready -h postgres -p 5432 -U semaphore; do
+                        echo "Waiting for postgres..."
+                        sleep 2
+                      done
+                      echo "Postgres is ready!"
+                  resources:
+                    requests:
+                      cpu: 50m
+                      memory: 32Mi
+                    limits:
+                      cpu: 100m
+                      memory: 64Mi
+                  env:
+                    - name: PGPASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: postgres-password
+                - name: clone-ansible-repo
+                  image: ${IMAGE_GIT}
+                  resources:
+                    requests:
+                      cpu: 50m
+                      memory: 64Mi
+                    limits:
+                      cpu: 200m
+                      memory: 128Mi
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      echo "Cloning GitLab repository to /ansible..."
+
+                      # Install OpenSSH client
+                      apk add --no-cache openssh-client
+
+                      # Add GitLab hostname to /etc/hosts (from SSOT via Flux substitution)
+                      echo "${INFRA_GITLAB_IP} git.example.com gitlab.example.com" >> /etc/hosts
+
+                      # Setup SSH for GitLab
+                      mkdir -p ~/.ssh
+                      cp /tmp/semaphore-ssh/id_rsa ~/.ssh/
+                      cp /tmp/semaphore-ssh/known_hosts ~/.ssh/ || true
+                      chmod 600 ~/.ssh/id_rsa
+                      chmod 700 ~/.ssh
+
+                      # Add GitLab host key to known_hosts (using SSOT variables)
+                      ssh-keyscan -p ${INFRA_GITLAB_SSH_PORT} ${INFRA_GITLAB_IP} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+                      # Test SSH connection
+                      echo "Testing SSH connection to GitLab at ${INFRA_GITLAB_IP}:${INFRA_GITLAB_SSH_PORT}..."
+                      ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p ${INFRA_GITLAB_SSH_PORT} -T git@${INFRA_GITLAB_IP} || true
+
+                      # Clone or update repository
+                      # First, clean up any corrupted state completely
+                      if [ -d "/ansible/.git" ]; then
+                        cd /ansible
+                        git config --global --add safe.directory /ansible
+
+                        # Check if working tree is corrupted (only .git dir, no files)
+                        FILE_COUNT=$(ls -A /ansible | grep -v "^\.git$" | wc -l)
+                        if [ "$FILE_COUNT" -eq 0 ]; then
+                          echo "Working tree is empty/corrupted, cleaning up completely..."
+                          cd /
+                          # Force remove everything in the directory
+                          find /ansible -mindepth 1 -delete 2>/dev/null || rm -rf /ansible/* /ansible/.* 2>/dev/null || true
+                          echo "Directory cleaned, cloning fresh..."
+                          GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p ${INFRA_GITLAB_SSH_PORT}" \
+                            git clone git@${INFRA_GITLAB_IP}:infrastructure/homelab-ansible.git /ansible
+                        else
+                          echo "Repository exists, pulling latest changes..."
+                          GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p ${INFRA_GITLAB_SSH_PORT}" \
+                            git fetch origin main 2>/dev/null || git fetch origin master 2>/dev/null || true
+                          git reset --hard origin/main 2>/dev/null || git reset --hard origin/master 2>/dev/null || echo "Reset failed"
+                          echo "Working tree updated"
+                        fi
+                      else
+                        # Directory is empty or doesn't exist, clean clone
+                        echo "Cloning repository..."
+                        # Ensure directory is completely empty before clone
+                        find /ansible -mindepth 1 -delete 2>/dev/null || true
+                        GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p ${INFRA_GITLAB_SSH_PORT}" \
+                          git clone git@${INFRA_GITLAB_IP}:infrastructure/homelab-ansible.git /ansible
+                      fi
+
+                      echo "Repository clone/update complete!"
+                      ls -la /ansible
+                  volumeMounts:
+                    - name: ansible-repo
+                      mountPath: /ansible
+                    - name: ssh-keys
+                      mountPath: /tmp/semaphore-ssh
+                      readOnly: true
+                # Sync SSOT credentials from secrets repo into ansible repo's credentials/ dir
+                # Single SSOT remains in infrastructure/secrets — no duplication
+                - name: sync-credentials
+                  image: ${IMAGE_GIT}
+                  resources:
+                    requests:
+                      cpu: 50m
+                      memory: 64Mi
+                    limits:
+                      cpu: 200m
+                      memory: 128Mi
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      set -e
+                      apk add --no-cache openssh-client
+
+                      # Setup SSH (same as clone-ansible-repo)
+                      echo "${INFRA_GITLAB_IP} git.example.com gitlab.example.com" >> /etc/hosts
+                      mkdir -p ~/.ssh
+                      cp /tmp/semaphore-ssh/id_rsa ~/.ssh/
+                      chmod 600 ~/.ssh/id_rsa
+                      chmod 700 ~/.ssh
+                      ssh-keyscan -p ${INFRA_GITLAB_SSH_PORT} ${INFRA_GITLAB_IP} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+                      # Clone secrets repo to temp dir
+                      TMPDIR=$(mktemp -d)
+                      echo "Cloning secrets repo..."
+                      GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p ${INFRA_GITLAB_SSH_PORT}" \
+                        git clone --depth 1 git@${INFRA_GITLAB_IP}:infrastructure/secrets.git "$TMPDIR"
+
+                      # Copy SSOT credentials to where load-ssot.yml expects them
+                      if [ -f "$TMPDIR/credentials.sops.yaml" ]; then
+                        mkdir -p /ansible/credentials
+                        cp "$TMPDIR/credentials.sops.yaml" /ansible/credentials/credentials.sops.yaml
+                        echo "SSOT credentials synced to /ansible/credentials/"
+                      else
+                        echo "WARNING: credentials.sops.yaml not found in secrets repo"
+                        ls -la "$TMPDIR/"
+                      fi
+
+                      # Clean up
+                      rm -rf "$TMPDIR"
+                  volumeMounts:
+                    - name: ansible-repo
+                      mountPath: /ansible
+                    - name: ssh-keys
+                      mountPath: /tmp/semaphore-ssh
+                      readOnly: true
+                - name: install-tools
+                  image: ${IMAGE_ALPINE}
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      set -e
+                      # Download kubectl binary for Ansible K8s playbooks
+                      # Version from SSOT: config/versions.yaml -> TOOLS_KUBECTL_VERSION
+                      echo "Downloading kubectl v${TOOLS_KUBECTL_VERSION}..."
+                      wget -q "https://dl.k8s.io/release/v${TOOLS_KUBECTL_VERSION}/bin/linux/amd64/kubectl" -O /tools/kubectl
+                      chmod +x /tools/kubectl
+                      /tools/kubectl version --client --short 2>/dev/null || /tools/kubectl version --client
+                      echo "kubectl installed successfully"
+
+                      # Download helm binary for Ansible Helm playbooks
+                      # Version from SSOT: config/versions.yaml -> TOOLS_HELM_VERSION
+                      echo "Downloading helm v${TOOLS_HELM_VERSION}..."
+                      wget -q "https://get.helm.sh/helm-v${TOOLS_HELM_VERSION}-linux-amd64.tar.gz" -O /tmp/helm.tar.gz
+                      tar -xzf /tmp/helm.tar.gz -C /tmp
+                      mv /tmp/linux-amd64/helm /tools/helm
+                      chmod +x /tools/helm
+                      rm -rf /tmp/helm.tar.gz /tmp/linux-amd64
+                      /tools/helm version --short
+                      echo "helm installed successfully"
+
+                      # Download sops binary for credential rotation playbooks
+                      # Version: 3.9.0 (from config/versions.yaml)
+                      echo "Downloading sops v3.9.0..."
+                      wget -q "https://github.com/getsops/sops/releases/download/v3.9.0/sops-v3.9.0.linux.amd64" -O /tools/sops
+                      chmod +x /tools/sops
+                      /tools/sops --version
+                      echo "sops installed successfully"
+                  resources:
+                    requests:
+                      cpu: 50m
+                      memory: 64Mi
+                    limits:
+                      cpu: 200m
+                      memory: 128Mi
+                  volumeMounts:
+                    - name: tools-bin
+                      mountPath: /tools
+                - name: create-admin-user
+                  image: ${IMAGE_SEMAPHORE}
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      # Generate config.json with actual DB password from secret
+                      mkdir -p /tmp/semaphore
+                      cat > /tmp/semaphore/config.json << EOF
+                      {
+                        "postgres": {
+                          "host": "$${SEMAPHORE_DB_HOST}",
+                          "user": "$${SEMAPHORE_DB_USER}",
+                          "pass": "$${SEMAPHORE_DB_PASS}",
+                          "name": "$${SEMAPHORE_DB_NAME}",
+                          "options": {"sslmode": "disable"}
+                        },
+                        "port": "$${SEMAPHORE_PORT}",
+                        "tmp_path": "/tmp/semaphore"
+                      }
+                      EOF
+
+                      # Check if admin user exists
+                      if semaphore user list --config /tmp/semaphore/config.json 2>&1 | grep -q "admin"; then
+                        echo "Admin user already exists, skipping creation"
+                      else
+                        echo "Creating admin user..."
+                        semaphore user add --admin \
+                          --login "$${SEMAPHORE_ADMIN}" \
+                          --name "$${SEMAPHORE_ADMIN_NAME}" \
+                          --email "$${SEMAPHORE_ADMIN_EMAIL}" \
+                          --password "$${SEMAPHORE_ADMIN_PASSWORD}" \
+                          --config /tmp/semaphore/config.json
+                        echo "Admin user created successfully!"
+                      fi
+                  resources:
+                    requests:
+                      cpu: 100m
+                      memory: 128Mi
+                    limits:
+                      cpu: 500m
+                      memory: 256Mi
+                  env:
+                    - name: SEMAPHORE_DB_DIALECT
+                      value: postgres
+                    - name: SEMAPHORE_DB_HOST
+                      value: postgres
+                    - name: SEMAPHORE_DB_PORT
+                      value: "5432"
+                    - name: SEMAPHORE_DB_USER
+                      value: semaphore
+                    - name: SEMAPHORE_DB_PASS
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: postgres-password
+                    - name: SEMAPHORE_DB_NAME
+                      value: semaphore
+                    - name: SEMAPHORE_ADMIN
+                      value: admin
+                    - name: SEMAPHORE_ADMIN_PASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: admin-password
+                    - name: SEMAPHORE_ADMIN_NAME
+                      value: Administrator
+                    - name: SEMAPHORE_ADMIN_EMAIL
+                      value: admin@example.com
+                    - name: SEMAPHORE_ACCESS_KEY_ENCRYPTION
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: encryption-key
+                    - name: SEMAPHORE_CONFIG_PATH
+                      value: /etc/semaphore
+                    - name: SEMAPHORE_PORT
+                      value: "3000"
+                  volumeMounts:
+                    - name: config
+                      mountPath: /etc/semaphore
+                # Sync SSO users to admin on startup (runs on every deployment)
+                - name: sync-sso-users
+                  image: ${IMAGE_POSTGRES_15}
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      echo "=== Admin Password Sync ==="
+                      psql -h postgres -U semaphore -d semaphore -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>/dev/null
+                      psql -h postgres -U semaphore -d semaphore -c \
+                        "UPDATE \"user\" SET password = crypt('$${ADMIN_PASSWORD}', gen_salt('bf')) WHERE username = 'admin';" 2>/dev/null
+                      echo "Admin password synced from secret"
+
+                      echo "=== SSO User Sync ==="
+                      # List of SSO usernames to promote to admin
+                      SSO_ADMINS="Salty"
+
+                      for username in $SSO_ADMINS; do
+                        echo "Checking user: $username"
+
+                        # Check if user exists (created on first SSO login)
+                        user_id=$(psql -h postgres -U semaphore -d semaphore -tAc \
+                          "SELECT id FROM \"user\" WHERE username = '$username';")
+
+                        if [ -z "$user_id" ]; then
+                          echo "  User not found yet (created on first SSO login)"
+                          continue
+                        fi
+
+                        echo "  Found user ID: $user_id"
+
+                        # Promote to admin
+                        psql -h postgres -U semaphore -d semaphore -c \
+                          "UPDATE \"user\" SET admin = true WHERE id = $user_id;"
+                        echo "  Admin: true"
+
+                        # Add to all projects as owner
+                        for pid in $(psql -h postgres -U semaphore -d semaphore -tAc \
+                          "SELECT id FROM project;"); do
+                          psql -h postgres -U semaphore -d semaphore -c \
+                            "INSERT INTO project__user (project_id, user_id, role)
+                             VALUES ($pid, $user_id, 'owner')
+                             ON CONFLICT (project_id, user_id) DO UPDATE SET role = 'owner';" \
+                            >/dev/null 2>&1
+                          echo "  Added to project $pid"
+                        done
+                      done
+                      echo "=== SSO Sync Complete ==="
+                  resources:
+                    requests:
+                      cpu: 50m
+                      memory: 32Mi
+                    limits:
+                      cpu: 100m
+                      memory: 64Mi
+                  env:
+                    - name: PGPASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: postgres-password
+                    - name: ADMIN_PASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: admin-password
+            containers:
+                - name: semaphore
+                  image: ${IMAGE_SEMAPHORE}
+                  resources:
+                    requests:
+                      cpu: 100m
+                      memory: 256Mi
+                    limits:
+                      cpu: 1000m
+                      memory: 512Mi
+                  # Run as root to match NFS file ownership on PVCs
+                  # Required because go-git library doesn't respect GIT_CONFIG_GLOBAL
+                  # for safe.directory settings, causing exit status 128 on checkouts
+                  securityContext:
+                    runAsUser: 0
+                    allowPrivilegeEscalation: false
+                    capabilities:
+                      drop:
+                        - ALL
+                  command:
+                    - /bin/sh
+                    - -c
+                    - |
+                      set -e
+                      echo "Configuring git safe directory for mixed ownership..."
+                      git config --global --add safe.directory '*'
+
+                      # Generate config.json with password from secret env var
+                      echo "Generating config.json with database credentials and OIDC..."
+                      cat > /tmp/semaphore/config.json << EOF
+                      {
+                        "postgres": {
+                          "host": "$${SEMAPHORE_DB_HOST}",
+                          "user": "$${SEMAPHORE_DB_USER}",
+                          "pass": "$${SEMAPHORE_DB_PASS}",
+                          "name": "$${SEMAPHORE_DB_NAME}",
+                          "options": {
+                            "sslmode": "disable"
+                          }
+                        },
+                        "port": "$${SEMAPHORE_PORT}",
+                        "tmp_path": "/tmp/semaphore",
+                        "web_host": "https://semaphore.example.com",
+                        "web_root": "/",
+                        "ldap_enable": false,
+                        "email_alert": false,
+                        "telegram_alert": false,
+                        "slack_alert": false,
+                        "rocketchat_alert": false,
+                        "microsoft_teams_alert": false,
+                        "access_key_encryption": "$${SEMAPHORE_ACCESS_KEY_ENCRYPTION}",
+                        "cookie_hash": "$${SEMAPHORE_COOKIE_HASH}",
+                        "cookie_encryption": "$${SEMAPHORE_COOKIE_ENCRYPTION}",
+                        "oidc_providers": {
+                          "authentik": {
+                            "display_name": "Authentik SSO",
+                            "provider_url": "https://auth.example.com/application/o/semaphore/",
+                            "client_id": "$${SEMAPHORE_OIDC_CLIENT_ID}",
+                            "client_secret": "$${SEMAPHORE_OIDC_CLIENT_SECRET}",
+                            "redirect_url": "https://semaphore.example.com/api/auth/oidc/authentik/redirect",
+                            "scopes": ["openid", "profile", "email"]
+                          }
+                        }
+                      }
+                      EOF
+
+                      echo "Starting Semaphore with dynamically generated config..."
+                      exec /usr/local/bin/semaphore service --config /tmp/semaphore/config.json
+                  ports:
+                    - containerPort: 3000
+                  env:
+                    - name: SEMAPHORE_DB_DIALECT
+                      value: postgres
+                    - name: SEMAPHORE_DB_HOST
+                      value: postgres
+                    - name: SEMAPHORE_DB_PORT
+                      value: "5432"
+                    - name: SEMAPHORE_DB_USER
+                      value: semaphore
+                    - name: SEMAPHORE_DB_PASS
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: postgres-password
+                    - name: SEMAPHORE_DB_NAME
+                      value: semaphore
+                    - name: SEMAPHORE_ADMIN
+                      value: admin
+                    - name: SEMAPHORE_ADMIN_PASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: admin-password
+                    - name: SEMAPHORE_ADMIN_NAME
+                      value: Administrator
+                    - name: SEMAPHORE_ADMIN_EMAIL
+                      value: admin@example.com
+                    - name: SEMAPHORE_ACCESS_KEY_ENCRYPTION
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: encryption-key
+                    - name: SEMAPHORE_LDAP_ACTIVATED
+                      value: "no"
+                    # OIDC configuration for Authentik SSO
+                    - name: SEMAPHORE_OIDC_CLIENT_ID
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: oidc-client-id
+                    - name: SEMAPHORE_OIDC_CLIENT_SECRET
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: oidc-client-secret
+                    - name: SEMAPHORE_COOKIE_HASH
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: cookie-hash
+                    - name: SEMAPHORE_COOKIE_ENCRYPTION
+                      valueFrom:
+                        secretKeyRef:
+                            name: semaphore-secrets
+                            key: cookie-encryption
+                    # HOME needed for Ansible temp files when running as non-root
+                    - name: HOME
+                      value: /tmp
+                    - name: ANSIBLE_HOME
+                      value: /tmp/.ansible
+                    - name: ANSIBLE_PRIVATE_KEY_FILE
+                      value: /root/.ssh/automation-key
+                    - name: SEMAPHORE_PLAYBOOK_PATH
+                      value: /ansible
+                    - name: SEMAPHORE_CONFIG_PATH
+                      value: /etc/semaphore
+                    - name: SEMAPHORE_PORT
+                      value: "3000"
+                    - name: GIT_SSH_COMMAND
+                      value: ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/semaphore-ssh/known_hosts -i /tmp/semaphore-ssh/id_rsa
+                    - name: GODEBUG
+                      value: "x509sha1=1"
+                    # Force git to use our gitconfig file (for safe.directory setting)
+                    - name: GIT_CONFIG_GLOBAL
+                      value: /tmp/.gitconfig
+                    # Kubeconfig for kubectl commands in Ansible playbooks
+                    - name: KUBECONFIG
+                      value: /etc/kubernetes/kubeconfig
+                    # SOPS age key for decrypting credentials
+                    - name: SOPS_AGE_KEY_FILE
+                      value: /etc/sops/age/keys.txt
+                    # SSOT credentials path (synced by sync-credentials init container)
+                    - name: SSOT_FILE
+                      value: /ansible/credentials/credentials.sops.yaml
+                  volumeMounts:
+                    - name: config
+                      mountPath: /etc/semaphore
+                    - name: ansible-repo
+                      mountPath: /ansible
+                    - name: ssh-keys
+                      mountPath: /tmp/semaphore-ssh
+                      readOnly: true
+                    - name: semaphore-tmp
+                      mountPath: /tmp/semaphore
+                    - name: tools-bin
+                      mountPath: /usr/local/bin/kubectl
+                      subPath: kubectl
+                      readOnly: true
+                    - name: tools-bin
+                      mountPath: /usr/local/bin/helm
+                      subPath: helm
+                      readOnly: true
+                    - name: automation-ssh-key
+                      mountPath: /root/.ssh
+                    - name: kubeconfig
+                      mountPath: /etc/kubernetes
+                      readOnly: true
+                    - name: sops-age-key
+                      mountPath: /etc/sops/age
+                      readOnly: true
+                    - name: tools-bin
+                      mountPath: /usr/local/bin/sops
+                      subPath: sops
+                      readOnly: true
+            volumes:
+                - name: semaphore-tmp
+                  persistentVolumeClaim:
+                    claimName: semaphore-tmp-pvc
+                - name: tools-bin
+                  emptyDir: {}
+                - name: automation-ssh-key
+                  secret:
+                    secretName: ansible-ssh-key
+                    defaultMode: 0600
+                    items:
+                      - key: id_rsa
+                        path: automation-key
+                - name: kubeconfig
+                  secret:
+                    secretName: semaphore-kubeconfig
+                    defaultMode: 0400
+                - name: config
+                  configMap:
+                    name: semaphore-config
+                - name: ansible-repo
+                  persistentVolumeClaim:
+                    claimName: ansible-repo-pvc
+                - name: ssh-keys
+                  secret:
+                    secretName: gitlab-ssh-secret
+                    defaultMode: 292
+                - name: sops-age-key
+                  secret:
+                    secretName: sops-age
+                    defaultMode: 0400
+                    items:
+                      - key: age.agekey
+                        path: keys.txt

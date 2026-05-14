@@ -1,0 +1,90 @@
+---
+# Blackbox Exporter HelmRelease
+# Provides HTTP, TCP, and ICMP probing for service availability monitoring
+# Researched: 2026-02-07
+# Source: https://artifacthub.io/packages/helm/prometheus-community/prometheus-blackbox-exporter
+# Chart: 11.8.0, App: v0.28.0
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: blackbox-exporter
+  namespace: flux-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: prometheus-blackbox-exporter
+      version: "11.8.0"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+      interval: 12h
+  targetNamespace: monitoring
+  install:
+    createNamespace: false
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    fullnameOverride: blackbox-exporter
+
+    replicas: 1
+
+    config:
+      modules:
+        # Standard HTTP probe - expects 200
+        http_2xx:
+          prober: http
+          timeout: 10s
+          http:
+            valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+            follow_redirects: true
+            preferred_ip_protocol: "ip4"
+            tls_config:
+              insecure_skip_verify: true
+
+        # Availability probe - accepts any "alive" response
+        # Used for services behind forward-auth (302 redirect)
+        # or services with login pages (302 to OIDC)
+        http_availability:
+          prober: http
+          timeout: 10s
+          http:
+            valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+            valid_status_codes: [200, 301, 302, 401, 403]
+            follow_redirects: false
+            preferred_ip_protocol: "ip4"
+            tls_config:
+              insecure_skip_verify: true
+
+        # TCP connection probe - used for NFS, databases
+        tcp_connect:
+          prober: tcp
+          timeout: 5s
+
+    # Self-monitoring (blackbox exporter's own /metrics)
+    serviceMonitor:
+      selfMonitor:
+        enabled: true
+        labels:
+          release: monitoring-kube-prometheus-stack
+
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi

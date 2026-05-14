@@ -1,0 +1,60 @@
+---
+# CiliumNetworkPolicy for Semaphore (Ansible UI)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: semaphore
+  namespace: semaphore
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow web traffic from Traefik
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # Allow intra-namespace (semaphore <-> postgres)
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: semaphore
+    # Allow Prometheus metrics
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9187"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+    # Intra-namespace
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: semaphore
+    # SSH to infrastructure VMs (Ansible deploy)
+    - toCIDR:
+        - <vlan-cidr>
+        - 10.x0.0/24
+        - <mgmt-ip>/24
+      toPorts:
+        - ports:
+            - port: "22"
+              protocol: TCP
+    # GitLab API (fetch repos)
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

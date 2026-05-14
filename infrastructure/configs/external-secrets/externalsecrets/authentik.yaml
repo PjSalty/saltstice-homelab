@@ -1,0 +1,186 @@
+# authentik-admin: admin credentials for Authentik
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: authentik-admin
+  namespace: authentik
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: authentik-admin
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        email: "admin@example.com"
+        username: "akadmin"
+        password: "{{ .admin_password }}"
+  data:
+  - secretKey: admin_password
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_ADMIN_PASSWORD
+---
+# authentik-secret: PostgreSQL password and secret key
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: authentik-secret
+  namespace: authentik
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: authentik-secret
+    creationPolicy: Owner
+  data:
+  - secretKey: AUTHENTIK_POSTGRESQL__PASSWORD
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_POSTGRESQL_PASSWORD
+  - secretKey: AUTHENTIK_SECRET_KEY
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SECRET_KEY
+---
+# sso-client-secrets: SSO client secrets for all integrated apps
+# NOTE: ADGUARD_ADMIN_PASSWORD and ADGUARD_ADMIN_USER are config values hardcoded in template.
+# NOTE: HOMARR_CLIENT_SECRET has no dedicated CRED key in the source — needs to be added
+#       to cred-ssot-core as CRED_AUTHENTIK_SSO_CLIENTS_HOMARR_CLIENT_SECRET before go-live.
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: sso-client-secrets
+  namespace: authentik
+  labels:
+    app.kubernetes.io/component: sso-config
+    app.kubernetes.io/name: authentik
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: sso-client-secrets
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/component: "sso-config"
+          app.kubernetes.io/name: "authentik"
+          ssot.example.com/source: "credentials-sops"
+      data:
+        ADGUARD_ADMIN_PASSWORD: "{{ .adguard_client_secret }}"
+        ADGUARD_ADMIN_USER: "admin"
+        ADGUARD_CLIENT_SECRET: "{{ .adguard_client_secret }}"
+        AMP_CLIENT_SECRET: "{{ .amp_client_secret }}"
+        AUTHENTIK_API_TOKEN: "{{ .authentik_api_token }}"
+        GITLAB_CLIENT_SECRET: "{{ .gitlab_client_secret }}"
+        GRAFANA_CLIENT_SECRET: "{{ .grafana_client_secret }}"
+        HARBOR_CLIENT_SECRET: "{{ .harbor_client_secret }}"
+        HEADLAMP_CLIENT_SECRET: "{{ .headlamp_client_secret }}"
+        HOMARR_CLIENT_SECRET: "{{ .homarr_client_secret }}"
+        JELLYFIN_CLIENT_SECRET: "{{ .jellyfin_client_secret }}"
+        NETBOX_CLIENT_SECRET: "{{ .netbox_client_secret }}"
+        PROXMOX_CLIENT_SECRET: "{{ .proxmox_client_secret }}"
+        SEMAPHORE_CLIENT_SECRET: "{{ .semaphore_client_secret }}"
+        TRUENAS_CLIENT_SECRET: "{{ .truenas_client_secret }}"
+        VAULTWARDEN_CLIENT_SECRET: "{{ .vaultwarden_client_secret }}"
+  data:
+  - secretKey: adguard_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_ADGUARD_CLIENT_SECRET
+  - secretKey: amp_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_AMP_CLIENT_SECRET
+  - secretKey: authentik_api_token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_API_TOKEN
+  - secretKey: gitlab_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_GITLAB_CLIENT_SECRET
+  - secretKey: grafana_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_GRAFANA_CLIENT_SECRET
+  - secretKey: harbor_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_HARBOR_CLIENT_SECRET
+  - secretKey: headlamp_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_HEADLAMP_CLIENT_SECRET
+  - secretKey: homarr_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_HOMARR_CLIENT_SECRET
+  - secretKey: jellyfin_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_JELLYFIN_CLIENT_SECRET
+  - secretKey: netbox_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_NETBOX_CLIENT_SECRET
+  - secretKey: proxmox_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_PROXMOX_CLIENT_SECRET
+  - secretKey: semaphore_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_SEMAPHORE_CLIENT_SECRET
+  - secretKey: truenas_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_TRUENAS_CLIENT_SECRET
+  - secretKey: vaultwarden_client_secret
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_SSO_CLIENTS_VAULTWARDEN_CLIENT_SECRET
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: authentik-user-passwords
+  namespace: authentik
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: authentik-user-passwords
+    creationPolicy: Owner
+  data:
+  - secretKey: MICHAEL_PASSWORD
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_USERS_MICHAEL_PASSWORD
+  - secretKey: DRE_PASSWORD
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_USERS_DRE_PASSWORD
+  - secretKey: TIMM_PASSWORD
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_USERS_TIMM_PASSWORD
+  - secretKey: MATTHEW_PASSWORD
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_USERS_MATTHEW_PASSWORD
+  - secretKey: RENEA_PASSWORD
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_USERS_RENEA_PASSWORD

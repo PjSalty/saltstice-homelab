@@ -1,0 +1,40 @@
+---
+# CiliumClusterwideNetworkPolicy — allow kubelet (host) probes to all pods
+#
+# default-deny-all enables default-deny ingress on every non-system namespace.
+# Kubelet's liveness/readiness probes originate from the node itself (Cilium
+# identity: host), which is NOT covered by `fromEntities: cluster`. Without
+# this policy, every namespaced pod needs its own explicit `fromEntities: host`
+# — and missing it causes kubelet probes to time out and pods to go 0/1 Ready.
+#
+# Observed failure mode: cluster-wide pod flapping (VPA, CoreDNS, Traefik,
+# Kyverno, Flux controllers, etc.) with "Liveness probe failed:
+# context deadline exceeded" on port 8080/health-check. Root cause
+# exposed after a Cilium identity refresh around 2026-04-24 04:00 UTC.
+#
+# Security rationale: the node (kubelet) is a trusted infrastructure
+# identity — it already has admin access to pods on its host. Allowing
+# ingress from `host` / `remote-node` entities doesn't grant additional
+# trust; it just makes probes work. Most upstream K8s + Cilium docs
+# recommend this as a baseline.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-kubelet-probes
+spec:
+  description: "Allow kubelet (host) + remote-node ingress to all pods for probes"
+  endpointSelector:
+    matchExpressions:
+      # Match the same scope as default-deny-all so probe allows apply
+      # exactly where default-deny does.
+      - key: io.kubernetes.pod.namespace
+        operator: NotIn
+        values:
+          - kube-system
+          - kube-public
+          - kube-node-lease
+          - cilium-secrets
+  ingress:
+    - fromEntities:
+        - host
+        - remote-node

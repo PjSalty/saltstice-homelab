@@ -1,0 +1,13 @@
+---
+# gitlab role defaults
+
+# Pin GitLab CE version — sequential upgrades required (no skipping majors)
+# Check upgrade path: https://docs.gitlab.com/ee/update/#upgrade-paths
+gitlab_version: "18.5.2-ce.0"
+
+gitlab_data_dir: /data/gitlab
+gitlab_config_dir: "{{ gitlab_data_dir }}/config"
+gitlab_logs_dir: "{{ gitlab_data_dir }}/logs"
+gitlab_data_storage: "{{ gitlab_data_dir }}/data"
+gitlab_ssh_port: 2222
+gitlab_fqdn: "gitlab.{{ domain }}"

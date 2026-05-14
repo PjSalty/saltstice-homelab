@@ -1,0 +1,21 @@
+---
+# Prometheus ServiceMonitor for Tempo
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tempo
+  namespace: tempo
+  labels:
+    app.kubernetes.io/name: tempo
+    release: monitoring-kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+  namespaceSelector:
+    matchNames:
+      - tempo
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

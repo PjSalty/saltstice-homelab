@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: media
+
+resources:
+  # Core resources
+  - namespace.yaml
+  - storage/storage.yaml
+  # Secrets managed by infrastructure/secrets repo
+  # Pre-requisite: Create media directories on TrueNAS NFS
+  - jobs/media-directories-job.yaml
+  # Main application
+  - deployments/deployment.yaml
+  - services/service.yaml
+  - ingress/ingress.yaml
+  # Post-deployment automation (user, libraries, NVENC, server config, SSO, theme)
+  - configs/automation-configmap.yaml
+  # Python media-classifier.yaml deleted — replaced by homelab-cli media organize (Go)
+  - jobs/jellyfin-automation-job.yaml
+  # User sync from Authentik (runs every 15 minutes)
+  - jobs/authentik-user-sync-cronjob.yaml
+  # Nightly library audit (replaces show-specific one-shot rename Jobs)
+  - jobs/media-audit-cronjob.yaml
+  # Media drop watcher - polls for new files, classifies and moves to media library
+  - jobs/media-drop-mover.yaml
+  - services/media-drop-watcher-service.yaml
+  # NOTE: black-clover-rename-job.yaml was removed after the classifier
+  # itself learned about absolute-numbered anime (see
+  # internal/media/absolute_numbering.go in homelab-cli). New
+  # Black Clover packs land with correct SxxEyy at organise time, so
+  # the one-shot cleanup job is no longer needed.
+  - autoscaling
+  - pdb/pdb.yaml
+  - networkpolicy
+
+configMapGenerator:
+  - name: jellyfin-config
+    files:
+      - config/jellyfin.conf

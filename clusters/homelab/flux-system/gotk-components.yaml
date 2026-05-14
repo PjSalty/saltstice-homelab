@@ -1,0 +1,12 @@
+---
+# Flux GitOps Toolkit Components
+# This file contains the Flux CD installation
+
+# To bootstrap Flux:
+# flux bootstrap git \
+#   --url=ssh://git@gitlab.example.com/infrastructure/homelab-complete.git \
+#   --branch=main \
+#   --path=kubernetes/clusters/homelab
+
+# Or use this manifest directly:
+# kubectl apply -f https://github.com/fluxcd/flux2/releases/latest/download/install.yaml

@@ -1,0 +1,40 @@
+---
+# VPN - WireGuard VPN server
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-vpn
+  namespace: vpn
+spec:
+  description: "Allow WireGuard VPN"
+  endpointSelector: {}
+  ingress:
+    # Allow VPN connections from internet
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "51820"
+              protocol: UDP
+  egress:
+    # Allow VPN clients to access internal network (ACCEPTED RISK —
+    # VPN forwards arbitrary client traffic to internal services;
+    # port restriction would break VPN functionality)
+    - toCIDR:
+        - <internal-ip>/16
+        - <mgmt-ip>/24
+    # Allow internet access for VPN clients (ACCEPTED RISK —
+    # VPN tunnel forwarding requires unrestricted egress)
+    - toEntities:
+        - world
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

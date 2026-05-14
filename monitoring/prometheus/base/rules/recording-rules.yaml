@@ -1,0 +1,272 @@
+---
+# Prometheus Recording Rules
+# Pre-computes expensive queries for faster dashboard loading and alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: recording-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # Node Resource Recording Rules
+    # =========================================================================
+    - name: node.rules
+      interval: 30s
+      rules:
+        # CPU utilization per node
+        - record: node:cpu_utilization:ratio
+          expr: |
+            1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+
+        # Memory utilization per node
+        - record: node:memory_utilization:ratio
+          expr: |
+            1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+
+        # Disk utilization per node and mountpoint
+        - record: node:disk_utilization:ratio
+          expr: |
+            1 - (node_filesystem_avail_bytes{fstype=~"ext4|xfs|nfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs|nfs"})
+
+        # Network bytes received per node
+        - record: node:network_receive_bytes:rate5m
+          expr: |
+            sum by (instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[5m]))
+
+        # Network bytes transmitted per node
+        - record: node:network_transmit_bytes:rate5m
+          expr: |
+            sum by (instance) (rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[5m]))
+
+        # Disk I/O per node
+        - record: node:disk_io_time_seconds:rate5m
+          expr: |
+            sum by (instance) (rate(node_disk_io_time_seconds_total[5m]))
+
+    # =========================================================================
+    # Kubernetes Pod Recording Rules
+    # =========================================================================
+    - name: k8s.pod.rules
+      interval: 30s
+      rules:
+        # CPU usage per pod
+        - record: pod:cpu_usage_seconds:rate5m
+          expr: |
+            sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="", container!="POD"}[5m]))
+
+        # Memory usage per pod
+        - record: pod:memory_working_set_bytes:sum
+          expr: |
+            sum by (namespace, pod) (container_memory_working_set_bytes{container!="", container!="POD"})
+
+        # CPU request ratio (actual vs requested)
+        - record: pod:cpu_request_utilization:ratio
+          expr: |
+            sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="", container!="POD"}[5m]))
+            /
+            sum by (namespace, pod) (kube_pod_container_resource_requests{resource="cpu"})
+
+        # Memory request ratio (actual vs requested)
+        - record: pod:memory_request_utilization:ratio
+          expr: |
+            sum by (namespace, pod) (container_memory_working_set_bytes{container!="", container!="POD"})
+            /
+            sum by (namespace, pod) (kube_pod_container_resource_requests{resource="memory"})
+
+    # =========================================================================
+    # Kubernetes Namespace Recording Rules
+    # =========================================================================
+    - name: k8s.namespace.rules
+      interval: 1m
+      rules:
+        # Total CPU usage per namespace
+        - record: namespace:cpu_usage_seconds:sum_rate5m
+          expr: |
+            sum by (namespace) (rate(container_cpu_usage_seconds_total{container!="", container!="POD"}[5m]))
+
+        # Total memory usage per namespace
+        - record: namespace:memory_working_set_bytes:sum
+          expr: |
+            sum by (namespace) (container_memory_working_set_bytes{container!="", container!="POD"})
+
+        # Pod count per namespace
+        - record: namespace:pod_count:sum
+          expr: |
+            count by (namespace) (kube_pod_info)
+
+        # Running pods per namespace
+        - record: namespace:running_pod_count:sum
+          expr: |
+            count by (namespace) (kube_pod_status_phase{phase="Running"} == 1)
+
+    # =========================================================================
+    # Kubernetes Workload Recording Rules
+    # =========================================================================
+    - name: k8s.workload.rules
+      interval: 1m
+      rules:
+        # Deployment availability
+        - record: deployment:replicas_available:ratio
+          expr: |
+            kube_deployment_status_replicas_available / kube_deployment_spec_replicas
+
+        # StatefulSet availability
+        - record: statefulset:replicas_ready:ratio
+          expr: |
+            kube_statefulset_status_replicas_ready / kube_statefulset_replicas
+
+        # DaemonSet availability
+        - record: daemonset:ready:ratio
+          expr: |
+            kube_daemonset_status_number_ready / kube_daemonset_status_desired_number_scheduled
+
+        # Pod restart rate
+        - record: pod:restarts:rate5m
+          expr: |
+            sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[5m]))
+
+    # =========================================================================
+    # HTTP Request Recording Rules (Traefik)
+    # =========================================================================
+    - name: http.rules
+      interval: 30s
+      rules:
+        # Request rate per service
+        - record: traefik:request_rate:rate5m
+          expr: |
+            sum by (service) (rate(traefik_service_requests_total[5m]))
+
+        # Request rate per entrypoint
+        - record: traefik:entrypoint_request_rate:rate5m
+          expr: |
+            sum by (entrypoint) (rate(traefik_entrypoint_requests_total[5m]))
+
+        # Error rate per service (4xx and 5xx)
+        - record: traefik:error_rate:rate5m
+          expr: |
+            sum by (service) (rate(traefik_service_requests_total{code=~"4..|5.."}[5m]))
+
+        # Success rate per service (2xx)
+        - record: traefik:success_rate:ratio
+          expr: |
+            sum by (service) (rate(traefik_service_requests_total{code=~"2.."}[5m]))
+            /
+            sum by (service) (rate(traefik_service_requests_total[5m]))
+
+        # Average request duration per service
+        - record: traefik:request_duration_seconds:avg
+          expr: |
+            sum by (service) (rate(traefik_service_request_duration_seconds_sum[5m]))
+            /
+            sum by (service) (rate(traefik_service_request_duration_seconds_count[5m]))
+
+        # 99th percentile request duration (histogram)
+        - record: traefik:request_duration_seconds:p99
+          expr: |
+            histogram_quantile(0.99, sum by (service, le) (rate(traefik_service_request_duration_seconds_bucket[5m])))
+
+    # =========================================================================
+    # Flux GitOps Recording Rules
+    # =========================================================================
+    - name: flux.rules
+      interval: 1m
+      rules:
+        # Reconciliation success rate
+        - record: flux:reconciliation_success:ratio
+          expr: |
+            sum by (kind, name) (gotk_reconcile_condition{type="Ready", status="True"})
+            /
+            (sum by (kind, name) (gotk_reconcile_condition{type="Ready", status="True"})
+            + sum by (kind, name) (gotk_reconcile_condition{type="Ready", status="False"}))
+
+        # Suspended resources count
+        - record: flux:suspended_resources:count
+          expr: |
+            count(gotk_suspend_status == 1)
+
+        # Last successful reconciliation age
+        - record: flux:reconcile_age_seconds:max
+          expr: |
+            max by (kind, name, namespace) (time() - gotk_reconcile_duration_seconds)
+
+    # =========================================================================
+    # Storage Recording Rules
+    # =========================================================================
+    - name: storage.rules
+      interval: 1m
+      rules:
+        # PVC usage ratio
+        - record: pvc:usage:ratio
+          expr: |
+            kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes
+
+        # PVC available bytes
+        - record: pvc:available_bytes:sum
+          expr: |
+            kubelet_volume_stats_available_bytes
+
+        # Total PVC capacity by namespace
+        - record: namespace:pvc_capacity_bytes:sum
+          expr: |
+            sum by (namespace) (kubelet_volume_stats_capacity_bytes)
+
+    # =========================================================================
+    # Cluster-wide Summary Recording Rules
+    # =========================================================================
+    - name: cluster.rules
+      interval: 1m
+      rules:
+        # Total cluster CPU capacity
+        - record: cluster:cpu_capacity:sum
+          expr: |
+            sum(machine_cpu_cores)
+
+        # Total cluster memory capacity
+        - record: cluster:memory_capacity_bytes:sum
+          expr: |
+            sum(machine_memory_bytes)
+
+        # Total cluster CPU usage
+        - record: cluster:cpu_usage:sum_rate5m
+          expr: |
+            sum(rate(container_cpu_usage_seconds_total{container!="", container!="POD"}[5m]))
+
+        # Total cluster memory usage
+        - record: cluster:memory_usage_bytes:sum
+          expr: |
+            sum(container_memory_working_set_bytes{container!="", container!="POD"})
+
+        # Cluster CPU utilization
+        - record: cluster:cpu_utilization:ratio
+          expr: |
+            cluster:cpu_usage:sum_rate5m / cluster:cpu_capacity:sum
+
+        # Cluster memory utilization
+        - record: cluster:memory_utilization:ratio
+          expr: |
+            cluster:memory_usage_bytes:sum / cluster:memory_capacity_bytes:sum
+
+        # Total pod count
+        - record: cluster:pod_count:sum
+          expr: |
+            count(kube_pod_info)
+
+        # Running pod count
+        - record: cluster:running_pod_count:sum
+          expr: |
+            count(kube_pod_status_phase{phase="Running"} == 1)
+
+        # Node count
+        - record: cluster:node_count:sum
+          expr: |
+            count(kube_node_info)
+
+        # Ready node count
+        - record: cluster:ready_node_count:sum
+          expr: |
+            count(kube_node_status_condition{condition="Ready", status="true"} == 1)

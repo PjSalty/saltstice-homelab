@@ -1,0 +1,12 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ssot
+  - metallb
+  - traefik
+  - cert-manager
+  - coredns
+  - velero
+  - pdb
+  - external-secrets

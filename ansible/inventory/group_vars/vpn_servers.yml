@@ -1,0 +1,10 @@
+---
+# =============================================================================
+# VPN Server Variables (WireGuard wg-easy)
+# =============================================================================
+
+# Firewall
+firewall_extra_ports:
+  - { port: 51820, proto: udp, comment: "WireGuard" }
+  - { port: 51821, proto: tcp, comment: "wg-easy Web UI" }
+  - { port: 9100, proto: tcp, comment: "node_exporter" }

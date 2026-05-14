@@ -1,0 +1,125 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: traefik-dmz-values
+  namespace: traefik-dmz
+data:
+  values.yaml: |
+    # Traefik DMZ v3.6.0 Configuration
+    # Hardened instance for community-facing services (Matrix, Fluxer)
+    # Isolated on VLAN 60 (<vlan-cidr>) — separate from internal VLAN 50
+    image:
+      registry: harbor.example.com/dockerhub-proxy
+      repository: library/traefik
+      tag: "v3.6.0"
+
+    deployment:
+      enabled: true
+      kind: Deployment
+      # replicas managed by HPA (autoscaling/hpa.yaml)
+
+    service:
+      enabled: true
+      type: LoadBalancer
+      annotations:
+        metallb.io/loadBalancerIPs: "<internal-ip>"
+      spec:
+        externalTrafficPolicy: Local
+
+    # Ports Configuration — NO port 80, HTTPS only
+    ports:
+      websecure:
+        port: 443
+        exposedPort: 443
+        protocol: TCP
+        http:
+          tls:
+            enabled: true
+      metrics:
+        port: 9100
+        expose:
+          default: false   # Metrics NOT exposed externally on DMZ
+        protocol: TCP
+
+    # NO dashboard on DMZ instance
+    ingressRoute:
+      dashboard:
+        enabled: false
+
+    # Providers — RESTRICTED to DMZ namespaces only
+    providers:
+      kubernetesCRD:
+        enabled: true
+        allowCrossNamespace: true
+        allowExternalNameServices: false   # No ExternalName in DMZ
+        namespaces:
+          - traefik-dmz
+          - matrix
+          - fluxer
+          - matrix-bridge
+      kubernetesIngress:
+        enabled: false   # CRD-only for DMZ — no Ingress discovery
+
+    # Global settings
+    global:
+      checkNewVersion: false
+      sendAnonymousUsage: false
+
+    # Additional Arguments — hardened for external traffic
+    additionalArguments:
+      - "--log.level=INFO"
+      # Trust only MikroTik NAT source and DMZ VLAN
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=<vlan-cidr>,127.0.0.1/32"
+      # Timeouts — stricter than internal
+      - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=30s"
+      - "--entrypoints.websecure.transport.respondingTimeouts.writeTimeout=30s"
+      - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout=120s"
+      - "--entrypoints.websecure.transport.lifeCycle.graceTimeOut=15s"
+
+    # Logs
+    logs:
+      general:
+        level: INFO
+      access:
+        enabled: true
+        filters: {}
+
+    # Metrics (internal scraping only)
+    metrics:
+      prometheus:
+        enabled: true
+        entryPoint: metrics
+        addEntryPointsLabels: true
+        addRoutersLabels: true
+        addServicesLabels: true
+
+    # Resources
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+    # Security Context
+    securityContext:
+      capabilities:
+        drop:
+          - ALL
+        add:
+          - NET_BIND_SERVICE
+      readOnlyRootFilesystem: true
+      runAsGroup: 65532
+      runAsNonRoot: true
+      runAsUser: 65532
+
+    # PDB ensures at least 1 replica during disruptions
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+
+    podSecurityContext:
+      fsGroup: 65532
+      fsGroupChangePolicy: OnRootMismatch

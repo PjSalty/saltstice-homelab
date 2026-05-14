@@ -1,0 +1,55 @@
+---
+- name: Install UFW
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+  become: true
+  tags:
+    - firewall
+    - packages
+
+- name: Set default deny incoming
+  community.general.ufw:
+    direction: incoming
+    default: "{{ firewall_default_policy }}"
+  become: true
+  tags:
+    - firewall
+
+- name: Set default allow outgoing
+  community.general.ufw:
+    direction: outgoing
+    default: allow
+  become: true
+  tags:
+    - firewall
+
+- name: Allow base ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port | string }}"
+    proto: "{{ item.proto }}"
+    comment: "{{ item.comment | default(omit) }}"
+  loop: "{{ firewall_base_ports }}"
+  become: true
+  tags:
+    - firewall
+
+- name: Allow extra ports (per-group)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port | string }}"
+    proto: "{{ item.proto }}"
+    comment: "{{ item.comment | default(omit) }}"
+  loop: "{{ firewall_extra_ports }}"
+  become: true
+  tags:
+    - firewall
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+  when: firewall_enabled
+  become: true
+  tags:
+    - firewall

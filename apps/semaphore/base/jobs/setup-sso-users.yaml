@@ -1,0 +1,153 @@
+# Semaphore SSO User Setup CronJob
+# Promotes specified OIDC users to admin and adds them to projects
+# Runs every 15 minutes to catch newly logged-in SSO users
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: semaphore-sso-setup-script
+  namespace: semaphore
+data:
+  setup.py: |
+    #!/usr/bin/env python3
+    """
+    Semaphore SSO User Setup
+    - Promotes SSO users to admin via DB
+    - Adds them to projects
+    - Idempotent - safe to run repeatedly
+    """
+    import os
+    import sys
+    import time
+    import subprocess
+
+    # Config from environment
+    SSO_ADMINS = os.environ.get('SEMAPHORE_SSO_ADMINS', 'Salty').split()
+    PG_HOST = os.environ.get('PG_HOST', 'postgres')
+    PG_USER = os.environ.get('PG_USER', 'semaphore')
+    PG_DB = os.environ.get('PG_DB', 'semaphore')
+
+    def run_sql(sql):
+        """Execute SQL and return output"""
+        cmd = ['psql', '-h', PG_HOST, '-U', PG_USER, '-d', PG_DB, '-tAc', sql]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result.stdout.strip()
+
+    def wait_for_postgres():
+        """Wait for postgres to be ready"""
+        import socket
+        print("Checking postgres connectivity...")
+        for _ in range(30):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                sock.connect((PG_HOST, 5432))
+                sock.close()
+                print("Postgres ready!")
+                return True
+            except:
+                time.sleep(2)
+        return False
+
+    def promote_sso_users():
+        """Promote SSO users to admin and add to projects"""
+        changes_made = False
+        for username in SSO_ADMINS:
+            # Check if user exists
+            user_id = run_sql(f"SELECT id FROM \"user\" WHERE username = '{username}';")
+            if not user_id:
+                print(f"User {username} not found yet (created on first SSO login)")
+                continue
+
+            # Check current admin status
+            is_admin = run_sql(f"SELECT admin FROM \"user\" WHERE id = {user_id};")
+            if is_admin != 't':
+                run_sql(f"UPDATE \"user\" SET admin = true WHERE id = {user_id};")
+                print(f"Promoted {username} (ID: {user_id}) to admin")
+                changes_made = True
+            else:
+                print(f"User {username} already admin")
+
+            # Add to all projects as owner
+            project_ids = run_sql("SELECT id FROM project;").split('\n')
+            for pid in project_ids:
+                if pid:
+                    # Check if already in project
+                    existing = run_sql(f"SELECT role FROM project__user WHERE project_id = {pid} AND user_id = {user_id};")
+                    if not existing:
+                        run_sql(f"""INSERT INTO project__user (project_id, user_id, role)
+                                  VALUES ({pid}, {user_id}, 'owner')
+                                  ON CONFLICT (project_id, user_id) DO UPDATE SET role = 'owner';""")
+                        print(f"  Added {username} to project {pid} as owner")
+                        changes_made = True
+
+        return changes_made
+
+    def main():
+        print("=" * 50)
+        print("Semaphore SSO User Sync")
+        print(f"Admin users: {SSO_ADMINS}")
+        print("=" * 50)
+
+        if not wait_for_postgres():
+            print("Postgres not ready!")
+            return 1
+
+        changes = promote_sso_users()
+
+        if changes:
+            print("\nChanges applied!")
+        else:
+            print("\nNo changes needed - all users already configured")
+
+        return 0
+
+    if __name__ == "__main__":
+        sys.exit(main())
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: semaphore-sso-sync
+  namespace: semaphore
+  annotations:
+    description: "Sync SSO users to admin role - runs every 15 minutes"
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 300
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: ${IMAGE_PYTHON_ALPINE}
+              command: ["sh", "-c", "apk add --no-cache postgresql-client >/dev/null 2>&1 && python /scripts/setup.py"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: semaphore-secrets
+                      key: postgres-password
+                - name: SEMAPHORE_SSO_ADMINS
+                  value: "Salty"
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: scripts
+              configMap:
+                name: semaphore-sso-setup-script
+                defaultMode: 0755

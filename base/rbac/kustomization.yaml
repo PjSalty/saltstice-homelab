@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - dns-rbac.yaml
+  - dns-serviceaccount.yaml
+  - external-dns-clusterrole.yaml
+  - external-dns-clusterrolebinding.yaml
+  - external-dns-serviceaccount.yaml
+  - gitlab-runner-rbac.yaml
+  # NOTE: headlamp RBAC moved to apps/headlamp/base/rbac/
+  # Legacy cluster-admin bindings removed for security
+  # Headlamp now uses read-only ClusterRole (headlamp-dashboard)

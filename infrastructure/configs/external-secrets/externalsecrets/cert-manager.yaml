@@ -1,0 +1,58 @@
+# acme-dns-credentials: ACME-DNS credentials for Let's Encrypt DNS-01 challenge
+# The source CRED key contains comma-separated values that need to be
+# reconstructed into JSON format using Go templating.
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: acme-dns-credentials
+  namespace: cert-manager
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: acme-dns-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        acmedns.json: |
+          {
+            "example.com": {
+              "allowfrom": [],
+              "fulldomain": "6f189623-eb33-4c79-9af6-6295a0ca675b.auth.acme-dns.io",
+              "password": "{{ .password }}",
+              "subdomain": "6f189623-eb33-4c79-9af6-6295a0ca675b",
+              "username": "{{ .username }}"
+            },
+            "example.com": {
+              "allowfrom": [],
+              "fulldomain": "6f189623-eb33-4c79-9af6-6295a0ca675b.auth.acme-dns.io",
+              "password": "{{ .password }}",
+              "subdomain": "6f189623-eb33-4c79-9af6-6295a0ca675b",
+              "username": "{{ .username }}"
+            }
+          }
+  data:
+  # CRED_CERT_MANAGER_ACMEDNS_CREDENTIALS is a composite key.
+  # We need individual values. Add these to cred-ssot-core:
+  #   CRED_CERT_MANAGER_ACMEDNS_USERNAME
+  #   CRED_CERT_MANAGER_ACMEDNS_PASSWORD
+  # For now, using the composite key and noting this needs splitting.
+  - secretKey: acmedns_raw
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_CERT_MANAGER_ACMEDNS_CREDENTIALS
+  # WORKAROUND: Until individual keys are added, split the composite
+  # value in the source Secret into CRED_CERT_MANAGER_ACMEDNS_USERNAME
+  # and CRED_CERT_MANAGER_ACMEDNS_PASSWORD.
+  # After splitting, update remoteRef properties above.
+  - secretKey: username
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_CERT_MANAGER_ACMEDNS_CREDENTIALS
+  - secretKey: password
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_CERT_MANAGER_ACMEDNS_CREDENTIALS

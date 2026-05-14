@@ -1,0 +1,654 @@
+---
+# Homelab Overview Dashboard - Single Pane of Glass
+# 3 visible rows (Health, Services, Resources) + 7 collapsed drill-down rows
+# Designed for glanceability: stat panels with sparklines, state timeline, alert table
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-homelab-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: grafana
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  homelab-overview.json: |
+    {
+      "annotations": { "list": [] },
+      "title": "Homelab Overview",
+      "uid": "homelab-overview",
+      "tags": ["homelab", "overview", "singlePane"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 3,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "links": [
+        { "title": "All Dashboards", "type": "dashboards", "tags": ["homelab"], "icon": "external link" }
+      ],
+      "panels": [
+        {
+          "type": "row",
+          "title": "Health at a Glance",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "collapsed": false,
+          "id": 100
+        },
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Nodes Ready",
+          "gridPos": { "h": 4, "w": 3, "x": 0, "y": 1 },
+          "targets": [{ "expr": "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})", "refId": "A" }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 6 }] }, "unit": "none" } },
+          "options": { "graphMode": "none", "colorMode": "background", "textMode": "auto" }
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Pods Running",
+          "gridPos": { "h": 4, "w": 3, "x": 3, "y": 1 },
+          "targets": [{ "expr": "sum(kube_pod_status_phase{phase=\"Running\"})", "refId": "A" }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }] }, "unit": "none" } },
+          "options": { "graphMode": "area", "colorMode": "background", "textMode": "auto" }
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Cluster CPU",
+          "gridPos": { "h": 4, "w": 3, "x": 6, "y": 1 },
+          "targets": [{ "expr": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))", "refId": "A" }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.7 }, { "color": "red", "value": 0.9 }] }, "unit": "percentunit", "decimals": 0 } },
+          "options": { "graphMode": "area", "colorMode": "background", "textMode": "auto" }
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Cluster Memory",
+          "gridPos": { "h": 4, "w": 3, "x": 9, "y": 1 },
+          "targets": [{ "expr": "1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)", "refId": "A" }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.7 }, { "color": "red", "value": 0.9 }] }, "unit": "percentunit", "decimals": 0 } },
+          "options": { "graphMode": "area", "colorMode": "background", "textMode": "auto" }
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Firing Alerts",
+          "description": "Excludes Watchdog, InfoInhibitor, CPUThrottlingHigh noise",
+          "gridPos": { "h": 4, "w": 3, "x": 12, "y": 1 },
+          "targets": [{ "expr": "count(ALERTS{alertstate=\"firing\", alertname!~\"Watchdog|InfoInhibitor|CPUThrottlingHigh\"}) or vector(0)", "refId": "A" }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 10 }] }, "unit": "none" } },
+          "options": { "graphMode": "area", "colorMode": "background", "textMode": "auto" }
+        },
+        {
+          "id": 6,
+          "type": "stat",
+          "title": "Pod Restarts (24h)",
+          "gridPos": { "h": 4, "w": 3, "x": 15, "y": 1 },
+          "targets": [{ "expr": "sum(increase(kube_pod_container_status_restarts_total[24h])) or vector(0)", "refId": "A" }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 20 }] }, "unit": "none", "decimals": 0 } },
+          "options": { "graphMode": "area", "colorMode": "background", "textMode": "auto" }
+        },
+        {
+          "id": 7,
+          "type": "stat",
+          "title": "Flux Ready",
+          "gridPos": { "h": 4, "w": 3, "x": 18, "y": 1 },
+          "targets": [{ "expr": "sum(gotk_reconcile_condition{type=\"Ready\",status=\"True\"})", "refId": "A" }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }] }, "unit": "none" } },
+          "options": { "graphMode": "none", "colorMode": "background", "textMode": "auto" }
+        },
+        {
+          "id": 8,
+          "type": "stat",
+          "title": "NFS Storage",
+          "gridPos": { "h": 4, "w": 3, "x": 21, "y": 1 },
+          "targets": [{ "expr": "probe_success{job=\"blackbox-nfs\"}", "refId": "A" }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }] } },
+          "options": { "graphMode": "none", "colorMode": "background", "textMode": "auto" }
+        },
+
+        {
+          "type": "row",
+          "title": "Service Health & Alerts",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+          "collapsed": false,
+          "id": 101
+        },
+        {
+          "id": 9,
+          "type": "state-timeline",
+          "title": "Service Health (24h)",
+          "description": "UP/DOWN history from blackbox probes — colored bars show availability",
+          "gridPos": { "h": 8, "w": 16, "x": 0, "y": 6 },
+          "targets": [
+            {
+              "expr": "probe_success{job=~\"blackbox-http|blackbox-vm-direct\"}",
+              "legendFormat": "{{ instance }}",
+              "refId": "A",
+              "range": true
+            }
+          ],
+          "transformations": [
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "https?://([^:]+?)\\.salt\\.saltstice\\.com.*",
+                "renamePattern": "$1"
+              }
+            },
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "https?://10\\.10\\.20\\.13.*",
+                "renamePattern": "adguard"
+              }
+            },
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "https?://10\\.10\\.30\\.100.*",
+                "renamePattern": "proxmox"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+              ],
+              "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
+              "custom": { "fillOpacity": 90, "lineWidth": 0 }
+            }
+          },
+          "options": { "mergeValues": true, "showValue": "never", "rowHeight": 0.8 },
+          "timeFrom": "24h"
+        },
+        {
+          "id": 10,
+          "type": "table",
+          "title": "Firing Alerts",
+          "description": "Grouped by alert name — excludes known noise",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+          "targets": [{
+            "expr": "count(ALERTS{alertstate=\"firing\", alertname!~\"Watchdog|InfoInhibitor|CPUThrottlingHigh\"}) by (alertname, severity)",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          }],
+          "transformations": [
+            { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "alertname": "Alert", "severity": "Severity", "Value": "Count" } } },
+            { "id": "sortBy", "options": { "sort": [{ "field": "Count", "desc": true }] } }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "Severity" }, "properties": [{ "id": "mappings", "value": [{ "type": "value", "options": { "critical": { "text": "CRITICAL", "color": "red" }, "warning": { "text": "WARNING", "color": "orange" }, "info": { "text": "INFO", "color": "blue" } } }] }] },
+              { "matcher": { "id": "byName", "options": "Count" }, "properties": [{ "id": "custom.width", "value": 60 }] }
+            ]
+          }
+        },
+
+        {
+          "type": "row",
+          "title": "Resource Trends",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+          "collapsed": false,
+          "id": 102
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "Cluster CPU",
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 15 },
+          "targets": [{ "expr": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))", "legendFormat": "Total", "refId": "A" }],
+          "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.7 }, { "color": "red", "value": 0.9 }] }, "custom": { "fillOpacity": 10, "lineWidth": 2, "thresholdsStyle": { "mode": "line" } } } }
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Cluster Memory",
+          "gridPos": { "h": 6, "w": 8, "x": 8, "y": 15 },
+          "targets": [{ "expr": "1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)", "legendFormat": "Total", "refId": "A" }],
+          "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.7 }, { "color": "red", "value": 0.9 }] }, "custom": { "fillOpacity": 10, "lineWidth": 2, "thresholdsStyle": { "mode": "line" } } } }
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Namespace Memory (Top 8)",
+          "gridPos": { "h": 6, "w": 8, "x": 16, "y": 15 },
+          "targets": [{ "expr": "topk(8, sum(container_memory_working_set_bytes{namespace!=\"\",container!=\"\"}) by (namespace))", "legendFormat": "{{ namespace }}", "refId": "A" }],
+          "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 5, "lineWidth": 1 } } }
+        },
+
+        {
+          "type": "row",
+          "title": "Infrastructure & Hardware",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
+          "collapsed": true,
+          "id": 103,
+          "panels": [
+            {
+              "id": 14,
+              "type": "stat",
+              "title": "iDRAC Inlet Temp",
+              "gridPos": { "h": 4, "w": 3, "x": 0, "y": 22 },
+              "targets": [{ "expr": "idrac_sensors_temperature{name=~\".*Inlet.*\"} * 9/5 + 32 or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "fahrenheit", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 95 }, { "color": "red", "value": 104 }] } } },
+              "options": { "graphMode": "area", "colorMode": "background" }
+            },
+            {
+              "id": 15,
+              "type": "stat",
+              "title": "Server Power",
+              "gridPos": { "h": 4, "w": 3, "x": 3, "y": 22 },
+              "targets": [{ "expr": "idrac_sensors_power{name=~\".*Pwr.*|.*System.*\"} or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "watt", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 400 }, { "color": "red", "value": 600 }] } } },
+              "options": { "graphMode": "area", "colorMode": "background" }
+            },
+            {
+              "id": 16,
+              "type": "stat",
+              "title": "GPU Temp",
+              "gridPos": { "h": 4, "w": 3, "x": 6, "y": 22 },
+              "targets": [{ "expr": "(max(DCGM_FI_DEV_GPU_TEMP) or vector(0)) * 9/5 + 32", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "fahrenheit", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 158 }, { "color": "red", "value": 185 }] } } },
+              "options": { "graphMode": "area", "colorMode": "background" }
+            },
+            {
+              "id": 17,
+              "type": "stat",
+              "title": "GPU Util",
+              "gridPos": { "h": 4, "w": 3, "x": 9, "y": 22 },
+              "targets": [{ "expr": "max(DCGM_FI_DEV_GPU_UTIL) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 80 }, { "color": "red", "value": 95 }] } } },
+              "options": { "graphMode": "area", "colorMode": "background" }
+            },
+            {
+              "id": 18,
+              "type": "stat",
+              "title": "MikroTik Devices",
+              "gridPos": { "h": 4, "w": 3, "x": 12, "y": 22 },
+              "targets": [{ "expr": "count(up{job=\"mktxp\"} == 1) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 3 }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 19,
+              "type": "stat",
+              "title": "Proxmox VMs",
+              "gridPos": { "h": 4, "w": 3, "x": 15, "y": 22 },
+              "targets": [{ "expr": "count(pve_up{id=~\"qemu/.*\"} == 1) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 10 }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 20,
+              "type": "stat",
+              "title": "Cert Expiry",
+              "description": "Shortest certificate time remaining",
+              "gridPos": { "h": 4, "w": 3, "x": 18, "y": 22 },
+              "targets": [{ "expr": "min(certmanager_certificate_expiration_timestamp_seconds - time())", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 604800 }, { "color": "green", "value": 2592000 }] } } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 21,
+              "type": "stat",
+              "title": "Velero Backup",
+              "description": "Time since last successful backup",
+              "gridPos": { "h": 4, "w": 3, "x": 21, "y": 22 },
+              "targets": [{ "expr": "time() - max(velero_backup_last_successful_timestamp)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 86400 }, { "color": "red", "value": 172800 }] } } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 22,
+              "type": "timeseries",
+              "title": "MikroTik CPU Load",
+              "gridPos": { "h": 6, "w": 12, "x": 0, "y": 26 },
+              "targets": [{ "expr": "mktxp_system_cpu_load", "legendFormat": "{{ routerboard_name }}", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "fillOpacity": 10 } } }
+            },
+            {
+              "id": 23,
+              "type": "timeseries",
+              "title": "Top Interface Traffic",
+              "gridPos": { "h": 6, "w": 12, "x": 12, "y": 26 },
+              "targets": [
+                { "expr": "topk(5, rate(mktxp_interface_rx_byte_total[5m]) * 8)", "legendFormat": "{{ routerboard_name }}/{{ name }} RX", "refId": "A" },
+                { "expr": "topk(5, rate(mktxp_interface_tx_byte_total[5m]) * 8)", "legendFormat": "{{ routerboard_name }}/{{ name }} TX", "refId": "B" }
+              ],
+              "fieldConfig": { "defaults": { "unit": "bps", "custom": { "fillOpacity": 5 } } }
+            }
+          ]
+        },
+
+        {
+          "type": "row",
+          "title": "Kubernetes Details",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+          "collapsed": true,
+          "id": 104,
+          "panels": [
+            {
+              "id": 24,
+              "type": "table",
+              "title": "Deployment Availability",
+              "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+              "targets": [{ "expr": "kube_deployment_status_replicas_available / kube_deployment_spec_replicas", "format": "table", "instant": true, "refId": "A" }],
+              "transformations": [
+                { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true }, "renameByName": { "deployment": "Deployment", "namespace": "Namespace", "Value": "Availability" } } },
+                { "id": "sortBy", "options": { "sort": [{ "field": "Availability", "desc": false }] } }
+              ],
+              "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 1 }] } } }
+            },
+            {
+              "id": 25,
+              "type": "table",
+              "title": "Pod Restarts (Top 10, 24h)",
+              "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+              "targets": [{ "expr": "topk(10, increase(kube_pod_container_status_restarts_total[24h]) > 0)", "format": "table", "instant": true, "refId": "A" }],
+              "transformations": [
+                { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "uid": true, "endpoint": true, "service": true }, "renameByName": { "namespace": "Namespace", "pod": "Pod", "container": "Container", "Value": "Restarts" } } },
+                { "id": "sortBy", "options": { "sort": [{ "field": "Restarts", "desc": true }] } }
+              ]
+            },
+            {
+              "id": 26,
+              "type": "timeseries",
+              "title": "Namespace CPU Usage (Top 10)",
+              "gridPos": { "h": 6, "w": 12, "x": 0, "y": 31 },
+              "targets": [{ "expr": "topk(10, sum(rate(container_cpu_usage_seconds_total{namespace!=\"\",container!=\"\"}[5m])) by (namespace))", "legendFormat": "{{ namespace }}", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 5 } } }
+            },
+            {
+              "id": 27,
+              "type": "timeseries",
+              "title": "Namespace Memory Usage (Top 10)",
+              "gridPos": { "h": 6, "w": 12, "x": 12, "y": 31 },
+              "targets": [{ "expr": "topk(10, sum(container_memory_working_set_bytes{namespace!=\"\",container!=\"\"}) by (namespace))", "legendFormat": "{{ namespace }}", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 5 } } }
+            }
+          ]
+        },
+
+        {
+          "type": "row",
+          "title": "Network & Ingress",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+          "collapsed": true,
+          "id": 105,
+          "panels": [
+            {
+              "id": 28,
+              "type": "stat",
+              "title": "Traefik Requests/s",
+              "gridPos": { "h": 4, "w": 6, "x": 0, "y": 24 },
+              "targets": [{ "expr": "sum(rate(traefik_entrypoint_requests_total{entrypoint=\"websecure\"}[5m]))", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }] }, "unit": "reqps", "decimals": 1 } },
+              "options": { "graphMode": "area", "colorMode": "background" }
+            },
+            {
+              "id": 29,
+              "type": "stat",
+              "title": "Traefik Error Rate",
+              "gridPos": { "h": 4, "w": 6, "x": 6, "y": 24 },
+              "targets": [{ "expr": "sum(rate(traefik_entrypoint_requests_total{entrypoint=\"websecure\",code=~\"5..\"}[5m])) / sum(rate(traefik_entrypoint_requests_total{entrypoint=\"websecure\"}[5m])) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.01 }, { "color": "red", "value": 0.05 }] }, "unit": "percentunit" } },
+              "options": { "graphMode": "area", "colorMode": "background" }
+            },
+            {
+              "id": 30,
+              "type": "stat",
+              "title": "DMZ Requests/s",
+              "gridPos": { "h": 4, "w": 6, "x": 12, "y": 24 },
+              "targets": [{ "expr": "sum(rate(traefik_entrypoint_requests_total{entrypoint=\"websecure\",job=~\".*traefik-dmz.*\"}[5m])) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }] }, "unit": "reqps", "decimals": 1 } },
+              "options": { "graphMode": "area", "colorMode": "background" }
+            },
+            {
+              "id": 31,
+              "type": "stat",
+              "title": "RB4011 Uptime",
+              "gridPos": { "h": 4, "w": 6, "x": 18, "y": 24 },
+              "targets": [{ "expr": "mktxp_system_uptime{routerboard_name=~\".*RB4011.*|.*rb4011.*|.*router.*\"} or mktxp_system_uptime", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "steps": [{ "color": "yellow", "value": null }, { "color": "green", "value": 86400 }] } } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 32,
+              "type": "timeseries",
+              "title": "Traefik Request Rate by Router",
+              "gridPos": { "h": 6, "w": 12, "x": 0, "y": 28 },
+              "targets": [{ "expr": "topk(10, sum(rate(traefik_router_requests_total[5m])) by (router))", "legendFormat": "{{ router }}", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 5 } } }
+            },
+            {
+              "id": 33,
+              "type": "timeseries",
+              "title": "Traefik Response Time (p99)",
+              "gridPos": { "h": 6, "w": 12, "x": 12, "y": 28 },
+              "targets": [{ "expr": "topk(5, histogram_quantile(0.99, sum(rate(traefik_router_request_duration_seconds_bucket[5m])) by (le, router)))", "legendFormat": "{{ router }}", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 5 } } }
+            }
+          ]
+        },
+
+        {
+          "type": "row",
+          "title": "Storage & Backups",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+          "collapsed": true,
+          "id": 106,
+          "panels": [
+            {
+              "id": 34,
+              "type": "table",
+              "title": "PVC Usage (Top 10)",
+              "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+              "targets": [{ "expr": "topk(10, kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100)", "format": "table", "instant": true, "refId": "A" }],
+              "transformations": [
+                { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "metrics_path": true, "node": true, "endpoint": true, "service": true, "container": true }, "renameByName": { "namespace": "Namespace", "persistentvolumeclaim": "PVC", "Value": "Usage %" } } },
+                { "id": "sortBy", "options": { "sort": [{ "field": "Usage %", "desc": true }] } }
+              ],
+              "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] } } }
+            },
+            {
+              "id": 35,
+              "type": "stat",
+              "title": "NFS Availability",
+              "gridPos": { "h": 4, "w": 4, "x": 12, "y": 25 },
+              "targets": [{ "expr": "probe_success{job=\"blackbox-nfs\"}", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 36,
+              "type": "stat",
+              "title": "Last Velero Backup",
+              "gridPos": { "h": 4, "w": 4, "x": 16, "y": 25 },
+              "targets": [{ "expr": "time() - max(velero_backup_last_successful_timestamp)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 86400 }, { "color": "red", "value": 172800 }] } } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 37,
+              "type": "stat",
+              "title": "Velero Failures (24h)",
+              "gridPos": { "h": 4, "w": 4, "x": 20, "y": 25 },
+              "targets": [{ "expr": "increase(velero_backup_failure_total[24h]) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 38,
+              "type": "stat",
+              "title": "GPU Memory",
+              "gridPos": { "h": 4, "w": 4, "x": 12, "y": 29 },
+              "targets": [{ "expr": "max(DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) * 100) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 80 }, { "color": "red", "value": 95 }] } } },
+              "options": { "graphMode": "area", "colorMode": "background" }
+            },
+            {
+              "id": 39,
+              "type": "stat",
+              "title": "MikroTik Memory",
+              "gridPos": { "h": 4, "w": 4, "x": 16, "y": 29 },
+              "targets": [{ "expr": "avg((1 - mktxp_system_free_memory / mktxp_system_total_memory) * 100)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 85 }] } } },
+              "options": { "graphMode": "area", "colorMode": "background" }
+            }
+          ]
+        },
+
+        {
+          "type": "row",
+          "title": "Database Health",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+          "collapsed": true,
+          "id": 107,
+          "panels": [
+            {
+              "id": 40,
+              "type": "stat",
+              "title": "PostgreSQL Up",
+              "gridPos": { "h": 4, "w": 6, "x": 0, "y": 26 },
+              "targets": [{ "expr": "count(pg_up == 1) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 4 }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 41,
+              "type": "stat",
+              "title": "Redis Up",
+              "gridPos": { "h": 4, "w": 6, "x": 6, "y": 26 },
+              "targets": [{ "expr": "count(redis_up == 1) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 2 }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 42,
+              "type": "timeseries",
+              "title": "PostgreSQL Active Connections",
+              "gridPos": { "h": 6, "w": 12, "x": 12, "y": 26 },
+              "targets": [{ "expr": "pg_stat_activity_count{state=\"active\"}", "legendFormat": "{{ datname }}", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "none", "custom": { "fillOpacity": 5 } } }
+            },
+            {
+              "id": 43,
+              "type": "timeseries",
+              "title": "Redis Memory Usage",
+              "gridPos": { "h": 6, "w": 12, "x": 0, "y": 30 },
+              "targets": [{ "expr": "redis_memory_used_bytes", "legendFormat": "{{ addr }}", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 5 } } }
+            },
+            {
+              "id": 44,
+              "type": "timeseries",
+              "title": "PostgreSQL Transaction Rate",
+              "gridPos": { "h": 6, "w": 12, "x": 12, "y": 30 },
+              "targets": [
+                { "expr": "rate(pg_stat_database_xact_commit{datname!=\"\"}[5m])", "legendFormat": "{{ datname }} commits", "refId": "A" },
+                { "expr": "rate(pg_stat_database_xact_rollback{datname!=\"\"}[5m])", "legendFormat": "{{ datname }} rollbacks", "refId": "B" }
+              ],
+              "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 5 } } }
+            }
+          ]
+        },
+
+        {
+          "type": "row",
+          "title": "Security & Certificates",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+          "collapsed": true,
+          "id": 108,
+          "panels": [
+            {
+              "id": 45,
+              "type": "stat",
+              "title": "Cert Expiry (Shortest)",
+              "gridPos": { "h": 4, "w": 6, "x": 0, "y": 27 },
+              "targets": [{ "expr": "min(certmanager_certificate_expiration_timestamp_seconds - time())", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 604800 }, { "color": "green", "value": 2592000 }] } } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 46,
+              "type": "stat",
+              "title": "Certs Not Ready",
+              "gridPos": { "h": 4, "w": 6, "x": 6, "y": 27 },
+              "targets": [{ "expr": "count(certmanager_certificate_ready_status{condition=\"False\"} == 1) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 47,
+              "type": "stat",
+              "title": "Trivy Critical Vulns",
+              "gridPos": { "h": 4, "w": 6, "x": 12, "y": 27 },
+              "targets": [{ "expr": "sum(trivy_image_vulnerabilities{severity=\"Critical\"}) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 10 }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 48,
+              "type": "stat",
+              "title": "Trivy High Vulns",
+              "gridPos": { "h": 4, "w": 6, "x": 18, "y": 27 },
+              "targets": [{ "expr": "sum(trivy_image_vulnerabilities{severity=\"High\"}) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 10 }, { "color": "red", "value": 50 }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            }
+          ]
+        },
+
+        {
+          "type": "row",
+          "title": "GitOps & Flux",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+          "collapsed": true,
+          "id": 109,
+          "panels": [
+            {
+              "id": 49,
+              "type": "stat",
+              "title": "Flux Resources Ready",
+              "gridPos": { "h": 4, "w": 6, "x": 0, "y": 28 },
+              "targets": [{ "expr": "sum(gotk_reconcile_condition{type=\"Ready\",status=\"True\"})", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 50,
+              "type": "stat",
+              "title": "Flux Failures",
+              "gridPos": { "h": 4, "w": 6, "x": 6, "y": 28 },
+              "targets": [{ "expr": "count(gotk_reconcile_condition{type=\"Ready\",status=\"False\"}) or vector(0)", "refId": "A" }],
+              "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }, "unit": "none" } },
+              "options": { "graphMode": "none", "colorMode": "background" }
+            },
+            {
+              "id": 51,
+              "type": "timeseries",
+              "title": "Flux Reconciliation Duration",
+              "gridPos": { "h": 6, "w": 12, "x": 0, "y": 32 },
+              "targets": [{ "expr": "topk(10, sum(rate(gotk_reconcile_duration_seconds_sum[5m])) by (kind, name) / sum(rate(gotk_reconcile_duration_seconds_count[5m])) by (kind, name))", "legendFormat": "{{ kind }}/{{ name }}", "refId": "A" }],
+              "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 5 } } }
+            },
+            {
+              "id": 52,
+              "type": "table",
+              "title": "Failed Flux Resources",
+              "gridPos": { "h": 6, "w": 12, "x": 12, "y": 32 },
+              "targets": [{ "expr": "gotk_reconcile_condition{type=\"Ready\",status=\"False\"}", "format": "table", "instant": true, "refId": "A" }],
+              "transformations": [
+                { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "Value": true, "exported_namespace": true, "status": true, "type": true }, "renameByName": { "kind": "Kind", "name": "Name", "namespace": "Namespace" } } }
+              ]
+            }
+          ]
+        }
+      ],
+      "templating": { "list": [] }
+    }

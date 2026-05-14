@@ -1,0 +1,392 @@
+# Security Scanning CI/CD Templates
+# Version: 2026-04-11
+#
+# Provides dependency scanning, SAST, and infrastructure code scanning
+#
+# Usage: include in .gitlab-ci.yml with:
+#   include:
+#     - local: 'security.yml'
+#
+# Available jobs:
+#   .security:trivy-fs       - Filesystem/dependency scanning
+#   .security:trivy-config   - IaC configuration scanning (Terraform, K8s)
+#   .security:trivy-sbom     - Generate SBOM in CycloneDX format
+#   .security:gitleaks       - Secret scanning in git history
+#   .security:bandit         - Python security scanning (SAST)
+#   .security:gosec          - Go security scanning (SAST)
+
+# =============================================================================
+# Trivy Filesystem Scanning (Dependencies)
+# =============================================================================
+# Scans for vulnerabilities in:
+#   - Python (requirements.txt, Pipfile, setup.py)
+#   - Node.js (package-lock.json, yarn.lock)
+#   - Go (go.sum)
+#   - Rust (Cargo.lock)
+#   - And many more package managers
+
+.security:trivy-fs:
+  stage: test
+  # Version pinned per ADR-0001 SSOT - update in config/versions.yaml
+  image: harbor.example.com/dockerhub-proxy/aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73
+  interruptible: true
+  timeout: 10 minutes
+  # Retry on runner/network failures — trivy fetches CVE DB from internet
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+  variables:
+    TRIVY_CACHE_DIR: ".trivycache"
+    # Fail on HIGH and CRITICAL vulnerabilities
+    TRIVY_SEVERITY: "HIGH,CRITICAL"
+    # Exit code 1 if vulnerabilities found (set to 0 to allow)
+    TRIVY_EXIT_CODE: "1"
+    # Scan path (default: current directory)
+    TRIVY_SCAN_PATH: "."
+  cache:
+    key: trivy-cache
+    paths:
+      - .trivycache/
+  script:
+    - trivy fs
+        --exit-code ${TRIVY_EXIT_CODE}
+        --severity ${TRIVY_SEVERITY}
+        --format table
+        --scanners vuln
+        --skip-dirs node_modules,vendor,.terraform,.git
+        ${TRIVY_SCAN_PATH}
+  # Blocking by default - set TRIVY_EXIT_CODE: "0" to make non-blocking
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# =============================================================================
+# Trivy Configuration Scanning (IaC)
+# =============================================================================
+# Scans for misconfigurations in:
+#   - Terraform (.tf files)
+#   - Kubernetes manifests (yaml)
+#   - Docker/Dockerfile
+#   - CloudFormation, Ansible, Helm
+
+.security:trivy-config:
+  stage: test
+  # Version pinned per ADR-0001 SSOT - update in config/versions.yaml
+  image: harbor.example.com/dockerhub-proxy/aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73
+  interruptible: true
+  timeout: 10 minutes
+  # Retry on runner/network failures — trivy fetches CVE DB from internet
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+  variables:
+    TRIVY_CACHE_DIR: ".trivycache"
+    # Fail on HIGH and CRITICAL misconfigurations
+    TRIVY_SEVERITY: "HIGH,CRITICAL"
+    # Exit code 1 if issues found
+    TRIVY_EXIT_CODE: "1"
+    # Scan path
+    TRIVY_SCAN_PATH: "."
+  cache:
+    key: trivy-cache
+    paths:
+      - .trivycache/
+  script:
+    - trivy config
+        --exit-code ${TRIVY_EXIT_CODE}
+        --severity ${TRIVY_SEVERITY}
+        --format table
+        --skip-dirs node_modules,vendor,.terraform,.git
+        ${TRIVY_SCAN_PATH}
+  # Blocking by default - set TRIVY_EXIT_CODE: "0" to make non-blocking
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.tf"
+        - "**/*.yaml"
+        - "**/*.yml"
+        - "**/Dockerfile*"
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - "**/*.tf"
+        - "**/*.yaml"
+        - "**/*.yml"
+
+# =============================================================================
+# Software Bill of Materials (SBOM) Generation
+# =============================================================================
+# Generates SBOM in CycloneDX format for compliance and tracking
+
+.security:trivy-sbom:
+  stage: test
+  # Version pinned per ADR-0001 SSOT - update in config/versions.yaml
+  image: harbor.example.com/dockerhub-proxy/aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73
+  interruptible: true
+  timeout: 10 minutes
+  variables:
+    TRIVY_CACHE_DIR: ".trivycache"
+    SBOM_OUTPUT: "sbom.json"
+  cache:
+    key: trivy-cache
+    paths:
+      - .trivycache/
+  script:
+    - trivy fs
+        --format cyclonedx
+        --output ${SBOM_OUTPUT}
+        .
+  artifacts:
+    paths:
+      - ${SBOM_OUTPUT}
+    expire_in: 1 week
+    reports:
+      cyclonedx: ${SBOM_OUTPUT}
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# =============================================================================
+# Secret Scanning (Gitleaks)
+# =============================================================================
+# Scans git history for accidentally committed secrets
+
+.security:gitleaks:
+  stage: test
+  # Version pinned per ADR-0001 SSOT - Researched: 2026-02-02
+  image: harbor.example.com/dockerhub-proxy/zricethezav/gitleaks:v8.30.0@sha256:691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9
+  interruptible: true
+  timeout: 5 minutes
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - scheduler_failure
+  variables:
+    # Scan depth (0 = full history)
+    GITLEAKS_DEPTH: "0"
+  script:
+    - gitleaks detect
+        --source .
+        --verbose
+        --redact
+        --exit-code 1
+  # CRITICAL: Blocks pipelines with leaked secrets
+  # Runs on both MRs and main branch to catch direct commits
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# =============================================================================
+# Terraform Security Scanning (TFSec)
+# =============================================================================
+# Additional Terraform-specific security scanning
+
+.security:tfsec:
+  stage: test
+  # Version pinned per ADR-0001 SSOT - Researched: 2026-02-02
+  image: harbor.example.com/dockerhub-proxy/aquasec/tfsec:v1.28.14@sha256:ac46d48a384ae2c0bbd0413cd2a18229e45e21a44d22c8be28b56de5b38d74c3
+  interruptible: true
+  timeout: 10 minutes
+  variables:
+    TF_DIR: "terraform"
+    # Set to "true" to allow failures (non-blocking)
+    TFSEC_SOFT_FAIL: "false"
+  script:
+    - |
+      if [ "${TFSEC_SOFT_FAIL}" = "true" ]; then
+        tfsec ${TF_DIR} --format lovely --exclude-downloaded-modules --soft-fail
+      else
+        tfsec ${TF_DIR} --format lovely --exclude-downloaded-modules
+      fi
+  # Blocking by default - set TFSEC_SOFT_FAIL: "true" to make non-blocking
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - terraform/**/*.tf
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - terraform/**/*.tf
+
+# =============================================================================
+# Python Security Scanning (Bandit)
+# =============================================================================
+# Scans Python code for common security issues:
+#   - Hardcoded passwords, SQL injection, exec/eval usage
+#   - Insecure hash functions, weak cryptography
+#   - Shell injection via subprocess
+
+.security:bandit:
+  stage: test
+  image: harbor.example.com/dockerhub-proxy/library/python:3.12-slim@sha256:7026274c107626d7e940e0e5d6730481a4600ae95d5ca7eb532dd4180313fea9
+  interruptible: true
+  timeout: 5 minutes
+  variables:
+    PYTHON_SCAN_PATH: "."
+    # Severity filter: LOW, MEDIUM, HIGH
+    BANDIT_SEVERITY: "MEDIUM"
+    # Confidence filter: LOW, MEDIUM, HIGH
+    BANDIT_CONFIDENCE: "MEDIUM"
+  script:
+    - pip install --no-cache-dir bandit==1.8.3
+    - |
+      bandit -r ${PYTHON_SCAN_PATH} \
+        --severity-level ${BANDIT_SEVERITY} \
+        --confidence-level ${BANDIT_CONFIDENCE} \
+        --format json \
+        --output bandit-report.json \
+        --exit-zero || true
+    - bandit -r ${PYTHON_SCAN_PATH}
+        --severity-level ${BANDIT_SEVERITY}
+        --confidence-level ${BANDIT_CONFIDENCE}
+        --format screen
+  artifacts:
+    paths:
+      - bandit-report.json
+    expire_in: 1 week
+    when: always
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.py"
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - "**/*.py"
+
+# =============================================================================
+# Go Security Scanning (Gosec)
+# =============================================================================
+# Scans Go code for common security issues:
+#   - SQL injection, command injection, path traversal
+#   - Hardcoded credentials, weak crypto
+#   - Unsafe use of unsafe/reflect packages
+
+.security:gosec:
+  stage: test
+  # gosec migrated from Docker Hub to GHCR as of v2.24.7
+  image: harbor.example.com/ghcr-proxy/securego/gosec:v2.24.7@sha256:89a9ee537a08c9eca62306217bf8355175a487fd41dc76dac16e222ca25f309e
+  interruptible: true
+  timeout: 10 minutes
+  variables:
+    GO_SCAN_PATH: "./..."
+    # Severity filter: low, medium, high
+    GOSEC_SEVERITY: "medium"
+    # Confidence filter: low, medium, high
+    GOSEC_CONFIDENCE: "medium"
+  script:
+    - |
+      gosec -severity ${GOSEC_SEVERITY} \
+        -confidence ${GOSEC_CONFIDENCE} \
+        -fmt json \
+        -out gosec-report.json \
+        -stdout \
+        ${GO_SCAN_PATH} || true
+    - gosec -severity ${GOSEC_SEVERITY}
+        -confidence ${GOSEC_CONFIDENCE}
+        -fmt text
+        ${GO_SCAN_PATH}
+  artifacts:
+    paths:
+      - gosec-report.json
+    expire_in: 1 week
+    when: always
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.go"
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - "**/*.go"
+
+# =============================================================================
+# Kubernetes Security Scanning (Kubesec)
+# =============================================================================
+# Kubernetes manifest security scanning
+
+.security:kubesec:
+  stage: test
+  # Version pinned per ADR-0001 SSOT - Researched: 2026-02-02
+  image: harbor.example.com/dockerhub-proxy/kubesec/kubesec:v2.14.2@sha256:025a365d9f1881be51df17c323109ecf3c24b60c0d296143ea05c15479d0695e
+  interruptible: true
+  timeout: 10 minutes
+  variables:
+    K8S_DIR: "kubernetes"
+  script:
+    # Note: Using for loop instead of while to avoid subshell variable issue
+    - |
+      FAILED=0
+      for file in $(find ${K8S_DIR} -name "*.yaml" -o -name "*.yml" 2>/dev/null); do
+        echo "Scanning: $file"
+        if ! kubesec scan "$file"; then
+          FAILED=1
+        fi
+      done
+      exit $FAILED
+  # Blocks on kubesec failures - informational scan results are still shown
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - kubernetes/**/*.yaml
+        - kubernetes/**/*.yml
+
+# =============================================================================
+# Combined Security Pipeline Job
+# =============================================================================
+# Run all security scans in a single job (lighter weight for small repos)
+
+.security:full-scan:
+  stage: test
+  interruptible: true
+  timeout: 15 minutes
+  # Version pinned per ADR-0001 SSOT - update in config/versions.yaml
+  image: harbor.example.com/dockerhub-proxy/aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+  variables:
+    TRIVY_CACHE_DIR: ".trivycache"
+    TRIVY_SEVERITY: "HIGH,CRITICAL"
+  cache:
+    # Key was missing — all jobs sharing trivy-cache now benefit from warm cache
+    key: trivy-cache
+    paths:
+      - .trivycache/
+  script:
+    - |
+      SCAN_FAILURES=0
+      echo "=== Dependency Scanning ==="
+      if ! trivy fs --severity ${TRIVY_SEVERITY} --scanners vuln .; then
+        echo "WARNING: Dependency scan found issues"
+        SCAN_FAILURES=$((SCAN_FAILURES + 1))
+      fi
+      echo ""
+      echo "=== Configuration Scanning ==="
+      if ! trivy config --severity ${TRIVY_SEVERITY} .; then
+        echo "WARNING: Configuration scan found issues"
+        SCAN_FAILURES=$((SCAN_FAILURES + 1))
+      fi
+      echo ""
+      echo "=== Generating SBOM ==="
+      if ! trivy fs --format cyclonedx --output sbom.json .; then
+        echo "WARNING: SBOM generation failed"
+        SCAN_FAILURES=$((SCAN_FAILURES + 1))
+      fi
+      echo ""
+      echo "=== Summary: ${SCAN_FAILURES} scan(s) reported issues ==="
+      exit $SCAN_FAILURES
+  artifacts:
+    paths:
+      - sbom.json
+    expire_in: 1 week
+  # Full-scan is informational - use individual jobs for blocking enforcement
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"

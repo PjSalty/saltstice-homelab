@@ -1,0 +1,131 @@
+# grafana-admin-secret: Grafana admin credentials and OIDC secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: grafana-admin-secret
+  namespace: monitoring
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-monitoring
+    kind: SecretStore
+  target:
+    name: grafana-admin-secret
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/managed-by: "external-secrets"
+      data:
+        admin-user: "admin"
+        admin-password: "{{ .admin_password }}"
+        username: "admin"
+        password: "{{ .admin_password }}"
+        oidc_secret: "{{ .oidc_secret }}"
+  data:
+  - secretKey: admin_password
+    remoteRef:
+      key: cred-ssot-monitoring
+      property: CRED_MONITORING_GRAFANA_ADMIN_PASSWORD
+  - secretKey: oidc_secret
+    remoteRef:
+      key: cred-ssot-monitoring
+      property: CRED_MONITORING_GRAFANA_OIDC_SECRET
+---
+# idrac-exporter-credentials: iDRAC credentials for monitoring exporter
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: idrac-exporter-credentials
+  namespace: monitoring
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-monitoring
+    kind: SecretStore
+  target:
+    name: idrac-exporter-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app: "idrac-exporter"
+          app.kubernetes.io/component: "exporter"
+          app.kubernetes.io/name: "idrac-exporter"
+          app.kubernetes.io/managed-by: "external-secrets"
+      data:
+        username: "{{ .idrac_username }}"
+        password: "{{ .idrac_password }}"
+  data:
+  - secretKey: idrac_username
+    remoteRef:
+      key: cred-ssot-monitoring
+      property: CRED_MONITORING_IDRAC_USERNAME
+  - secretKey: idrac_password
+    remoteRef:
+      key: cred-ssot-monitoring
+      property: CRED_MONITORING_IDRAC_PASSWORD
+---
+# mktxp-credentials: MikroTik MKTXP exporter credentials
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: mktxp-credentials
+  namespace: monitoring
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-monitoring
+    kind: SecretStore
+  target:
+    name: mktxp-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app: "mktxp"
+          app.kubernetes.io/component: "exporter"
+          app.kubernetes.io/name: "mktxp"
+          app.kubernetes.io/managed-by: "external-secrets"
+      data:
+        username: "prometheus"
+        password: "{{ .mktxp_password }}"
+  data:
+  - secretKey: mktxp_password
+    remoteRef:
+      key: cred-ssot-monitoring
+      property: CRED_MONITORING_MKTXP_PASSWORD
+---
+# pve-exporter-credentials: Proxmox VE exporter credentials
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: pve-exporter-credentials
+  namespace: monitoring
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-monitoring
+    kind: SecretStore
+  target:
+    name: pve-exporter-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app: "pve-exporter"
+          app.kubernetes.io/component: "exporter"
+          app.kubernetes.io/managed-by: "external-secrets"
+          app.kubernetes.io/name: "pve-exporter"
+      data:
+        token_name: "prometheus-new"
+        token_value: "{{ .pve_token }}"
+  data:
+  - secretKey: pve_token
+    remoteRef:
+      key: cred-ssot-monitoring
+      property: CRED_MONITORING_PVE_EXPORTER_TOKEN

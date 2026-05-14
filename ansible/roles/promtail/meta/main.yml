@@ -1,0 +1,14 @@
+---
+dependencies: []
+
+galaxy_info:
+  author: salty
+  license: MIT
+  role_name: promtail
+  description: Deploy Promtail log shipper for Loki
+  company: Salty Homelab
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie

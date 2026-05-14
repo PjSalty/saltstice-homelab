@@ -1,0 +1,14 @@
+# ============================================================================
+# WARNING: DO NOT USE - NetBox runs as a VM, NOT in Kubernetes!
+# ============================================================================
+# NetBox is deployed on VM <internal-ip> (netbox.example.com)
+# Use Ansible playbook: ansible/playbooks/07-deploy-netbox.yml
+# Plugin installation: ansible/playbooks/28-netbox-install-dns-plugin.yml
+#
+# This directory is UNUSED and kept only for reference/historical purposes.
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - base

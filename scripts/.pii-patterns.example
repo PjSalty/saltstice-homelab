@@ -1,0 +1,14 @@
+# Maintainer-specific PII patterns — one PCRE per line.
+# Copy this file to scripts/.pii-patterns (which is gitignored) and add
+# your own values. The scanner reads .pii-patterns at runtime.
+#
+# Examples:
+#
+# Real-name tokens (case-insensitive):
+#   (?i)\byourlastname\b
+#
+# Public WAN IP:
+#   203\.0\.113\.10
+#
+# Specific personal email:
+#   you@example\.com

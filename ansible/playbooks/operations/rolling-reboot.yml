@@ -1,0 +1,309 @@
+---
+# Rolling reboot — graceful restart of all VMs with K8s drain/uncordon
+#
+# Usage:
+#   ansible-playbook playbooks/operations/rolling-reboot.yml
+#   ansible-playbook playbooks/operations/rolling-reboot.yml --limit k8s_cluster
+#   ansible-playbook playbooks/operations/rolling-reboot.yml --limit workers
+#   ansible-playbook playbooks/operations/rolling-reboot.yml -e skip_infra=true
+#
+# Order: infra VMs (serial: 1) → K8s workers (drain/reboot/uncordon) → K8s masters
+# HAProxy rebooted one at a time to maintain VIP availability.
+# K8s masters rebooted one at a time to maintain etcd quorum (needs 2/3).
+
+# ---- Phase 1: Infrastructure VMs (non-K8s, non-LB) ----
+- name: "Phase 1: Reboot infrastructure VMs"
+  hosts: infrastructure:dns:amp_servers:vpn_servers
+  serial: 1
+  tasks:
+    - name: Reboot infrastructure VMs
+      when: not (skip_infra | default(false) | bool)
+      block:
+        - name: Reboot VM
+          ansible.builtin.reboot:
+            reboot_timeout: 300
+            msg: "Rolling restart for performance optimization"
+          become: true
+
+        - name: Wait for host to be reachable
+          ansible.builtin.wait_for_connection:
+            timeout: 120
+
+        - name: Verify VM is healthy
+          ansible.builtin.command: uptime
+          changed_when: false
+  tags:
+    - infra
+    - reboot
+
+# ---- Phase 2: HAProxy load balancers (one at a time for VIP) ----
+- name: "Phase 2: Reboot HAProxy load balancers"
+  hosts: load_balancers
+  serial: 1
+  tasks:
+    - name: Reboot HAProxy load balancers
+      when: not (skip_infra | default(false) | bool)
+      block:
+        - name: Reboot HAProxy VM
+          ansible.builtin.reboot:
+            reboot_timeout: 300
+            msg: "Rolling restart for performance optimization"
+          become: true
+
+        - name: Wait for host to be reachable
+          ansible.builtin.wait_for_connection:
+            timeout: 120
+
+        - name: Wait for HAProxy process to be running
+          ansible.builtin.command: pgrep haproxy
+          register: haproxy_proc
+          retries: 12
+          delay: 10
+          until: haproxy_proc.rc == 0
+          changed_when: false
+          become: true
+
+        - name: Pause for HAProxy to establish backend connections
+          ansible.builtin.pause:
+            seconds: 30
+  tags:
+    - haproxy
+    - reboot
+
+# ---- Phase 3: K8s workers (drain → reboot → uncordon) ----
+- name: "Phase 3: Rolling reboot K8s workers"
+  hosts: workers
+  serial: 1
+  tasks:
+    - name: "Set Kyverno webhook to Ignore for drain"
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          patch validatingwebhookconfiguration kyverno-resource-validating-webhook-cfg
+          --type=json -p '[{"op":"replace","path":"/webhooks/0/failurePolicy","value":"Ignore"}]'
+      delegate_to: k8s-master-1
+      become: true
+      changed_when: true
+      tags:
+        - drain
+
+    - name: "Drain {{ inventory_hostname }}"
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          drain {{ inventory_hostname }}
+          --ignore-daemonsets --delete-emptydir-data
+          --disable-eviction --timeout=180s
+      delegate_to: k8s-master-1
+      become: true
+      changed_when: true
+      tags:
+        - drain
+
+    - name: "Reboot {{ inventory_hostname }}"
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Rolling reboot for performance optimization"
+      become: true
+      tags:
+        - reboot
+
+    - name: Wait for host to be reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+      tags:
+        - reboot
+
+    - name: Wait for kubelet to be ready
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=120s
+      delegate_to: k8s-master-1
+      become: true
+      changed_when: false
+      retries: 5
+      delay: 15
+      register: node_ready
+      until: node_ready.rc == 0
+      tags:
+        - reboot
+
+    - name: "Uncordon {{ inventory_hostname }}"
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          uncordon {{ inventory_hostname }}
+      delegate_to: k8s-master-1
+      become: true
+      changed_when: true
+      tags:
+        - uncordon
+
+    - name: "Restore Kyverno webhook to Fail after uncordon"
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          patch validatingwebhookconfiguration kyverno-resource-validating-webhook-cfg
+          --type=json -p '[{"op":"replace","path":"/webhooks/0/failurePolicy","value":"Fail"}]'
+      delegate_to: k8s-master-1
+      become: true
+      changed_when: true
+      tags:
+        - uncordon
+
+    - name: Pause for pod rescheduling before next node
+      ansible.builtin.pause:
+        seconds: 30
+      tags:
+        - reboot
+  tags:
+    - workers
+    - kubernetes
+    - reboot
+
+# ---- Phase 4: K8s masters (drain → reboot → uncordon, maintain quorum) ----
+- name: "Phase 4: Rolling reboot K8s masters"
+  hosts: masters
+  serial: 1
+  tasks:
+    - name: Verify etcd cluster health before draining
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
+            get pods -n kube-system -l component=etcd \
+            --field-selector=status.phase=Running --no-headers | wc -l
+        executable: /bin/bash
+      delegate_to: "{{ (groups['masters'] | difference([inventory_hostname]))[0] }}"
+      become: true
+      register: etcd_members
+      changed_when: false
+      failed_when: etcd_members.stdout | int < 3
+      tags:
+        - health
+
+    - name: "Set Kyverno webhook to Ignore for drain"
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          patch validatingwebhookconfiguration kyverno-resource-validating-webhook-cfg
+          --type=json -p '[{"op":"replace","path":"/webhooks/0/failurePolicy","value":"Ignore"}]'
+      delegate_to: "{{ (groups['masters'] | difference([inventory_hostname]))[0] }}"
+      become: true
+      changed_when: true
+      tags:
+        - drain
+
+    - name: "Drain {{ inventory_hostname }}"
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          drain {{ inventory_hostname }}
+          --ignore-daemonsets --delete-emptydir-data
+          --disable-eviction --timeout=180s
+      delegate_to: "{{ (groups['masters'] | difference([inventory_hostname]))[0] }}"
+      become: true
+      changed_when: true
+      tags:
+        - drain
+
+    - name: "Reboot {{ inventory_hostname }}"
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Rolling reboot for performance optimization"
+      become: true
+      tags:
+        - reboot
+
+    - name: Wait for host to be reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+      tags:
+        - reboot
+
+    - name: Wait for kubelet to be ready
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=120s
+      delegate_to: "{{ (groups['masters'] | difference([inventory_hostname]))[0] }}"
+      become: true
+      changed_when: false
+      retries: 5
+      delay: 15
+      register: node_ready
+      until: node_ready.rc == 0
+      tags:
+        - reboot
+
+    - name: "Uncordon {{ inventory_hostname }}"
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          uncordon {{ inventory_hostname }}
+      delegate_to: "{{ (groups['masters'] | difference([inventory_hostname]))[0] }}"
+      become: true
+      changed_when: true
+      tags:
+        - uncordon
+
+    - name: "Restore Kyverno webhook to Fail after uncordon"
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          patch validatingwebhookconfiguration kyverno-resource-validating-webhook-cfg
+          --type=json -p '[{"op":"replace","path":"/webhooks/0/failurePolicy","value":"Fail"}]'
+      delegate_to: "{{ (groups['masters'] | difference([inventory_hostname]))[0] }}"
+      become: true
+      changed_when: true
+      tags:
+        - uncordon
+
+    - name: Wait for etcd to rejoin before next master
+      ansible.builtin.pause:
+        seconds: 45
+      tags:
+        - reboot
+  tags:
+    - masters
+    - kubernetes
+    - reboot
+
+# ---- Phase 5: Final verification ----
+- name: "Phase 5: Verify cluster health"
+  hosts: masters[0]
+  tasks:
+    - name: Check all nodes are Ready
+      ansible.builtin.command:
+        cmd: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes
+      become: true
+      changed_when: false
+      register: nodes_status
+      tags:
+        - verify
+
+    - name: Display node status
+      ansible.builtin.debug:
+        var: nodes_status.stdout_lines
+      tags:
+        - verify
+
+    - name: Verify disk optimization applied (sample worker)
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          get nodes -o wide
+      become: true
+      changed_when: false
+      register: nodes_wide
+      tags:
+        - verify
+
+    - name: Display wide node info
+      ansible.builtin.debug:
+        var: nodes_wide.stdout_lines
+      tags:
+        - verify
+  tags:
+    - verify

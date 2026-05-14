@@ -1,0 +1,28 @@
+---
+# Phase 5: Kubernetes Cluster
+# Prepares nodes and deploys RKE2 cluster via lablabs.rke2 role
+
+- name: Load SSOT credentials
+  ansible.builtin.import_playbook: ../includes/load-ssot.yml
+
+- name: Kubernetes prerequisites
+  hosts: k8s_cluster
+  roles:
+    - k8s-prereqs
+  tags:
+    - k8s-prereqs
+
+- name: GPU drivers on worker nodes
+  hosts: gpu_workers
+  roles:
+    - gpu
+  tags:
+    - gpu
+
+- name: Deploy RKE2 cluster
+  hosts: k8s_cluster
+  become: true
+  roles:
+    - role: lablabs.rke2
+  tags:
+    - rke2

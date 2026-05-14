@@ -1,0 +1,10 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: amp
+  labels:
+    app.kubernetes.io/name: amp
+    app.kubernetes.io/component: gameserver
+    tls.example.com/wildcard: "true"
+    goldilocks.fairwinds.com/enabled: "true"

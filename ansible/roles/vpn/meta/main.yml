@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: vpn
+  author: salty
+  license: "Proprietary"
+  description: WireGuard VPN — wg-easy Docker deployment
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies:
+  - role: docker

@@ -1,0 +1,37 @@
+# Traefik IngressRoute with Authentik forward-auth, two-route pattern.
+# HTML routes go through SSO. API/stream routes pass through with the
+# app's own bearer-token auth. Critical for apps that have both UI and
+# REST API on the same hostname (Jellyfin, *-arr stack, etc.).
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: <APP-NAME>
+  namespace: <APP-NAMESPACE>
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # HTML routes — apply Authentik forward-auth for SSO login
+    - kind: Rule
+      match: Host(`<APP-FQDN>`) && (PathPrefix(`/web`) || PathPrefix(`/admin`))
+      middlewares:
+        - name: authentik-forward-auth
+          namespace: authentik
+        - name: security-headers
+          namespace: traefik
+      services:
+        - name: <APP-SERVICE>
+          port: <APP-PORT>
+
+    # API + stream routes — bearer-token auth handled by the app
+    - kind: Rule
+      match: Host(`<APP-FQDN>`)
+      middlewares:
+        - name: security-headers
+          namespace: traefik
+      services:
+        - name: <APP-SERVICE>
+          port: <APP-PORT>
+  tls:
+    secretName: wildcard-tls

@@ -1,0 +1,6 @@
+---
+- name: Restart containerd
+  ansible.builtin.systemd:
+    name: "{{ 'rke2-server' if 'masters' in group_names else 'rke2-agent' }}"
+    state: restarted
+  become: true

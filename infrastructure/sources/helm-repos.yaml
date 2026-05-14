@@ -1,0 +1,165 @@
+---
+# Traefik Helm Repository
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: traefik
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://traefik.github.io/charts
+---
+# MetalLB Helm Repository
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: metallb
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://metallb.github.io/metallb
+---
+# cert-manager Helm Repository (Jetstack)
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: jetstack
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://charts.jetstack.io
+---
+# NOTE: Bitnami Helm Repository removed - Broadcom acquisition made public repos unmaintained
+# external-dns now uses registry.k8s.io images directly, not Bitnami Helm chart
+---
+# NVIDIA Device Plugin Helm Repository (for GPU support)
+# Researched: 2025-11-27
+# Source: https://github.com/NVIDIA/k8s-device-plugin
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: nvdp
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://nvidia.github.io/k8s-device-plugin
+---
+# Kyverno Helm Repository (for policy enforcement)
+# Researched: 2025-12-05
+# Source: https://artifacthub.io/packages/helm/kyverno/kyverno
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: kyverno
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://kyverno.github.io/kyverno/
+---
+# Grafana Helm Repository (for Loki, Promtail)
+# Researched: 2025-12-05
+# Source: https://grafana.github.io/helm-charts
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: grafana
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://grafana.github.io/helm-charts
+---
+# Prometheus Community Helm Repository (for kube-prometheus-stack)
+# Moved from clusters/homelab/sources to consolidate
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: prometheus-community
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://prometheus-community.github.io/helm-charts
+---
+# Fairwinds Helm Repository (for VPA, Goldilocks)
+# Researched: 2026-02-10
+# Source: https://artifacthub.io/packages/search?repo=fairwinds-stable
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: fairwinds-stable
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://charts.fairwinds.com/stable
+---
+# Velero Helm Repository (for Kubernetes backup & restore)
+# Researched: 2026-02-18
+# Source: https://github.com/vmware-tanzu/velero
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: vmware-tanzu
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://vmware-tanzu.github.io/helm-charts
+---
+# CrowdSec Helm Repository (for IPS/IDS)
+# Researched: 2026-02-25
+# Source: https://github.com/crowdsecurity/helm-charts
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: crowdsec
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://crowdsecurity.github.io/helm-charts
+---
+# Falco Helm Repository (for runtime security)
+# Researched: 2026-02-25
+# Source: https://github.com/falcosecurity/charts
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: falcosecurity
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://falcosecurity.github.io/charts
+---
+# Stakater Helm Repository (for Reloader)
+# Researched: 2026-03-12
+# Source: https://github.com/stakater/Reloader
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: stakater
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://stakater.github.io/stakater-charts
+---
+# External Secrets Operator Helm Repository
+# Researched: 2026-03-27
+# Source: https://github.com/external-secrets/external-secrets
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: external-secrets
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://charts.external-secrets.io
+---
+# Karpenter Provider Proxmox (OCI Helm Registry)
+# Researched: 2026-02-10 - Chart v0.4.4 / App v0.9.0
+# Source: https://github.com/sergelogvinov/karpenter-provider-proxmox
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: karpenter-proxmox
+  namespace: flux-system
+spec:
+  type: oci
+  interval: 1h
+  url: oci://ghcr.io/sergelogvinov/charts

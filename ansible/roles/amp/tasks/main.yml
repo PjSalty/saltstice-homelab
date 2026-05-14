@@ -1,0 +1,97 @@
+---
+- name: Create AMP directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ amp_data_dir }}"
+  become: true
+  tags:
+    - amp
+
+- name: Deploy AMP docker-compose
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ amp_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags:
+    - amp
+    - config
+
+- name: Start AMP containers
+  community.docker.docker_compose_v2:
+    project_src: "{{ amp_data_dir }}"
+    state: present
+    pull: missing
+  become: true
+  tags:
+    - amp
+
+# Reactivate instances that lost their license (e.g. after VM rebuild)
+# Uses licence key from SSOT via amp_licence_key variable
+- name: Get AMP instance list
+  ansible.builtin.command:
+    cmd: ampinstmgr --ShowInstancesList
+  become: true
+  become_user: amp
+  register: amp_instances
+  changed_when: false
+  when: amp_licence_key | length > 0
+  tags:
+    - amp
+    - amp-licence
+
+- name: Check for unlicensed instances
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      for instance in $(ampinstmgr --ShowInstancesList 2>&1 | grep "Instance Name" | awk -F'│' '{print $2}' | tr -d ' '); do
+        log=$(ampinstmgr --LastLog "$instance" 2>/dev/null || true)
+        if echo "$log" | grep -q "No valid AMP licence"; then
+          echo "$instance"
+        fi
+      done
+    executable: /bin/bash
+  become: true
+  become_user: amp
+  register: amp_unlicensed
+  changed_when: false
+  when: amp_licence_key | length > 0
+  tags:
+    - amp
+    - amp-licence
+
+- name: Reactivate unlicensed AMP instances  # noqa: risky-shell-pipe no-changed-when
+  ansible.builtin.shell:
+    cmd: "set -o pipefail && echo '{{ amp_licence_key }}' | ampinstmgr reactivate {{ item }}"
+    executable: /bin/bash
+  become: true
+  become_user: amp
+  loop: "{{ amp_unlicensed.stdout_lines | default([]) }}"
+  when:
+    - amp_licence_key | length > 0
+    - amp_unlicensed.stdout_lines | default([]) | length > 0
+  no_log: true
+  tags:
+    - amp
+    - amp-licence
+
+- name: Start reactivated AMP instances
+  ansible.builtin.command:
+    cmd: "ampinstmgr --StartInstance {{ item }}"
+  become: true
+  become_user: amp
+  loop: "{{ amp_unlicensed.stdout_lines | default([]) }}"
+  when:
+    - amp_licence_key | length > 0
+    - amp_unlicensed.stdout_lines | default([]) | length > 0
+  changed_when: true
+  tags:
+    - amp
+    - amp-licence

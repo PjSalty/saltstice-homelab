@@ -1,0 +1,83 @@
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: jellyfin-admin-credentials
+  namespace: media
+spec:
+  data:
+  - remoteRef:
+      key: cred-ssot-media
+      property: CRED_MEDIA_JELLYFIN_API_KEY
+    secretKey: admin_password
+  - remoteRef:
+      key: cred-ssot-media
+      property: CRED_MEDIA_JELLYFIN_SSO_CLIENT_SECRET
+    secretKey: oidc_client_secret
+  - remoteRef:
+      key: cred-ssot-media
+      property: CRED_MEDIA_JELLYFIN_API_KEY
+    secretKey: netbox_token
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: SecretStore
+    name: credential-media
+  target:
+    creationPolicy: Owner
+    name: jellyfin-admin-credentials
+    template:
+      data:
+        ADMIN_PASSWORD: '{{ .admin_password }}'
+        ADMIN_USERNAME: admin
+        NETBOX_TOKEN: '{{ .netbox_token }}'
+        OIDC_AUTHORITY: https://auth.example.com/application/o/jellyfin/
+        OIDC_CLIENT_ID: jellyfin
+        OIDC_CLIENT_SECRET: '{{ .oidc_client_secret }}'
+        SERVER_NAME: Salty
+      type: Opaque
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: jellyfin-api-key
+  namespace: media
+spec:
+  data:
+  - remoteRef:
+      key: cred-ssot-media
+      property: CRED_MEDIA_JELLYFIN_API_KEY
+    secretKey: key
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: SecretStore
+    name: credential-media
+  target:
+    creationPolicy: Owner
+    name: jellyfin-api-key
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: sso-client-secrets
+  namespace: media
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: SecretStore
+    name: credential-media
+  target:
+    creationPolicy: Owner
+    name: sso-client-secrets
+    template:
+      type: Opaque
+      data:
+        JELLYFIN_CLIENT_SECRET: "{{ .jellyfin_client_secret }}"
+        AUTHENTIK_API_TOKEN: "{{ .authentik_api_token }}"
+  data:
+  - remoteRef:
+      key: cred-ssot-media
+      property: CRED_MEDIA_JELLYFIN_SSO_CLIENT_SECRET
+    secretKey: jellyfin_client_secret
+  - remoteRef:
+      key: cred-ssot-media
+      property: CRED_MEDIA_AUTHENTIK_API_TOKEN
+    secretKey: authentik_api_token

@@ -1,0 +1,95 @@
+---
+# GitLab Runner - CI/CD executor
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-gitlab-runner
+  namespace: gitlab-runner
+spec:
+  description: "Allow GitLab Runner for CI/CD"
+  endpointSelector: {}
+  egress:
+    # Allow GitLab communication
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Allow Harbor registry
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Allow Proxmox API (terraform plan/apply)
+    - toCIDR:
+        - 10.x0.100/32
+      toPorts:
+        - ports:
+            - port: "8006"
+              protocol: TCP
+    # Allow SSH to managed hosts for ansible:deploy jobs
+    # toEntities: host is required for K8s node IPs (Cilium treats
+    # node IPs as "host" identity, toCIDR alone is insufficient)
+    - toEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "22"
+              protocol: TCP
+    - toCIDR:
+        - <vlan-cidr>
+        - 10.x0.0/24
+        - <vlan-cidr>
+        - <mgmt-ip>/24
+      toPorts:
+        - ports:
+            - port: "22"
+              protocol: TCP
+    # Allow Traefik pods (LoadBalancer VIP resolves to pod in-cluster,
+    # so toCIDR doesn't match — need toEndpoints for pod-to-pod path)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Allow external dependencies
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Allow Docmost API for docs sync CI job
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: docmost
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # Allow SeaweedFS S3 cache
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: storage
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

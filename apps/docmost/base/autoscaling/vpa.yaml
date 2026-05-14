@@ -1,0 +1,69 @@
+---
+# VPA for docmost (Auto mode - applies recommendations)
+# Memory-only: CPU managed by HPA to avoid conflicts
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: docmost
+  namespace: docmost
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: docmost
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: docmost
+        controlledResources: ["memory"]
+        minAllowed:
+          memory: 256Mi
+        maxAllowed:
+          memory: 2Gi
+---
+# VPA for docmost-postgresql
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: docmost-postgresql
+  namespace: docmost
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: docmost-postgresql
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: postgres
+        minAllowed:
+          cpu: 50m
+          memory: 128Mi
+        maxAllowed:
+          cpu: "1"
+          memory: 2Gi
+---
+# VPA for docmost-redis
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: docmost-redis
+  namespace: docmost
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: docmost-redis
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: redis
+        minAllowed:
+          cpu: 10m
+          memory: 32Mi
+        maxAllowed:
+          cpu: 500m
+          memory: 256Mi

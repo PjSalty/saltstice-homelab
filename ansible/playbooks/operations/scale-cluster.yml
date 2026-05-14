@@ -1,0 +1,50 @@
+---
+# Scale Kubernetes cluster — add or remove nodes
+#
+# Usage:
+#   ansible-playbook playbooks/operations/scale-cluster.yml --limit k8s-worker-new
+#   ansible-playbook playbooks/operations/scale-cluster.yml -e action=drain -e node=k8s-worker-3
+
+- name: Scale cluster — prepare new nodes
+  hosts: k8s_cluster
+  roles:
+    - common
+    - ssh
+    - firewall
+    - fail2ban
+    - sudo
+    - auto-updates
+    - qemu-guest-agent
+    - k8s-prereqs
+  tags:
+    - scale
+    - prepare
+
+- name: Scale cluster — join nodes
+  hosts: k8s_cluster
+  roles:
+    - role: lablabs.rke2
+  tags:
+    - scale
+    - join
+
+- name: Scale cluster — drain node
+  hosts: masters[0]
+  tasks:
+    - name: Drain node
+      ansible.builtin.command:
+        cmd: >-
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+          drain {{ node }} --ignore-daemonsets --delete-emptydir-data --timeout=120s
+      become: true
+      when:
+        - action is defined
+        - action == "drain"
+        - node is defined
+      changed_when: true
+      tags:
+        - scale
+        - drain
+  tags:
+    - scale
+    - drain

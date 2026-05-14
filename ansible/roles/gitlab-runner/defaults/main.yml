@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# GitLab Runner Role Defaults
+# =============================================================================
+
+# Runner version — SSOT is group_vars/all.yml, this is fallback only
+gitlab_runner_version: "18.8.0"
+
+# GitLab instance
+gitlab_url: "https://gitlab.{{ domain }}"
+
+# Runner configuration
+gitlab_runner_executor: docker
+gitlab_runner_concurrent: 4
+gitlab_runner_check_interval: 3
+gitlab_runner_tag_list: "deploy,infrastructure,terraform"
+gitlab_runner_run_untagged: false
+gitlab_runner_description: "Dedicated Deploy Runner ({{ inventory_hostname }})"
+
+# Docker executor settings
+gitlab_runner_docker_image: "harbor.{{ domain }}/tools/ansible-runner:stable"
+gitlab_runner_docker_network_mode: host
+gitlab_runner_docker_privileged: false
+gitlab_runner_docker_pull_policy: "if-not-present"
+gitlab_runner_docker_volumes:
+  - "/etc/gitlab-runner/ssh:/home/gitlab-runner/.ssh:ro"
+
+# Metrics
+gitlab_runner_metrics_port: 9252
+
+# Runner authentication token (from gitlab-runner register or API)
+# Set via SOPS credentials or -e at runtime
+gitlab_runner_token: "{{ creds.infrastructure.gitlab.runner_token | default('') }}"

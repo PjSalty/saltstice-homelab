@@ -1,0 +1,53 @@
+---
+- name: Create NetBox directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ netbox_data_dir }}"
+    - "{{ netbox_data_dir }}/postgres-data"
+    - "{{ netbox_data_dir }}/redis-data"
+    - "{{ netbox_data_dir }}/media"
+    - "{{ netbox_data_dir }}/reports"
+    - "{{ netbox_data_dir }}/scripts"
+  become: true
+  tags:
+    - netbox
+
+- name: Deploy NetBox docker-compose
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ netbox_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart netbox
+  become: true
+  tags:
+    - netbox
+    - config
+
+- name: Deploy NetBox env file
+  ansible.builtin.template:
+    src: netbox.env.j2
+    dest: "{{ netbox_data_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart netbox
+  become: true
+  tags:
+    - netbox
+    - config
+
+- name: Start NetBox containers
+  community.docker.docker_compose_v2:
+    project_src: "{{ netbox_data_dir }}"
+    state: present
+    pull: missing
+  become: true
+  tags:
+    - netbox

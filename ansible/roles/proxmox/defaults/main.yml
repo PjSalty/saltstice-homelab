@@ -1,0 +1,59 @@
+---
+# proxmox role defaults
+
+proxmox_iommu_enabled: true
+proxmox_enterprise_repo: false
+proxmox_no_subscription_nag: true
+proxmox_grub_cmdline: "quiet intel_iommu=on iommu=pt"
+
+proxmox_blacklist_modules:
+  - nouveau
+  - snd_hda_intel
+  - snd_hda_codec_hdmi
+
+proxmox_sysctl:
+  net.ipv4.ip_forward: 1
+  net.ipv6.conf.all.forwarding: 1
+  # bridge-nf-call-iptables: managed by pve-firewall (sets to 1 on start).
+  # UFW before.rules has a vmbr+ forward ACCEPT rule so VM-to-VM bridge
+  # traffic is allowed even with UFW FORWARD DROP + bridge-nf=1.
+  # Do NOT set to 0 here — pve-firewall needs it for per-VM firewall rules.
+  # Memory management — tuned for 252GB hypervisor with ZFS
+  vm.swappiness: 1
+  vm.min_free_kbytes: 1048576
+  vm.dirty_ratio: 5
+  vm.dirty_background_ratio: 3
+  vm.dirty_expire_centisecs: 1500
+  vm.dirty_writeback_centisecs: 300
+  # Network buffers — tuned for 10G NFS/iSCSI
+  net.core.rmem_max: 16777216
+  net.core.wmem_max: 16777216
+  net.ipv4.tcp_rmem: "4096 131072 16777216"
+  net.ipv4.tcp_wmem: "4096 131072 16777216"
+  net.core.netdev_max_backlog: 5000
+
+# ZFS tuning
+proxmox_zfs_arc_max_gb: 32
+proxmox_zfs_atime: "off"
+proxmox_zfs_autotrim: true
+
+# SSD I/O scheduler
+proxmox_ssd_devices:
+  - sdm
+  - sdn
+
+# Static route: Traefik VIP via K8s VLAN 30 (bypasses MikroTik forwarding
+# which breaks TLS due to conntrack/fasttrack packet mangling)
+proxmox_traefik_vip: "<internal-ip>"
+proxmox_traefik_gateway: "10.x0.10"
+proxmox_traefik_dev: "vmbr1.30"
+proxmox_traefik_src: "10.x0.100"
+
+# Authentik SSO — OpenID Connect realm
+proxmox_oidc_enabled: true
+proxmox_oidc_issuer_url: "https://auth.example.com/application/o/proxmox/"
+proxmox_oidc_client_id: "proxmox-sso"
+proxmox_oidc_realm: "authentik"
+# Client secret sourced from SSOT: credentials.sops.yaml ->
+# kubernetes.authentik_sso_clients.proxmox_client_secret (loaded by playbooks/includes/load-ssot.yml as `creds`).
+proxmox_oidc_client_secret: "{{ creds.kubernetes.authentik_sso_clients.proxmox_client_secret | default('') }}"

@@ -1,0 +1,40 @@
+---
+# =============================================================================
+# Proxmox Hypervisor Variables
+# =============================================================================
+
+# SSH — Proxmox uses root, no debian user
+ssh_permit_root_login: "prohibit-password"
+ssh_allowed_users: "root"
+
+# Sudo — root doesn't need sudo
+sudo_user: root
+sudo_base_commands:
+  - /usr/bin/systemctl status *
+  - /usr/bin/journalctl *
+sudo_extra_commands: []
+
+# Firewall — Proxmox-specific ports
+firewall_extra_ports:
+  - { port: 8006, proto: tcp, comment: "Proxmox Web UI" }
+  - { port: "5900:5999", proto: tcp, comment: "VNC console" }
+  - { port: 3128, proto: tcp, comment: "SPICE proxy" }
+  - { port: 9100, proto: tcp, comment: "node_exporter" }
+  - { port: 111, proto: tcp, comment: "RPC (NFS)" }
+  - { port: 111, proto: udp, comment: "RPC (NFS)" }
+
+# Fail2ban — ignore K8s and infra subnets
+fail2ban_ignoreip: "127.0.0.1/8 ::1 <mgmt-ip>/24 <vlan-cidr> 10.x0.0/24"
+
+# SSH Authorized Keys
+ssh_authorized_keys_root:
+  - ssh-ed25519 <ssh-ed25519-public-key> automation@example.com
+  - ssh-ed25519 <ssh-ed25519-public-key> terraform-automation@homelab
+
+# Auto-updates — Proxmox gets PVE security patches via unattended-upgrades.
+# Reboot is handled by proxmox-maintenance role (drains K8s, ordered VM shutdown,
+# patches, reboots, verifies all services healthy). Runs during the weekly maintenance window.
+auto_updates_auto_reboot: false
+auto_updates_reboot_time: "04:00"  # unused but kept for reference
+auto_updates_extra_origins:
+  - "origin=Proxmox,codename=${distro_codename},label=Proxmox Debian Repository"

@@ -1,0 +1,18 @@
+---
+# BGPPeer - Establishes BGP peering with MikroTik router
+# MetalLB will peer with the MikroTik router via VLAN 30 gateway
+# using BGP to advertise LoadBalancer IPs from VLAN 50 dynamically
+# Updated: 2025-11-28 - VLAN Network Architecture
+apiVersion: metallb.io/v1beta2
+kind: BGPPeer
+metadata:
+  name: mikrotik-peer
+  namespace: metallb-system
+spec:
+  myASN: <asn>          # MetalLB ASN (private AS number)
+  peerASN: <asn>        # MikroTik router ASN
+  peerAddress: 10.x0.1   # MikroTik router - VLAN 30 Kubernetes gateway
+  # BGP MD5 auth — MikroTik tcp-md5-key set on all /routing/bgp/connection entries
+  passwordSecret:
+    name: bgp-peer-password
+    namespace: metallb-system

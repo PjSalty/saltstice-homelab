@@ -1,0 +1,34 @@
+# GitLab Runner Configuration
+# Managed by Ansible — do not edit manually
+# Docker executor with host networking for reliable cross-VLAN SSH
+
+concurrent = {{ gitlab_runner_concurrent }}
+check_interval = {{ gitlab_runner_check_interval }}
+shutdown_timeout = 30
+log_level = "info"
+log_format = "json"
+
+listen_address = ":{{ gitlab_runner_metrics_port }}"
+
+[[runners]]
+  name = "{{ gitlab_runner_description }}"
+  url = "{{ gitlab_url }}/"
+  executor = "{{ gitlab_runner_executor }}"
+  environment = ["HOME=/root"]
+  output_limit = 52428800
+
+  token = "{{ gitlab_runner_token }}"
+
+  [runners.docker]
+    image = "{{ gitlab_runner_docker_image }}"
+    network_mode = "{{ gitlab_runner_docker_network_mode }}"
+    privileged = {{ gitlab_runner_docker_privileged | lower }}
+    pull_policy = ["{{ gitlab_runner_docker_pull_policy }}"]
+    disable_entrypoint_overwrite = false
+    oom_kill_disable = false
+    disable_cache = false
+    volumes = [{% for volume in gitlab_runner_docker_volumes %}"{{ volume }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+
+    # Harbor registry for private images
+    allowed_images = ["harbor.{{ domain }}/*", "harbor.{{ domain }}/**/*"]
+    # Note: sysctls not allowed with network_mode=host (shares host namespace)

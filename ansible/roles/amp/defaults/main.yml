@@ -1,0 +1,11 @@
+---
+# amp role defaults
+
+amp_data_dir: /data/amp
+amp_web_port: 8081
+amp_fqdn: "amp.{{ domain }}"
+amp_licence_key: "{{ creds.infrastructure.amp.licence_key | default('') }}"
+
+# Game server port range
+amp_game_port_start: 25000
+amp_game_port_end: 25199

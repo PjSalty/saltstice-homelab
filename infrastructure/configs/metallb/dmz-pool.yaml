@@ -1,0 +1,28 @@
+---
+# MetalLB IP Address Pool - VLAN 60 DMZ Network
+# Community-facing services (Matrix, Fluxer, bridge relay)
+# Isolated from internal VLAN 50 services via separate Traefik instance
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: dmz-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    # VLAN 60 (<vlan-cidr>) - DMZ Network
+    # Reserved: <internal-ip>  = WireGuard VPN (existing VM)
+    # Reserved: <internal-ip> = Traefik DMZ Ingress (community services)
+    - <internal-ip>-<internal-ip>     # MetalLB DMZ LoadBalancer pool
+---
+# BGPAdvertisement for DMZ pool - separate from internal pool
+# Advertises VLAN 60 IPs via same BGP peering session to MikroTik
+apiVersion: metallb.io/v1beta1
+kind: BGPAdvertisement
+metadata:
+  name: dmz-bgp
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - dmz-pool
+  aggregationLength: 32   # Advertise individual /32 routes (per-IP)
+  localPref: 100           # BGP local preference

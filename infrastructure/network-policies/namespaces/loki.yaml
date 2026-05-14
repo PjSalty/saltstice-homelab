@@ -1,0 +1,68 @@
+---
+# Loki logging stack needs cluster-wide log collection
+# External LoadBalancer restricted to infrastructure VMs only (H12 fix)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-loki
+  namespace: loki
+spec:
+  description: "Allow Loki for log aggregation — restricted external access"
+  endpointSelector: {}
+  ingress:
+    # Allow Grafana queries, Prometheus scraping Alloy + canary metrics
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "3100"
+              protocol: TCP
+            - port: "3500"
+              protocol: TCP
+            - port: "12345"
+              protocol: TCP
+    # Allow log shipping from all namespaces (Alloy/Promtail in-cluster)
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "3100"
+              protocol: TCP
+    # External access for VM log ingestion (Grafana Alloy on VMs)
+    # Restricted to infrastructure VLAN only (not open to all networks)
+    - fromCIDR:
+        - <vlan-cidr>   # Infrastructure VMs (GitLab, Harbor, NetBox, etc.)
+        - 10.x0.0/24   # K8s nodes (for MetalLB traffic path)
+      toPorts:
+        - ports:
+            - port: "3100"
+              protocol: TCP
+  egress:
+    # Allow S3/SeaweedFS for log storage
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: storage
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+    # Allow Kubernetes API
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

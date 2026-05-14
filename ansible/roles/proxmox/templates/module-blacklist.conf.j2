@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+{% for mod in proxmox_blacklist_modules %}
+blacklist {{ mod }}
+{% endfor %}

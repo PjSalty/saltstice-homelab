@@ -1,0 +1,49 @@
+# UniFi Controller Persistent Storage
+# Config volume: NFS (static binding for controller configuration)
+# DB volume: iSCSI via democratic-csi (block storage for MongoDB)
+# TrueNAS server configured via ${NFS_SERVER} variable
+---
+# Config PV - NFS
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: unifi-config-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: ${NFS_SERVER}
+    path: /mnt/tank/kubernetes/unifi-config
+---
+# Config PVC - NFS
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: unifi-config
+  namespace: unifi
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: unifi-config-pv
+---
+# DB PVC - iSCSI (dynamic provisioning via democratic-csi)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: unifi-db
+  namespace: unifi
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iscsi-csi
+  resources:
+    requests:
+      storage: 10Gi

@@ -1,0 +1,118 @@
+---
+# HAProxy Load Balancer Alerts
+# Monitors haproxy-1 (<internal-ip>) and haproxy-2 (<internal-ip>)
+# which provide the Kubernetes API VIP (<internal-ip>) via keepalived.
+# HAProxy exposes stats on port 9101 via haproxy_exporter.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: haproxy-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # HAProxy Health Alerts
+    # =========================================================================
+    - name: haproxy
+      interval: 1m
+      rules:
+        - alert: HAProxyDown
+          expr: |
+            up{job="infrastructure-vms", instance=~"haproxy.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "HAProxy node {{ $labels.instance }} is unreachable"
+            description: |
+              HAProxy load balancer {{ $labels.instance }} has been unreachable for 2 minutes.
+              If both nodes fail, the Kubernetes API VIP (<internal-ip>) will be lost.
+            runbook_url: "https://grafana.example.com/d/haproxy"
+            action: "Check Proxmox VM status for {{ $labels.instance }} and verify network"
+
+        - alert: HAProxyBackendDown
+          expr: |
+            haproxy_backend_up == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "HAProxy backend {{ $labels.backend }} is down on {{ $labels.instance }}"
+            description: |
+              HAProxy backend {{ $labels.backend }} on {{ $labels.instance }} has been
+              fully down for 2 minutes. All backend servers are unavailable.
+            action: "Check backend server health and HAProxy configuration"
+
+        - alert: HAProxyBackendServerDown
+          expr: |
+            haproxy_server_up == 0
+          for: 3m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "HAProxy server {{ $labels.server }} in backend {{ $labels.backend }} is down"
+            description: |
+              Server {{ $labels.server }} in HAProxy backend {{ $labels.backend }}
+              on {{ $labels.instance }} has been marked down for 3 minutes.
+            action: "Check health of {{ $labels.server }} - it may be failing health checks"
+
+        - alert: HAProxyHighConnectionRate
+          expr: |
+            rate(haproxy_frontend_connections_total[5m]) > 1000
+          for: 5m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "High connection rate on HAProxy frontend {{ $labels.proxy }}"
+            description: |
+              HAProxy frontend {{ $labels.proxy }} on {{ $labels.instance }} is receiving
+              {{ printf "%.0f" $value }} connections/second. This may indicate a DDoS or
+              traffic spike.
+            action: "Review connection sources and consider rate limiting"
+
+        - alert: HAProxyHighErrorRate
+          expr: |
+            rate(haproxy_backend_response_errors_total[5m])
+            / rate(haproxy_backend_http_responses_total[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "High error rate on HAProxy backend {{ $labels.backend }}"
+            description: |
+              HAProxy backend {{ $labels.backend }} on {{ $labels.instance }} has a
+              {{ printf "%.1f" (mul $value 100) }}% error rate over the last 5 minutes.
+              Expected below 5%.
+            action: "Check backend server logs and HAProxy error counters"
+
+    # =========================================================================
+    # Keepalived VIP Health
+    # =========================================================================
+    - name: keepalived
+      interval: 30s
+      rules:
+        - alert: KeepalivedNoMaster
+          expr: |
+            sum(keepalived_vrrp_state{state="MASTER"}) == 0
+          for: 1m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "No keepalived MASTER found for K8s API VIP"
+            description: |
+              No keepalived instance is in MASTER state for the Kubernetes API VIP
+              (<internal-ip>). The VIP is unreachable and the K8s API is down for external access.
+            action: |
+              Check keepalived status on haproxy-1 and haproxy-2.
+              Restart keepalived: systemctl restart keepalived
+              Verify ARP: arping -I eth0 <internal-ip>

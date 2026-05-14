@@ -1,0 +1,109 @@
+# License Compliance Policy ConfigMap
+# Defines allowed and disallowed licenses for container images
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: license-policy
+  namespace: security
+data:
+  allowed-licenses.txt: |
+    # Permissive licenses - ALLOWED for production use
+    MIT
+    Apache-2.0
+    BSD-2-Clause
+    BSD-3-Clause
+    ISC
+    0BSD
+    Unlicense
+    CC0-1.0
+    WTFPL
+    Zlib
+    MPL-2.0
+    PostgreSQL
+    Python-2.0
+    PHP-3.01
+    Artistic-2.0
+    BSL-1.0
+    OFL-1.1
+    X11
+
+  disallowed-licenses.txt: |
+    # Copyleft licenses - REVIEW REQUIRED for production use
+    # These may require source code disclosure
+    GPL-2.0
+    GPL-2.0-only
+    GPL-2.0-or-later
+    GPL-3.0
+    GPL-3.0-only
+    GPL-3.0-or-later
+    LGPL-2.0
+    LGPL-2.1
+    LGPL-3.0
+    AGPL-3.0
+    AGPL-3.0-only
+    AGPL-3.0-or-later
+
+  license-scan-script.sh: |
+    #!/bin/sh
+    # License compliance scanner using Trivy
+    # Scans all images in the cluster and reports disallowed licenses
+
+    set -e
+
+    echo "=== License Compliance Scan ==="
+    echo "Started: $(date -Iseconds)"
+    echo ""
+
+    # Load policies
+    ALLOWED_FILE="/config/allowed-licenses.txt"
+    DISALLOWED_FILE="/config/disallowed-licenses.txt"
+
+    # Get all unique images in the cluster
+    IMAGES=$(kubectl get pods --all-namespaces -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' | sort -u)
+
+    VIOLATIONS=0
+    SCANNED=0
+    REPORT=""
+
+    for IMAGE in $IMAGES; do
+      # Skip pause and local images
+      case "$IMAGE" in
+        k8s.gcr.io/pause*|registry.k8s.io/pause*|rancher/mirrored*) continue ;;
+      esac
+
+      echo "Scanning: $IMAGE"
+      SCANNED=$((SCANNED + 1))
+
+      # Run Trivy license scan
+      RESULT=$(trivy image --scanners license --format json "$IMAGE" 2>/dev/null || echo '{"Results":[]}')
+
+      # Check for disallowed licenses
+      FOUND_DISALLOWED=$(echo "$RESULT" | jq -r '.Results[]?.Licenses[]? | select(.Name != null) | .Name' | while read LICENSE; do
+        if grep -qFx "$LICENSE" "$DISALLOWED_FILE" 2>/dev/null; then
+          echo "$LICENSE"
+        fi
+      done)
+
+      if [ -n "$FOUND_DISALLOWED" ]; then
+        VIOLATIONS=$((VIOLATIONS + 1))
+        REPORT="$REPORT\n[VIOLATION] $IMAGE contains disallowed licenses:\n$FOUND_DISALLOWED\n"
+      fi
+    done
+
+    echo ""
+    echo "=== Scan Summary ==="
+    echo "Images scanned: $SCANNED"
+    echo "Violations found: $VIOLATIONS"
+    echo ""
+
+    if [ "$VIOLATIONS" -gt 0 ]; then
+      echo "=== Violations Detail ==="
+      printf "$REPORT"
+      echo ""
+      echo "ACTION REQUIRED: Review images with copyleft licenses"
+      exit 1
+    else
+      echo "All images comply with license policy"
+      exit 0
+    fi

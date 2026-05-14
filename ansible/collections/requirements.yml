@@ -1,0 +1,12 @@
+---
+collections:
+  - name: ansible.posix
+    version: ">=1.6.0"
+  - name: community.general
+    version: ">=<internal-net>"
+  - name: community.docker
+    version: ">=4.0.0"
+  - name: community.crypto
+    version: ">=2.22.0"
+  - name: community.sops
+    version: ">=2.2.0"

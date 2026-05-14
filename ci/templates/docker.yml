@@ -1,0 +1,197 @@
+# Docker Build/Push CI/CD Template
+# Version: 2026-04-11
+#
+# Uses Docker-in-Docker for container builds
+# Migrated from Kaniko to DinD - 2026-02-04
+#
+# Usage: include in .gitlab-ci.yml with:
+#   include:
+#     - project: 'infrastructure/homelab-ci-templates'
+#       ref: main
+#       file: 'docker.yml'
+#
+# Required CI/CD Variables:
+#   - HARBOR_USERNAME: Harbor registry username (robot account recommended)
+#   - HARBOR_PASSWORD: Harbor registry password/token
+#
+# Optional Variables:
+#   - DOCKERHUB_USERNAME: Docker Hub username (for higher rate limits)
+#   - DOCKERHUB_TOKEN: Docker Hub access token
+#
+# Job Variables:
+#   - IMAGE_NAME: Full image path (e.g., harbor.example.com/myproject/myimage)
+#   - DOCKERFILE_PATH: Path to Dockerfile (default: ./Dockerfile)
+#   - BUILD_CONTEXT: Build context directory (default: .)
+#
+# Note: Requires privileged runner (gitlab-runner configured with privileged=true)
+
+variables:
+  HARBOR_REGISTRY: harbor.example.com
+
+# =============================================================================
+# Docker-in-Docker Build Template
+# =============================================================================
+.docker:build:
+  stage: build
+  timeout: 30 minutes
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29
+  services:
+    - name: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29-dind
+      alias: docker
+  variables:
+    DOCKERFILE_PATH: ./Dockerfile
+    BUILD_CONTEXT: .
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+    DOCKER_BUILDKIT: "1"
+  resource_group: docker-build
+  before_script:
+    # Wait for Docker daemon
+    - until docker info >/dev/null 2>&1; do sleep 1; done
+    # Login to Docker Hub (optional - for higher rate limits)
+    - |
+      if [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
+        echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+        echo "Logged in to Docker Hub (200 pulls/6h rate limit)"
+      fi
+    # Login to Harbor
+    - |
+      if [ -n "${HARBOR_USERNAME}" ] && [ -n "${HARBOR_PASSWORD}" ]; then
+        echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_REGISTRY} -u "${HARBOR_USERNAME}" --password-stdin
+      else
+        echo "ERROR: Set HARBOR_USERNAME and HARBOR_PASSWORD"
+        exit 1
+      fi
+  script:
+    - |
+      docker build \
+        --tag "${IMAGE_NAME}:${CI_COMMIT_SHA}" \
+        --file "${BUILD_CONTEXT}/${DOCKERFILE_PATH}" \
+        "${BUILD_CONTEXT}"
+    - docker push "${IMAGE_NAME}:${CI_COMMIT_SHA}"
+
+# Build with custom tag (SHA + custom tag)
+.docker:build-tagged:
+  extends: .docker:build
+  script:
+    - |
+      docker build \
+        --tag "${IMAGE_NAME}:${CI_COMMIT_SHA}" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --file "${BUILD_CONTEXT}/${DOCKERFILE_PATH}" \
+        "${BUILD_CONTEXT}"
+    - docker push "${IMAGE_NAME}:${CI_COMMIT_SHA}"
+    - docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+
+# Build with multiple tags (short SHA + stable)
+# DEPRECATED: Use build → scan → promote flow instead
+.docker:build-stable:
+  extends: .docker:build
+  script:
+    - |
+      docker build \
+        --tag "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}" \
+        --tag "${IMAGE_NAME}:stable" \
+        --file "${BUILD_CONTEXT}/${DOCKERFILE_PATH}" \
+        "${BUILD_CONTEXT}"
+    - docker push "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+    - docker push "${IMAGE_NAME}:stable"
+
+# =============================================================================
+# Trivy Security Scanning
+# =============================================================================
+.docker:scan:
+  stage: test
+  timeout: 10 minutes
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73
+  interruptible: true
+  # Retry on network failures — trivy fetches CVE DB from internet
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+  variables:
+    TRIVY_SEVERITY: "HIGH,CRITICAL"
+    TRIVY_EXIT_CODE: "1"
+    TRIVY_CACHE_DIR: ".trivycache"
+  # Cache CVE database — avoids full re-download (~100MB) on every scan
+  cache:
+    key: trivy-cache
+    paths:
+      - .trivycache/
+    policy: pull-push
+  script:
+    - trivy image --exit-code ${TRIVY_EXIT_CODE} --severity ${TRIVY_SEVERITY} --cache-dir ${TRIVY_CACHE_DIR} ${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
+
+# =============================================================================
+# Image SBOM Generation
+# =============================================================================
+.docker:sbom:
+  stage: test
+  timeout: 10 minutes
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73
+  interruptible: true
+  # Retry on network failures — trivy fetches CVE DB to generate SBOM
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+  variables:
+    SBOM_OUTPUT: "image-sbom.json"
+    TRIVY_CACHE_DIR: ".trivycache"
+  # Share CVE cache with .docker:scan to avoid redundant downloads
+  cache:
+    key: trivy-cache
+    paths:
+      - .trivycache/
+    policy: pull-push
+  script:
+    - trivy image --format cyclonedx --output ${SBOM_OUTPUT} --cache-dir ${TRIVY_CACHE_DIR} ${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
+  artifacts:
+    paths:
+      - ${SBOM_OUTPUT}
+    # 1 week: SBOMs are point-in-time snapshots; 30 days accumulates stale artifacts
+    expire_in: 1 week
+    reports:
+      cyclonedx: ${SBOM_OUTPUT}
+
+# =============================================================================
+# Promote Image (SHA → stable)
+# =============================================================================
+# Only runs after scan passes. Retags the scanned SHA image as :stable.
+# This ensures :stable always points to a security-scanned image.
+.docker:promote:
+  stage: deploy
+  timeout: 5 minutes
+  # Promotions must not be cancelled mid-push — tag would point to partial push
+  interruptible: false
+  # Prevent concurrent promotions of the same image (race condition on :stable tag)
+  resource_group: docker-promote-${CI_PROJECT_ID}
+  image: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29
+  services:
+    - name: ${HARBOR_REGISTRY}/dockerhub-proxy/library/docker:29-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  before_script:
+    - until docker info >/dev/null 2>&1; do sleep 1; done
+    - |
+      if [ -n "${HARBOR_USERNAME}" ] && [ -n "${HARBOR_PASSWORD}" ]; then
+        echo "${HARBOR_PASSWORD}" | docker login ${HARBOR_REGISTRY} -u "${HARBOR_USERNAME}" --password-stdin
+      else
+        echo "ERROR: Harbor credentials required for promotion" && exit 1
+      fi
+  script:
+    - docker pull "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+    - docker tag "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}" "${IMAGE_NAME}:stable"
+    - docker push "${IMAGE_NAME}:stable"
+    - echo "Promoted ${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA} → :stable"

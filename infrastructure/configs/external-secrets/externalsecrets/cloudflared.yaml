@@ -1,0 +1,19 @@
+# cloudflared-tunnel-token: Cloudflare Tunnel authentication token
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: cloudflared-tunnel-token
+  namespace: cloudflared
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: cloudflared-tunnel-token
+    creationPolicy: Owner
+  data:
+  - secretKey: token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_CLOUDFLARED_TUNNEL_TOKEN

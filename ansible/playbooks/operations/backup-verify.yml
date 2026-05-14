@@ -1,0 +1,73 @@
+---
+# Verify backup health — etcd, Velero, ZFS snapshots
+#
+# Usage:
+#   ansible-playbook playbooks/operations/backup-verify.yml
+
+- name: Verify etcd backups
+  hosts: masters[0]
+  tasks:
+    - name: Check etcd snapshot age
+      ansible.builtin.find:
+        paths: /var/lib/rancher/rke2/server/db/snapshots
+        age: -24h
+        file_type: file
+      register: etcd_snapshots
+      become: true
+      tags:
+        - backup
+        - etcd
+
+    - name: Assert recent etcd snapshot exists
+      ansible.builtin.assert:
+        that:
+          - etcd_snapshots.files | length > 0
+        fail_msg: "No etcd snapshots in last 24 hours"
+        success_msg: "Found {{ etcd_snapshots.files | length }} recent etcd snapshot(s)"
+      tags:
+        - backup
+        - etcd
+
+- name: Verify Velero backups
+  hosts: masters[0]
+  tasks:
+    - name: Check Velero backup status
+      ansible.builtin.command:
+        cmd: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get backups.velero.io -n velero -o json
+      changed_when: false
+      become: true
+      register: velero_backups
+      failed_when: false
+      tags:
+        - backup
+        - velero
+
+    - name: Display Velero backup status
+      ansible.builtin.debug:
+        msg: "{{ (velero_backups.stdout | from_json)['items'] | map(attribute='status.phase') | list }}"
+      when: velero_backups.rc == 0
+      tags:
+        - backup
+        - velero
+
+- name: Verify ZFS snapshots on storage
+  hosts: storage
+  tasks:
+    - name: Check recent ZFS snapshots
+      ansible.builtin.command:
+        cmd: zfs list -t snapshot -o name,creation -s creation
+      changed_when: false
+      become: true
+      register: zfs_snapshots
+      failed_when: false
+      tags:
+        - backup
+        - zfs
+
+    - name: Display ZFS snapshot status
+      ansible.builtin.debug:
+        var: zfs_snapshots.stdout_lines
+      when: zfs_snapshots.rc == 0
+      tags:
+        - backup
+        - zfs

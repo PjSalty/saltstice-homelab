@@ -1,0 +1,503 @@
+---
+# Build Karpenter K8s Worker Template — PRE-REQS ONLY
+#
+# Creates a Proxmox VM template with kernel modules, sysctls, and K8s pre-req
+# packages baked in. RKE2 is NOT installed here — it is SSOT-driven and
+# installed at boot by the Karpenter cloud-init (version pinned from
+# image-versions ConfigMap → RKE2_VERSION via Flux postBuild substitution).
+#
+# Rebuild this template only when OS base, kernel, or pre-reqs change —
+# NOT for RKE2 version bumps. Those flow through SSOT automatically.
+#
+# Usage:
+#   export PROXMOX_API_TOKEN="automation@pam!karpenter=<uuid>"
+#   ansible-playbook playbooks/operations/build-karpenter-template.yml
+#
+# Flow:
+# 1. Clone base cloud template → temp VM (with correct SSH key)
+# 2. Start VM, wait for SSH
+# 3. Provision via SSH: packages, kernel modules, sysctl (no RKE2)
+# 4. Clean up cloud-init state so it re-runs on clone
+# 5. Stop VM → clone to target VMID → convert to template
+
+# =============================================================================
+# Play 1: Create and start the builder VM via Proxmox API
+# =============================================================================
+- name: "Phase 1: Create builder VM"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    proxmox_api_url: "https://10.x0.100:8006"
+    proxmox_node: "salty"
+    proxmox_token: "{{ lookup('env', 'PROXMOX_API_TOKEN') }}"
+    base_template_vmid: 9000
+    template_vmid: 9001
+    template_name: "karpenter-k8s-worker-template"
+    temp_vmid: 19999
+    temp_name: "karpenter-template-builder"
+    bridge: "vmbr1"
+    vlan_tag: 30
+    storage: "local-zfs"
+    # Static IP for builder VM — avoids guest agent dependency for IP detection
+    builder_ip: "10.x0.199"
+    builder_gw: "10.x0.1"
+    builder_cidr: 24
+    ssh_public_key: "{{ lookup('file', '~/.ssh/automation-key.pub') }}"
+    ssh_private_key: "{{ lookup('env', 'HOME') }}/.ssh/automation-key"
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - proxmox_token | length > 0
+          - ssh_public_key | length > 0
+        fail_msg: "Required: PROXMOX_API_TOKEN env var, ~/.ssh/automation-key.pub"
+
+    - name: Check if temp builder VM already exists
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/status/current"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200, 500]
+      register: temp_vm_check
+
+    - name: Stop existing temp builder VM if running
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/status/stop"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+      when: temp_vm_check.status == 200 and (temp_vm_check.json.data.status | default('')) == 'running'
+
+    - name: Wait for temp VM to stop
+      ansible.builtin.pause:
+        seconds: 10
+      when: temp_vm_check.status == 200 and (temp_vm_check.json.data.status | default('')) == 'running'
+
+    - name: Delete existing temp builder VM
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}"
+        method: DELETE
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+      when: temp_vm_check.status == 200
+
+    - name: Wait for temp VM deletion
+      ansible.builtin.pause:
+        seconds: 10
+      when: temp_vm_check.status == 200
+
+    - name: Check if target template already exists
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ template_vmid }}/status/current"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200, 500]
+      register: template_check
+
+    - name: Delete old template if rebuilding
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ template_vmid }}"
+        method: DELETE
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+      when: template_check.status == 200
+
+    - name: Wait for template deletion
+      ansible.builtin.pause:
+        seconds: 10
+      when: template_check.status == 200
+
+    - name: Clone base template to temp builder VM
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ base_template_vmid }}/clone"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        body_format: form-urlencoded
+        body:
+          newid: "{{ temp_vmid }}"
+          name: "{{ temp_name }}"
+          full: 1
+          target: "{{ proxmox_node }}"
+        validate_certs: false
+        status_code: [200]
+      register: clone_result
+
+    - name: Wait for clone task to finish (VM exists)
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/status/current"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200, 500]
+      register: clone_check
+      retries: 30
+      delay: 5
+      until: clone_check.status == 200
+
+    - name: Wait for clone lock to release (disk copy)
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/config"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+      register: config_check
+      retries: 60
+      delay: 5
+      until: config_check.status == 200 and (config_check.json.data.lock is not defined)
+
+    - name: Configure temp VM with static IP, SSH key, and networking
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/config"
+        method: PUT
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        body_format: form-urlencoded
+        body:
+          net0: "virtio,bridge={{ bridge }},tag={{ vlan_tag }},firewall=0"
+          ipconfig0: "ip={{ builder_ip }}/{{ builder_cidr }},gw={{ builder_gw }}"
+          ciuser: "root"
+          sshkeys: "{{ ssh_public_key | urlencode }}"
+          nameserver: "{{ builder_gw }}"
+          memory: 4096
+          cores: 2
+        validate_certs: false
+        status_code: [200]
+
+    - name: Start temp builder VM
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/status/start"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+
+    - name: Display builder VM IP
+      ansible.builtin.debug:
+        msg: "Builder VM starting at {{ builder_ip }} — waiting for SSH"
+
+    - name: Wait for SSH to become available (cloud-init sets up key on boot)
+      ansible.builtin.wait_for:
+        host: "{{ builder_ip }}"
+        port: 22
+        delay: 15
+        timeout: 300
+        state: started
+
+    - name: Add builder VM as dynamic host
+      ansible.builtin.add_host:
+        name: builder
+        ansible_host: "{{ builder_ip }}"
+        ansible_user: root
+        ansible_ssh_private_key_file: "{{ ssh_private_key }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+    - name: Store vars for Phase 3
+      ansible.builtin.set_fact:
+        saved_proxmox_api_url: "{{ proxmox_api_url }}"
+        saved_proxmox_node: "{{ proxmox_node }}"
+        saved_proxmox_token: "{{ proxmox_token }}"
+        saved_temp_vmid: "{{ temp_vmid }}"
+        saved_template_vmid: "{{ template_vmid }}"
+        saved_template_name: "{{ template_name }}"
+        saved_bridge: "{{ bridge }}"
+        saved_vlan_tag: "{{ vlan_tag }}"
+
+# =============================================================================
+# Play 2: Provision the builder VM via SSH
+# =============================================================================
+- name: "Phase 2: Provision builder VM via SSH"
+  hosts: builder
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command:
+        cmd: cloud-init status --wait
+      changed_when: false
+      register: cloudinit_status
+      # rc=0: success, rc=2: done with recoverable errors (normal for cloned VMs)
+      failed_when: cloudinit_status.rc not in [0, 2]
+      timeout: 300
+
+    - name: Display cloud-init status
+      ansible.builtin.debug:
+        msg: "cloud-init: {{ cloudinit_status.stdout | trim }}"
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - qemu-guest-agent
+          - curl
+          - ca-certificates
+          - open-iscsi
+          - nfs-common
+          - bash-completion
+        state: present
+        update_cache: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Enable services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+      loop:
+        - qemu-guest-agent
+        - iscsid
+
+    - name: Start qemu-guest-agent
+      ansible.builtin.systemd:
+        name: qemu-guest-agent
+        state: started
+
+    - name: Configure kernel modules for K8s and Cilium
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          br_netfilter
+          overlay
+        mode: "0644"
+
+    - name: Load kernel modules
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - overlay
+
+    - name: Configure sysctl for K8s networking
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes.conf
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+          fs.inotify.max_user_watches = 524288
+          fs.inotify.max_user_instances = 8192
+        mode: "0644"
+
+    - name: Apply sysctl settings
+      ansible.builtin.command:
+        cmd: sysctl --system
+      changed_when: true
+
+    # RKE2 is NOT installed here. Karpenter cloud-init installs it at boot
+    # pinned to RKE2_VERSION from the image-versions ConfigMap (SSOT).
+    # This template carries only pre-reqs — OS, modules, sysctls, packages.
+
+    - name: Create RKE2 config directory (cloud-init writes config.yaml here at boot)
+      ansible.builtin.file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: "0755"
+
+    # --- Template cleanup: prepare for cloning ---
+
+    - name: Clean cloud-init state for re-initialization on clone
+      ansible.builtin.command:
+        cmd: cloud-init clean --logs
+      changed_when: true
+
+    - name: Truncate machine-id for unique clone IDs
+      ansible.builtin.copy:
+        dest: /etc/machine-id
+        content: ""
+        mode: "0444"
+
+    - name: Remove SSH host keys (regenerated on boot)
+      ansible.builtin.shell:
+        cmd: rm -f /etc/ssh/ssh_host_*
+      changed_when: true
+
+    - name: Clear DHCP leases
+      ansible.builtin.shell:
+        cmd: rm -f /var/lib/dhcp/*
+      changed_when: true
+
+    - name: Clean apt cache
+      ansible.builtin.apt:
+        autoclean: true
+
+    - name: Remove apt lists
+      ansible.builtin.shell:
+        cmd: rm -rf /var/lib/apt/lists/*
+      changed_when: true
+
+    - name: Rotate and vacuum journal logs
+      ansible.builtin.shell:
+        cmd: journalctl --rotate && journalctl --vacuum-time=1s
+      changed_when: true
+
+    - name: Sync filesystem to ensure all writes are on disk
+      ansible.builtin.command:
+        cmd: sync
+      changed_when: true
+
+    - name: Provisioning complete
+      ansible.builtin.debug:
+        msg: "Builder VM provisioned and cleaned. Ready for template conversion."
+
+# =============================================================================
+# Play 3: Stop VM, convert to template via Proxmox API
+# =============================================================================
+- name: "Phase 3: Convert to template"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Restore saved vars
+      ansible.builtin.set_fact:
+        proxmox_api_url: "{{ saved_proxmox_api_url }}"
+        proxmox_node: "{{ saved_proxmox_node }}"
+        proxmox_token: "{{ saved_proxmox_token }}"
+        temp_vmid: "{{ saved_temp_vmid }}"
+        template_vmid: "{{ saved_template_vmid }}"
+        template_name: "{{ saved_template_name }}"
+        bridge: "{{ saved_bridge }}"
+        vlan_tag: "{{ saved_vlan_tag }}"
+
+    - name: Gracefully shutdown the builder VM
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/status/shutdown"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+
+    - name: Wait for VM to stop
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/status/current"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+      register: stop_check
+      retries: 30
+      delay: 5
+      until: stop_check.json.data.status == "stopped"
+
+    - name: Resize disk to 50G for worker nodes
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/resize"
+        method: PUT
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        body_format: form-urlencoded
+        body:
+          disk: scsi0
+          size: 50G
+        validate_certs: false
+        status_code: [200]
+
+    - name: Reset VM resources and networking to template defaults
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/config"
+        method: PUT
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        body_format: form-urlencoded
+        body:
+          memory: 2048
+          cores: 2
+          ipconfig0: "ip=dhcp"
+          description: >-
+            Karpenter K8s worker template — pre-reqs only (no RKE2).
+            RKE2 installed at boot from SSOT (image-versions ConfigMap).
+            Built {{ lookup('pipe', 'date -Iseconds') }}. Managed by Ansible.
+          tags: "kubernetes;karpenter;template;phase1;rke2"
+        validate_certs: false
+        status_code: [200]
+
+    - name: Clone temp VM to target template VMID
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}/clone"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        body_format: form-urlencoded
+        body:
+          newid: "{{ template_vmid }}"
+          name: "{{ template_name }}"
+          full: 1
+          target: "{{ proxmox_node }}"
+        validate_certs: false
+        status_code: [200]
+
+    - name: Wait for clone to complete (VM exists)
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ template_vmid }}/status/current"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200, 500]
+      register: clone_done
+      retries: 60
+      delay: 5
+      until: clone_done.status == 200
+
+    - name: Wait for clone lock to release on target template
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ template_vmid }}/config"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+      register: template_config
+      retries: 60
+      delay: 5
+      until: template_config.json.data.lock is not defined
+
+    - name: Convert to template
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ template_vmid }}/template"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+
+    - name: Delete temp builder VM
+      ansible.builtin.uri:
+        url: "{{ proxmox_api_url }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ temp_vmid }}"
+        method: DELETE
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_token }}"
+        validate_certs: false
+        status_code: [200]
+
+    - name: Template build complete
+      ansible.builtin.debug:
+        msg: |
+          Karpenter pre-reqs template built successfully!
+          VMID: {{ template_vmid }}
+          Name: {{ template_name }}
+          RKE2: not installed (SSOT-driven — installed at boot by cloud-init)
+          Bridge: {{ bridge }} (VLAN {{ vlan_tag }})
+
+          Cloud-init on each clone will:
+          1. Write /etc/rancher/rke2/config.yaml (server + token)
+          2. Install RKE2 pinned to image-versions ConfigMap → RKE2_VERSION
+          3. Enable and start rke2-agent.service
+
+          Estimated boot-to-join time: ~60-90 seconds (download + install)
+          Rebuild this template only when OS/kernel/pre-reqs change.

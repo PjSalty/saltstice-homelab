@@ -1,0 +1,79 @@
+---
+# Fairwinds VPA (Vertical Pod Autoscaler) v4.10.1
+# Researched: 2026-02-10
+# Source: https://artifacthub.io/packages/helm/fairwinds-stable/vpa
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vpa
+  namespace: vpa
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: vpa
+      version: "4.11.0"
+      sourceRef:
+        kind: HelmRepository
+        name: fairwinds-stable
+        namespace: flux-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  upgrade:
+    cleanupOnFail: true
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    recommender:
+      enabled: true
+      extraArgs:
+        # API rate limiting for 60+ VPA objects
+        kube-api-qps: "20"
+        kube-api-burst: "40"
+      resources:
+        requests:
+          cpu: 50m
+          memory: 256Mi
+        limits:
+          cpu: 200m
+          memory: 512Mi
+    updater:
+      enabled: true
+      extraArgs:
+        # Eviction safety — prevents mass eviction cascades
+        # 0.05 = ~3 pods/minute max (default: -1 = UNLIMITED)
+        eviction-rate-limit: "0.05"
+        eviction-rate-burst: "1"
+        # Max 25% of a ReplicaSet's pods evicted per cycle (default: 0.5)
+        eviction-tolerance: "0.25"
+        # Check every 5 minutes instead of 1 minute (reduces API pressure 5x)
+        updater-interval: "5m"
+        # Pods within bounds evicted after 24h not 12h (reduces churn)
+        in-recommendation-bounds-eviction-lifetime-threshold: "24h"
+        # Pause evictions when admission controller is down
+        use-admission-controller-status: "true"
+        # API rate limiting for 60+ VPA objects
+        kube-api-qps: "20"
+        kube-api-burst: "40"
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+    admissionController:
+      enabled: true
+      # HA — prevents webhook timeout blocking pod creation during restarts
+      replicaCount: 2
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi

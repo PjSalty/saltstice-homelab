@@ -1,0 +1,172 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jellyfin-setup-script-db
+  namespace: media
+data:
+  setup.py: |
+    #!/usr/bin/env python3
+    """
+    Jellyfin Automated Setup - Database Injection Method
+    Works with Jellyfin 10.x+ when /Startup/User API is broken
+    """
+    import subprocess
+    import sqlite3
+    import os
+    import time
+    import uuid
+    from hashlib import pbkdf2_hmac
+
+    def run(cmd):
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout.strip()
+
+    def generate_password_hash(password):
+        """PBKDF2-SHA512 with 120,000 iterations - Jellyfin 10.8+ default"""
+        salt = os.urandom(16)
+        hash_bytes = pbkdf2_hmac('sha512', password.encode('utf-8'), salt, 120000)
+        return f"$PBKDF2$sha512$120000${salt.hex()}${hash_bytes.hex()}"
+
+    ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
+    ADMIN_PASSWORD = os.environ['ADMIN_PASSWORD']
+    JELLYFIN_URL = "http://jellyfin.media.svc.cluster.local:8096"
+
+    print("=" * 50)
+    print("Jellyfin Automated Setup (Database Method)")
+    print("=" * 50)
+    print()
+
+    # Wait for Jellyfin
+    print("[1/5] Waiting for Jellyfin...")
+    for i in range(30):
+        try:
+            result = subprocess.run(['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', f'{JELLYFIN_URL}/health'],
+                                   capture_output=True, text=True)
+            if result.stdout == '200':
+                print(" Jellyfin is ready")
+                break
+        except:
+            pass
+        time.sleep(10)
+    else:
+        print("ERROR: Jellyfin not ready after 5 minutes")
+        exit(1)
+
+    # Copy database from pod
+    print("\n[2/5] Copying database from Jellyfin pod...")
+    pod = run("kubectl get pod -n media -l app=jellyfin -o jsonpath='{.items[0].metadata.name}'")
+    run(f"kubectl exec -n media {pod} -- tar cf - /config/data/jellyfin.db 2>/dev/null | tar xf - -C /tmp/ 2>/dev/null")
+
+    # Create admin user in database
+    print("\n[3/5] Creating admin user in database...")
+    conn = sqlite3.connect('/tmp/config/data/jellyfin.db')
+    cursor = conn.cursor()
+
+    # Check if admin already exists
+    cursor.execute("SELECT Username FROM Users WHERE Username = ?", (ADMIN_USERNAME,))
+    if cursor.fetchone():
+        print(f" Admin user '{ADMIN_USERNAME}' already exists, skipping")
+        conn.close()
+    else:
+        user_id = str(uuid.uuid4()).replace('-', '')
+        password_hash = generate_password_hash(ADMIN_PASSWORD)
+
+        # Insert user with all required fields
+        cursor.execute("""
+            INSERT INTO Users (
+                Id, Username, Password,
+                AuthenticationProviderId, PasswordResetProviderId,
+                InvalidLoginAttemptCount, LoginAttemptsBeforeLockout,
+                MaxActiveSessions, EnableUserPreferenceAccess,
+                SubtitleMode, PlayDefaultAudioTrack, EnableAutoLogin
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id, ADMIN_USERNAME, password_hash,
+            'Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider',
+            'Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider',
+            0, -1, 0, 1, 0, 1, 0
+        ))
+
+        # Grant admin permissions
+        cursor.execute('INSERT INTO Permissions (UserId, Kind, Value) VALUES (?, 0, ?)', (user_id, user_id))
+
+        conn.commit()
+        conn.close()
+        print(f" Admin user '{ADMIN_USERNAME}' created successfully")
+
+        # Copy database back to pod
+        print("\n[4/5] Copying database back to Jellyfin...")
+        run(f"kubectl cp /tmp/config/data/jellyfin.db media/{pod}:/config/data/jellyfin.db")
+
+        # Restart Jellyfin to load new database
+        print("Restarting Jellyfin pod...")
+        run(f"kubectl delete pod -n media {pod}")
+        time.sleep(15)
+        run("kubectl wait --for=condition=Ready pod -l app=jellyfin -n media --timeout=120s")
+        time.sleep(5)
+
+    # Test authentication
+    print("\n[5/5] Testing authentication...")
+    pod = run("kubectl get pod -n media -l app=jellyfin -o jsonpath='{.items[0].metadata.name}'")
+
+    auth_cmd = f"""kubectl exec -n media {pod} -- curl -s -X POST '{JELLYFIN_URL}/Users/AuthenticateByName' \
+        -H 'Content-Type: application/json' \
+        -H 'X-Emby-Authorization: MediaBrowser Client="Setup", Device="K8s", DeviceId="setup-001", Version="1.0"' \
+        -d '{{"Username":"{ADMIN_USERNAME}","Pw":"{ADMIN_PASSWORD}"}}'"""
+
+    result = run(auth_cmd)
+
+    if "AccessToken" in result:
+        print(" SUCCESS! Jellyfin is ready!")
+        print()
+        print("=" * 50)
+        print(f"URL: https://jellyfin.example.com")
+        print(f"Username: {ADMIN_USERNAME}")
+        print(f"Password: (from secret)")
+        print("=" * 50)
+    else:
+        print(f" Authentication test failed: {result[:200]}")
+        print("User may have been created but authentication needs verification")
+
+    # Cleanup
+    run("rm -rf /tmp/config")
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-setup
+  namespace: media
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: jellyfin-setup
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: default
+      containers:
+      - name: setup
+        image: ${IMAGE_PYTHON_SLIM}
+        command:
+          - /bin/bash
+          - -c
+          - |
+            apt-get update -qq && apt-get install -y -qq curl kubectl > /dev/null 2>&1
+            python3 /scripts/setup.py
+        envFrom:
+        - secretRef:
+            name: jellyfin-admin-credentials
+        volumeMounts:
+        - name: setup-script
+          mountPath: /scripts
+      volumes:
+      - name: setup-script
+        configMap:
+          name: jellyfin-setup-script-db
+          defaultMode: 0755

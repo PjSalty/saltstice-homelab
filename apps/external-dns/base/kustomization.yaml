@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - rbac/serviceaccount.yaml
+  - rbac/clusterrole.yaml
+  - rbac/clusterrolebinding.yaml
+  # Secrets managed by infrastructure/secrets repo (GitOps rotation)
+  # See: kubernetes/clusters/homelab/secrets-source.yaml
+  # Deployments
+  - deployments/deployment.yaml
+  - pdb/pdb.yaml
+  # ConfigMaps
+  - configmaps/cloudflare-dns-state.yaml
+  # CronJobs - Bidirectional DNS sync (Source of Truth per automation.md)
+  # K8s  NetBox: Ingress/IngressRoute hosts to NetBox IP objects
+  - cronjobs/k8s-to-netbox-sync.yaml
+  # NetBox  AdGuard: NetBox IP objects to AdGuard DNS rewrites
+  - cronjobs/netbox-dns-sync.yaml
+  # Cloudflare: Public DNS A records for services labeled dns.example.com/public=true
+  - cronjobs/cloudflare-dns-sync.yaml
+  - autoscaling

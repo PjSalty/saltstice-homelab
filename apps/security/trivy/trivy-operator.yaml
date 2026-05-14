@@ -1,0 +1,205 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trivy-operator
+  namespace: security
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: trivy-operator
+rules:
+  # Core resources - read access
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "replicationcontrollers", "services", "endpoints", "persistentvolumes", "persistentvolumeclaims", "resourcequotas", "limitranges", "nodes", "namespaces", "serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  # Secrets and ConfigMaps - full access for operator state
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Events - for logging
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Apps resources
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # Batch resources - full access for scan jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Aqua security CRDs
+  - apiGroups: ["aquasecurity.github.io"]
+    resources: ["vulnerabilityreports", "configauditreports", "exposedsecretreports", "sbomreports", "clustersbomreports", "clusterinfraassessmentreports", "infraassessmentreports", "rbacassessmentreports", "clusterrbacassessmentreports", "clusterconfigauditreports", "clustercompliancereports"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # RBAC resources for scanning
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    verbs: ["get", "list", "watch"]
+  # Networking
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["get", "list", "watch"]
+  # Custom resources
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: trivy-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trivy-operator
+subjects:
+  - kind: ServiceAccount
+    name: trivy-operator
+    namespace: security
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trivy-operator
+  namespace: security
+  labels:
+    app: trivy-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trivy-operator
+  template:
+    metadata:
+      labels:
+        app: trivy-operator
+    spec:
+      serviceAccountName: trivy-operator
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: trivy-operator
+          # Version managed by config/versions.yaml via Flux substituteFrom
+          image: ${IMAGE_TRIVY_OPERATOR}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OPERATOR_NAMESPACE
+              value: security
+            # Scan all namespaces except system/bootstrap namespaces.
+            # gitlab-runner is excluded because CI pods are ephemeral —
+            # they disappear before the scan job's helper container
+            # finishes, producing a flood of BackoffLimitExceeded events.
+            - name: OPERATOR_EXCLUDE_NAMESPACES
+              value: "kube-system,kube-public,kube-node-lease,flux-system,vpa,goldilocks,gitlab-runner"
+            - name: TRIVY_SERVER_INSECURE
+              value: "false"
+            - name: OPERATOR_LOG_DEV_MODE
+              value: "false"
+            - name: OPERATOR_SCAN_JOB_TIMEOUT
+              value: "15m"
+            - name: OPERATOR_SCAN_JOB_RETRY_AFTER
+              value: "60s"
+            - name: OPERATOR_CONCURRENT_SCAN_JOBS_LIMIT
+              value: "3"
+            - name: TRIVY_SEVERITY
+              value: "CRITICAL,HIGH,MEDIUM"
+            # Disable all scanners except vulnerability scanning
+            - name: OPERATOR_VULNERABILITY_SCANNER_ENABLED
+              value: "true"
+            - name: OPERATOR_SBOM_GENERATION_ENABLED
+              value: "false"  # Disable SBOM to reduce load
+            - name: OPERATOR_CONFIG_AUDIT_SCANNER_ENABLED
+              value: "false"
+            - name: OPERATOR_RBAC_ASSESSMENT_SCANNER_ENABLED
+              value: "false"
+            - name: OPERATOR_INFRA_ASSESSMENT_SCANNER_ENABLED
+              value: "false"
+            - name: OPERATOR_CLUSTER_COMPLIANCE_ENABLED
+              value: "false"
+            - name: OPERATOR_EXPOSED_SECRET_SCANNER_ENABLED
+              value: "false"
+            # Rate limiting
+            - name: OPERATOR_BATCH_DELETE_LIMIT
+              value: "3"
+            - name: OPERATOR_BATCH_DELETE_DELAY
+              value: "15s"
+            # Slower reconciliation to avoid overwhelming API
+            - name: OPERATOR_VULN_SCAN_WORKSPACE_REQUEUE_PERIOD
+              value: "5m"
+            # Enable Prometheus metrics
+            - name: OPERATOR_METRICS_BIND_ADDRESS
+              value: ":8080"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 9090
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 18
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+# Service to expose metrics
+apiVersion: v1
+kind: Service
+metadata:
+  name: trivy-operator
+  namespace: security
+  labels:
+    app: trivy-operator
+spec:
+  selector:
+    app: trivy-operator
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+# ServiceMonitor for Prometheus scraping
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: trivy-operator
+  namespace: security
+  labels:
+    app: trivy-operator
+spec:
+  selector:
+    matchLabels:
+      app: trivy-operator
+  namespaceSelector:
+    matchNames:
+      - security
+  endpoints:
+    - port: metrics
+      interval: 60s
+      path: /metrics

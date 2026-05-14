@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: qemu_guest_agent
+  author: salty
+  license: "Proprietary"
+  description: QEMU guest agent — enables Proxmox VM introspection
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

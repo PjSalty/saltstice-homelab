@@ -1,0 +1,20 @@
+# PodDisruptionBudget for External-DNS
+# Ensures DNS record management availability during node maintenance
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: external-dns-pdb
+  namespace: external-dns
+  labels:
+    app: external-dns
+spec:
+  # Allow a single-replica Deployment to be evicted during node drain.
+  # `minAvailable: 1` on a 1-replica workload makes the PDB perpetually
+  # block — every drain has to be force-deleted manually. `maxUnavailable: 1`
+  # lets eviction proceed; the trade-off is a brief gap in DNS sync until
+  # the rescheduled pod is Ready.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: external-dns

@@ -1,0 +1,75 @@
+---
+# Traefik ingress controller - needs broad access to route traffic
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-traefik-ingress
+  namespace: traefik
+spec:
+  description: "Allow Traefik to receive external traffic and route to backends"
+  endpointSelector: {}
+  ingress:
+    # Allow external traffic (LoadBalancer) + kubelet probes + other nodes.
+    # `host` is required for kubelet → pod liveness/readiness probes on :8080/ping.
+    # Without `host`, kubelet probes time out and all 4 Traefik pods go 0/1 Ready,
+    # removing them from the Service backend and blackholing the <internal-ip> VIP
+    # (external HTTPS outage). `remote-node` covers probes delegated from other nodes.
+    - fromEntities:
+        - world
+        - cluster
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+            - port: "9100"
+              protocol: TCP
+  egress:
+    # Allow routing to all application backends (ACCEPTED RISK —
+    # Ingress controller must reach any backend port. Per Cilium docs,
+    # backend pods' own ingress policies provide isolation.)
+    - toEntities:
+        - cluster
+    # Allow external VM backends and Let's Encrypt ACME
+    - toCIDR:
+        - <internal-ip>/16
+        - <mgmt-ip>/24
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+            - port: "8006"
+              protocol: TCP
+            - port: "8081"
+              protocol: TCP
+            - port: "9000"
+              protocol: TCP
+            - port: "51821"
+              protocol: TCP
+    # Allow Let's Encrypt ACME (external HTTPS)
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

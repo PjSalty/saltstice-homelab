@@ -1,0 +1,88 @@
+---
+# Media Drop Watcher Alerts
+# Monitors the media classification and move pipeline
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: media-drop-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    - name: media-drop-watcher
+      interval: 1m
+      rules:
+        # Items stuck in media-drop for over 1 hour (permission issues, unclassifiable)
+        - alert: MediaDropItemsStuck
+          expr: media_drop_watcher_items_stuck > 0
+          for: 1h
+          labels:
+            severity: warning
+            category: media
+          annotations:
+            summary: "{{ $value }} items stuck in media-drop"
+            description: |
+              Items have been stuck in media-drop for over 1 hour.
+              Usually caused by permission issues or unclassifiable filenames.
+            action: "kubectl logs -n media -l app.kubernetes.io/name=media-drop-watcher --tail=100 | grep STUCK"
+
+        # NFS file move errors
+        - alert: MediaDropMoveFailing
+          expr: increase(media_drop_watcher_move_errors_total[30m]) > 3
+          for: 10m
+          labels:
+            severity: critical
+            category: media
+          annotations:
+            summary: "Media file moves failing ({{ $value }} errors in 30m)"
+            description: |
+              The media-drop-watcher is unable to move files via NFS.
+              Check NFS mount health and TrueNAS filesystem permissions.
+            action: "kubectl logs -n media -l app.kubernetes.io/name=media-drop-watcher --tail=100 | grep 'Move failed'"
+
+        # Too many processing errors
+        - alert: MediaDropProcessingErrors
+          expr: increase(media_drop_watcher_items_failed_total[1h]) > 5
+          for: 15m
+          labels:
+            severity: warning
+            category: media
+          annotations:
+            summary: "{{ $value }} media processing failures in last hour"
+            description: |
+              Multiple items are failing to move from media-drop to library directories.
+              Check SSH logs and TrueNAS filesystem permissions.
+            action: "kubectl logs -n media -l app.kubernetes.io/name=media-drop-watcher --tail=200 | grep FAIL"
+
+        # Items in drop but no processing happening
+        - alert: MediaDropNoProcessing
+          expr: |
+            (time() - media_drop_watcher_last_processing_timestamp > 7200)
+            and media_drop_watcher_items_in_drop > 0
+          for: 30m
+          labels:
+            severity: warning
+            category: media
+          annotations:
+            summary: "{{ $value }} items in drop but no processing for 2+ hours"
+            description: |
+              Items are present in media-drop but the watcher hasn't processed
+              anything in over 2 hours. The pod may be stuck or crashed.
+            action: "kubectl get pods -n media -l app.kubernetes.io/name=media-drop-watcher"
+
+        # Watcher pod is down
+        - alert: MediaDropWatcherDown
+          expr: up{job="media-drop-watcher"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            category: media
+          annotations:
+            summary: "Media drop watcher is down"
+            description: |
+              The media-drop-watcher pod is not responding to Prometheus scrapes.
+              New media uploads will not be classified or moved to libraries.
+            action: "kubectl describe pod -n media -l app.kubernetes.io/name=media-drop-watcher"

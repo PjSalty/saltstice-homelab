@@ -1,0 +1,35 @@
+---
+- name: Reconfigure Harbor
+  ansible.builtin.command:
+    cmd: ./prepare
+    chdir: "{{ harbor_install_dir }}/harbor"
+  become: true
+  changed_when: true
+  environment:
+    TERM: dumb
+  notify: Restart Harbor
+
+- name: Restart Harbor
+  community.docker.docker_compose_v2:
+    project_src: "{{ harbor_install_dir }}/harbor"
+    state: restarted
+  become: true
+
+# Triggered after a harbor admin password DB row is reconciled so harbor-core
+# discards any cached basic-auth state it has for user_id=1.
+- name: Restart harbor-core
+  community.docker.docker_container:
+    name: harbor-core
+    state: started
+    restart: true
+  become: true
+  notify: Wait for harbor-core healthy
+
+- name: Wait for harbor-core healthy
+  community.docker.docker_container_info:
+    name: harbor-core
+  register: _harbor_core_post
+  retries: 30
+  delay: 5
+  until: (_harbor_core_post.container.State.Health.Status | default('')) == 'healthy'
+  become: true

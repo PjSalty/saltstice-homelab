@@ -1,0 +1,101 @@
+---
+# GitLab Runner Auto-Registration Job
+# Creates a runner via GitLab API and stores the authentication token
+# Uses GitLab 16+ runner authentication token method (not deprecated registration tokens)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitlab-runner-auto-register
+  namespace: gitlab-runner
+  annotations:
+    # Allow recreation when config changes
+    kustomize.toolkit.fluxcd.io/ssa: merge
+spec:
+  ttlSecondsAfterFinished: 86400  # Cleanup after 24 hours
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: register
+        image: ${IMAGE_KUBECTL}
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+
+          echo "=== GitLab Runner Auto-Registration ==="
+          echo "GitLab URL: $${GITLAB_URL}"
+
+          # Check if runner-token already exists using kubectl
+          echo "Checking if runner-token already exists in K8s secret..."
+          EXISTING_TOKEN=$(kubectl get secret gitlab-runner-token -o jsonpath='{.data.runner-token}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+
+          if [ -n "$$EXISTING_TOKEN" ] && echo "$$EXISTING_TOKEN" | grep -q "^glrt-"; then
+            echo "Valid runner token found. Skipping registration."
+            exit 0
+          fi
+          echo "No valid runner-token found."
+
+          echo "No valid runner-token found. Creating new runner via GitLab API..."
+
+          # Create runner using GitLab 16+ API (POST /api/v4/user/runners)
+          # This returns an authentication token (glrt-...)
+          RESPONSE=$(curl -sk "$${GITLAB_URL}/api/v4/user/runners" \
+            --header "PRIVATE-TOKEN: $${GITLAB_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "runner_type": "instance_type",
+              "description": "Kubernetes Runner for Homelab",
+              "tag_list": ["kubernetes", "homelab", "infrastructure"],
+              "run_untagged": true,
+              "locked": false,
+              "access_level": "not_protected",
+              "maintenance_note": "Auto-registered by K8s Job"
+            }' 2>/dev/null)
+
+          echo "API Response: $$RESPONSE"
+
+          # Extract the authentication token
+          RUNNER_TOKEN=$(echo "$$RESPONSE" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+
+          if [ -z "$$RUNNER_TOKEN" ]; then
+            echo "ERROR: Failed to get runner token from API response"
+            echo "Response was: $$RESPONSE"
+            exit 1
+          fi
+
+          echo "Got runner token: $${RUNNER_TOKEN:0:10}..."
+
+          # Store token in Kubernetes secret
+          echo "Updating Kubernetes secret with runner token..."
+          kubectl patch secret gitlab-runner-token --type=merge \
+            -p "{\"stringData\":{\"runner-token\":\"$$RUNNER_TOKEN\"}}"
+          echo "Secret updated successfully!"
+
+          # Restart the runner deployment to pick up new token
+          echo "Restarting gitlab-runner deployment..."
+          kubectl rollout restart deployment/gitlab-runner
+
+          echo "=== Registration complete! ==="
+        env:
+        - name: GITLAB_URL
+          value: "https://gitlab.${DOMAIN}"
+        - name: GITLAB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitlab-admin-token
+              key: token
+      serviceAccountName: gitlab-runner
+# Note: gitlab-admin-token secret is created by Ansible playbook:
+# ansible-playbook ansible/playbooks/gitlab-runner-setup.yml -i ansible/inventory/hosts.yml
+#
+# This Job expects the secret to already exist with a valid GitLab API token.

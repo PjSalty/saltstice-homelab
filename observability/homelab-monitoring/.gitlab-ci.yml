@@ -1,0 +1,65 @@
+# Monitoring Stack Pipeline
+# Validates Prometheus rules and Grafana dashboards
+
+include:
+  - project: 'infrastructure/homelab-ci-templates'
+    file: '/kubernetes.yml'
+  - project: 'infrastructure/homelab-ci-templates'
+    file: '/lint.yml'
+  - project: 'infrastructure/homelab-ci-templates'
+    file: '/security.yml'
+  - project: 'infrastructure/homelab-ci-templates'
+    file: '/notify.yml'
+
+workflow:
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == "main"
+
+stages:
+  - validate
+  - security
+  - deploy
+
+validate:rules:
+  stage: validate
+  # Version pinned per ADR-0001 SSOT - Researched: 2026-02-02 (LTS release)
+  image: harbor.example.com/dockerhub-proxy/prom/prometheus:v3.11.1@sha256:759ea6db49103737f2a6f420b0d1632062d8ad99dec086c76db605fd0bf23e15
+  script:
+    - find . -name "*rules*.yaml" -exec promtool check rules {} \;
+  rules:
+    - changes:
+        - "**/rules/*.yaml"
+
+validate:dashboards:
+  stage: validate
+  image: harbor.example.com/dockerhub-proxy/library/python:3.14-alpine@sha256:6f873e340e6786787a632c919ecfb1d2301eb33ccfbe9f0d0add16cbc0892116
+  script:
+    # Use --user for non-root runner
+    - pip install --user jsonschema==4.25.0
+    - export PATH="$HOME/.local/bin:$PATH"
+    # Validate each JSON file is valid JSON
+    - |
+      FAILED=0
+      for file in $(find . -name "*dashboard*.json"); do
+        echo "Validating: $file"
+        if ! python -c "import json; json.load(open('$file'))"; then
+          echo "INVALID JSON: $file"
+          FAILED=1
+        fi
+      done
+      exit $FAILED
+  rules:
+    - changes:
+        - "**/dashboards/*.json"
+
+kubernetes:validate:
+  extends: .lint:yamllint
+
+security:gitleaks:
+  extends: .security:gitleaks
+  stage: security
+  needs: []
+
+notify:failure:
+  extends: .notify:failure

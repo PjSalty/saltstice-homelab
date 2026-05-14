@@ -1,0 +1,75 @@
+# adguard-credentials: AdGuard Home credentials for external-dns
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: adguard-credentials
+  namespace: external-dns
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-network
+    kind: SecretStore
+  target:
+    name: adguard-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        ADGUARD_URL: "http://<internal-ip>:80"
+        ADGUARD_USER: "admin"
+        ADGUARD_PASSWORD: "{{ .adguard_password }}"
+  data:
+  - secretKey: adguard_password
+    remoteRef:
+      key: cred-ssot-network
+      property: CRED_EXTERNAL_DNS_ADGUARD_PASSWORD
+---
+# cloudflare-api-token: Cloudflare API token for external-dns
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: cloudflare-api-token
+  namespace: external-dns
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-network
+    kind: SecretStore
+  target:
+    name: cloudflare-api-token
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        CF_API_TOKEN: "{{ .cf_api_token }}"
+        CF_ZONE_NAME: "example.com"
+  data:
+  - secretKey: cf_api_token
+    remoteRef:
+      key: cred-ssot-network
+      property: CRED_EXTERNAL_DNS_CLOUDFLARE_API_TOKEN
+---
+# netbox-credentials: NetBox API credentials for external-dns
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: netbox-credentials
+  namespace: external-dns
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-network
+    kind: SecretStore
+  target:
+    name: netbox-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        NETBOX_URL: "https://<internal-ip>"
+        NETBOX_TOKEN: "{{ .netbox_token }}"
+  data:
+  - secretKey: netbox_token
+    remoteRef:
+      key: cred-ssot-network
+      property: CRED_EXTERNAL_DNS_NETBOX_TOKEN

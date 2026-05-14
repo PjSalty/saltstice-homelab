@@ -1,0 +1,71 @@
+---
+# Reusable SSOT credential loader
+# Import at the top of any playbook that uses roles requiring credentials:
+#   - ansible.builtin.import_playbook: includes/load-ssot.yml
+#
+# Works correctly with --limit (run_once + delegate_to avoids host filtering)
+
+- name: Load and distribute SSOT credentials
+  hosts: all
+  gather_facts: false
+  tags:
+    - always
+  vars:
+    # Search paths for credentials.sops.yaml (first match wins)
+    _ssot_candidates:
+      - "{{ lookup('env', 'SSOT_FILE') }}"
+      - "{{ playbook_dir + '/../../credentials/credentials.sops.yaml' }}"
+      - "{{ playbook_dir + '/../credentials/credentials.sops.yaml' }}"
+      - "/ansible/credentials/credentials.sops.yaml"
+    ansible_become: false
+    ansible_connection: local
+  tasks:
+    - name: Find SSOT credentials file # noqa: run-once[task]
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ _ssot_candidates | select() | list }}"
+      register: ssot_search
+      delegate_to: localhost
+      run_once: true
+      when: item | length > 0
+      tags:
+        - always
+
+    - name: Set SSOT file path # noqa: run-once[task]
+      ansible.builtin.set_fact:
+        _ssot_path: "{{ (ssot_search.results | selectattr('stat.exists', 'defined') | selectattr('stat.exists') | first).item }}"
+      run_once: true
+      when: ssot_search.results | selectattr('stat.exists', 'defined') | selectattr('stat.exists') | list | length > 0
+      tags:
+        - always
+
+    - name: Decrypt and load SSOT credentials # noqa: run-once[task]
+      ansible.builtin.command:
+        cmd: "sops -d {{ _ssot_path }}"
+      environment:
+        SOPS_AGE_KEY_FILE: "{{ lookup('env', 'SOPS_AGE_KEY_FILE') | default('/etc/sops/age/keys.txt', true) }}"
+      register: ssot_raw
+      changed_when: false
+      no_log: true
+      delegate_to: localhost
+      run_once: true
+      when: _ssot_path is defined
+      tags:
+        - always
+
+    - name: Set creds fact (from SSOT)
+      ansible.builtin.set_fact:
+        creds: "{{ ssot_raw.stdout | from_yaml }}"
+        cacheable: true
+      no_log: true
+      when: _ssot_path is defined
+      tags:
+        - always
+
+    - name: Set creds fact (empty fallback)
+      ansible.builtin.set_fact:
+        creds: {}
+        cacheable: true
+      when: _ssot_path is not defined
+      tags:
+        - always

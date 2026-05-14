@@ -1,0 +1,54 @@
+---
+# File: kubernetes/apps/jellyfin/base/jobs/media-directories-job.yaml
+# Purpose: Pre-requisite job to create media library directories on TrueNAS NFS
+# Validates: kubectl get job -n media jellyfin-media-directories
+# Note: This job runs BEFORE Jellyfin starts to ensure directories exist
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-media-directories
+  namespace: media
+  labels:
+    app: jellyfin-prereq
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: jellyfin-prereq
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-dirs
+          image: ${IMAGE_BUSYBOX}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Creating Jellyfin media library directories..."
+              mkdir -p /media/movies
+              mkdir -p /media/tv-shows
+              mkdir -p /media/anime
+              mkdir -p /media/anime-movies
+              mkdir -p /media/music
+              echo ""
+              echo "Directory structure:"
+              ls -la /media/
+              echo ""
+              echo "Media directories created successfully!"
+          volumeMounts:
+            - name: media
+              mountPath: /media
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      volumes:
+        - name: media
+          nfs:
+            server: ${NFS_SERVER}
+            path: /mnt/tank/media

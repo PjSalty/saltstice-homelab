@@ -1,0 +1,23 @@
+---
+# VPA for CrowdSec LAPI
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: crowdsec-lapi
+  namespace: crowdsec
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: crowdsec-crowdsec-lapi
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: crowdsec-lapi
+        minAllowed:
+          cpu: 25m
+          memory: 64Mi
+        maxAllowed:
+          cpu: 1000m
+          memory: 512Mi

@@ -1,0 +1,116 @@
+# Application: Vaultwarden (OIDCWarden fork with SSO support)
+# Version: v2025.10.3-1 (latest as of 2025-12-03)
+# Updated: 2025-12-03
+# Source: https://github.com/Timshel/OIDCWarden
+# Note: OIDCWarden is the SSO-enabled fork, official vaultwarden/server lacks SSO
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: vaultwarden
+    namespace: vaultwarden
+    labels:
+        app: vaultwarden
+spec:
+    replicas: 1
+    strategy:
+        type: Recreate
+    selector:
+        matchLabels:
+            app: vaultwarden
+    template:
+        metadata:
+            labels:
+                app: vaultwarden
+        spec:
+            # Pod-level security context
+            securityContext:
+                seccompProfile:
+                    type: RuntimeDefault
+                runAsNonRoot: true
+                fsGroup: 1000
+                fsGroupChangePolicy: OnRootMismatch
+            containers:
+                - name: vaultwarden
+                  image: ${IMAGE_VAULTWARDEN}
+                  imagePullPolicy: Always
+                  securityContext:
+                    runAsNonRoot: true
+                    runAsUser: 1000
+                    allowPrivilegeEscalation: false
+                    capabilities:
+                      drop:
+                        - ALL
+                  ports:
+                    - containerPort: 80
+                      name: http
+                      protocol: TCP
+                    - containerPort: 3012
+                      name: websocket
+                      protocol: TCP
+                  env:
+                    - name: DOMAIN
+                      value: https://vault.example.com
+                    - name: SIGNUPS_ALLOWED
+                      value: "false"
+                    - name: INVITATIONS_ALLOWED
+                      value: "true"
+                    - name: WEBSOCKET_ENABLED
+                      value: "true"
+                    - name: LOG_LEVEL
+                      value: info
+                    - name: EXTENDED_LOGGING
+                      value: "true"
+                    - name: SHOW_PASSWORD_HINT
+                      value: "false"
+                    # SSO Configuration
+                    - name: SSO_ENABLED
+                      value: "true"
+                    - name: SSO_ONLY
+                      value: "false"
+                    - name: SSO_CLIENT_ID
+                      value: vaultwarden-sso
+                    - name: SSO_CLIENT_SECRET
+                      valueFrom:
+                        secretKeyRef:
+                          name: sso-client-secrets
+                          key: VAULTWARDEN_CLIENT_SECRET
+                    - name: SSO_AUTHORITY
+                      value: https://auth.example.com/application/o/vaultwarden/
+                    - name: SSO_CALLBACK_PATH
+                      value: /identity/connect/oidc-signin
+                    - name: SSO_SCOPES
+                      value: openid email profile offline_access
+                    - name: SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION
+                      value: "false"
+                    - name: SSO_CLIENT_CACHE_EXPIRATION
+                      value: "0"
+                    - name: SSO_FRONTEND
+                      value: override
+                  volumeMounts:
+                    - name: data
+                      mountPath: /data
+                  resources:
+                    requests:
+                        memory: 256Mi
+                        cpu: 100m
+                    limits:
+                        memory: 512Mi
+                        cpu: 500m
+                  livenessProbe:
+                    httpGet:
+                        path: /alive
+                        port: http
+                    initialDelaySeconds: 30
+                    periodSeconds: 30
+                    timeoutSeconds: 5
+                  readinessProbe:
+                    httpGet:
+                        path: /alive
+                        port: http
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+                    timeoutSeconds: 5
+            volumes:
+                - name: data
+                  persistentVolumeClaim:
+                    claimName: vaultwarden-data

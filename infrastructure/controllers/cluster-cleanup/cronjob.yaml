@@ -1,0 +1,235 @@
+---
+# Cluster Cleanup CronJob
+# Automatically cleans up orphaned resources to keep cluster tidy
+# Runs daily at 3 AM
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cluster-cleanup
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-cleanup
+  namespace: cluster-cleanup
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-cleanup
+rules:
+  # List namespaces to iterate across cluster
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+  # Read and delete ReplicaSets
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "delete"]
+  # Read and delete completed/failed Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "delete"]
+  # Read Deployments to verify ReplicaSet ownership
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  # Read and delete Pods stuck in failed states
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-cleanup
+subjects:
+  - kind: ServiceAccount
+    name: cluster-cleanup
+    namespace: cluster-cleanup
+roleRef:
+  kind: ClusterRole
+  name: cluster-cleanup
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cleanup-script
+  namespace: cluster-cleanup
+data:
+  cleanup.sh: |
+    #!/bin/sh
+    set -e
+
+    echo "=== Cluster Cleanup Job ==="
+    echo "Started at: $(date)"
+    echo ""
+
+    # Clean up old ReplicaSets with 0 replicas
+    echo "=== Cleaning orphaned ReplicaSets ==="
+    deleted_rs=0
+    for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
+      # Skip system namespaces
+      case "$ns" in
+        kube-system|kube-public|kube-node-lease|flux-system) continue ;;
+      esac
+
+      for rs in $(kubectl get rs -n "$ns" -o jsonpath='{range .items[?(@.spec.replicas==0)]}{.metadata.name}{" "}{end}' 2>/dev/null); do
+        # Verify it's actually empty
+        status_replicas=$(kubectl get rs "$rs" -n "$ns" -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
+        if [ "$status_replicas" = "0" ] || [ -z "$status_replicas" ]; then
+          echo "Deleting orphaned RS: $ns/$rs"
+          kubectl delete rs "$rs" -n "$ns" --ignore-not-found
+          deleted_rs=$((deleted_rs + 1))
+        fi
+      done
+    done
+    echo "Deleted $deleted_rs orphaned ReplicaSets"
+    echo ""
+
+    # Clean up completed Jobs older than 24 hours
+    echo "=== Cleaning completed Jobs ==="
+    deleted_jobs=0
+    cutoff=$(date -d '24 hours ago' -Iseconds 2>/dev/null || date -v-24H -Iseconds 2>/dev/null || echo "")
+    for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
+      case "$ns" in
+        kube-system|kube-public|kube-node-lease|flux-system) continue ;;
+      esac
+
+      for job in $(kubectl get jobs -n "$ns" -o jsonpath='{range .items[?(@.status.succeeded==1)]}{.metadata.name}{" "}{end}' 2>/dev/null); do
+        completion_time=$(kubectl get job "$job" -n "$ns" -o jsonpath='{.status.completionTime}' 2>/dev/null)
+        if [ -n "$completion_time" ] && [ -n "$cutoff" ]; then
+          if [ "$completion_time" \< "$cutoff" ]; then
+            echo "Deleting old completed Job: $ns/$job"
+            kubectl delete job "$job" -n "$ns" --ignore-not-found
+            deleted_jobs=$((deleted_jobs + 1))
+          fi
+        fi
+      done
+    done
+    echo "Deleted $deleted_jobs old completed Jobs"
+    echo ""
+
+    # Clean up failed Jobs older than 24 hours
+    echo "=== Cleaning failed Jobs ==="
+    deleted_failed_jobs=0
+    for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
+      case "$ns" in
+        kube-system|kube-public|kube-node-lease|flux-system) continue ;;
+      esac
+
+      for job in $(kubectl get jobs -n "$ns" -o jsonpath='{range .items[?(@.status.conditions[0].type=="Failed")]}{.metadata.name}{" "}{end}' 2>/dev/null); do
+        start_time=$(kubectl get job "$job" -n "$ns" -o jsonpath='{.status.startTime}' 2>/dev/null)
+        if [ -n "$start_time" ] && [ -n "$cutoff" ]; then
+          if [ "$start_time" \< "$cutoff" ]; then
+            echo "Deleting old failed Job: $ns/$job"
+            kubectl delete job "$job" -n "$ns" --ignore-not-found
+            deleted_failed_jobs=$((deleted_failed_jobs + 1))
+          fi
+        fi
+      done
+    done
+    echo "Deleted $deleted_failed_jobs old failed Jobs"
+    echo ""
+
+    # Clean up failed Pods older than 1 hour
+    echo "=== Cleaning failed Pods ==="
+    deleted_pods=0
+    for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
+      case "$ns" in
+        kube-system|kube-public|kube-node-lease|flux-system) continue ;;
+      esac
+
+      for pod in $(kubectl get pods -n "$ns" --field-selector=status.phase=Failed -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        echo "Deleting failed Pod: $ns/$pod"
+        kubectl delete pod "$pod" -n "$ns" --ignore-not-found
+        deleted_pods=$((deleted_pods + 1))
+      done
+    done
+    echo "Deleted $deleted_pods failed Pods"
+    echo ""
+
+    # Clean up Evicted Pods
+    echo "=== Cleaning evicted Pods ==="
+    evicted_pods=0
+    for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
+      case "$ns" in
+        kube-system|kube-public|kube-node-lease|flux-system) continue ;;
+      esac
+
+      for pod in $(kubectl get pods -n "$ns" -o jsonpath='{range .items[?(@.status.reason=="Evicted")]}{.metadata.name}{" "}{end}' 2>/dev/null); do
+        echo "Deleting evicted Pod: $ns/$pod"
+        kubectl delete pod "$pod" -n "$ns" --ignore-not-found
+        evicted_pods=$((evicted_pods + 1))
+      done
+    done
+    echo "Deleted $evicted_pods evicted Pods"
+    echo ""
+
+    echo "=== Cleanup Summary ==="
+    echo "ReplicaSets deleted: $deleted_rs"
+    echo "Completed Jobs deleted: $deleted_jobs"
+    echo "Failed Jobs deleted: $deleted_failed_jobs"
+    echo "Failed Pods deleted: $deleted_pods"
+    echo "Evicted Pods deleted: $evicted_pods"
+    echo "Completed at: $(date)"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cluster-cleanup
+  namespace: cluster-cleanup
+spec:
+  # Run every 4 hours to keep cluster clean
+  schedule: "0 */4 * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400  # Auto-delete job after 24h
+      template:
+        metadata:
+          labels:
+            app: cluster-cleanup
+        spec:
+          serviceAccountName: cluster-cleanup
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            fsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: cleanup
+              image: ${IMAGE_KUBECTL}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              command:
+                - /bin/sh
+                - /scripts/cleanup.sh
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+          volumes:
+            - name: script
+              configMap:
+                name: cleanup-script
+                defaultMode: 0755

@@ -1,0 +1,111 @@
+---
+# Audit configuration drift — compare live state to expected
+#
+# Usage:
+#   ansible-playbook playbooks/operations/audit-config-drift.yml
+#   ansible-playbook playbooks/operations/audit-config-drift.yml --limit infrastructure
+
+- name: Audit configuration drift
+  tasks:
+    - name: Check SSH configuration
+      ansible.builtin.command:
+        cmd: cat /etc/ssh/sshd_config.d/99-hardening.conf
+      changed_when: false
+      become: true
+      register: ssh_config
+      failed_when: false
+      tags:
+        - audit
+        - ssh
+
+    - name: Report SSH config status
+      ansible.builtin.debug:
+        msg: "{{ 'PASS' if ssh_config.rc == 0 else 'DRIFT — SSH hardening config missing' }}"
+      tags:
+        - audit
+        - ssh
+
+    - name: Check UFW status
+      ansible.builtin.command:
+        cmd: ufw status verbose
+      changed_when: false
+      become: true
+      register: ufw_status
+      failed_when: false
+      tags:
+        - audit
+        - firewall
+
+    - name: Report UFW status
+      ansible.builtin.debug:
+        msg: "{{ 'PASS' if 'Status: active' in ufw_status.stdout else 'DRIFT — UFW not active' }}"
+      tags:
+        - audit
+        - firewall
+
+    - name: Check sysctl hardening
+      ansible.builtin.command:
+        cmd: sysctl kernel.kptr_restrict
+      changed_when: false
+      become: true
+      register: sysctl_check
+      failed_when: false
+      tags:
+        - audit
+        - sysctl
+
+    - name: Report sysctl status
+      ansible.builtin.debug:
+        msg: "{{ 'PASS' if 'kernel.kptr_restrict = 2' in sysctl_check.stdout else 'DRIFT — sysctl not hardened' }}"
+      tags:
+        - audit
+        - sysctl
+
+    - name: Check for unexpected users (UID >= 1000)
+      ansible.builtin.command:
+        cmd: "awk -F: '$3 >= 1000 && $1 != \"nobody\" && $1 != \"nfsnobody\" {print $1}' /etc/passwd"
+      changed_when: false
+      become: true
+      register: system_users
+      tags:
+        - audit
+        - users
+
+    - name: Report user status
+      ansible.builtin.debug:
+        msg: "Users with UID >= 1000: {{ system_users.stdout_lines }}"
+      tags:
+        - audit
+        - users
+
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+      become: true
+      tags:
+        - audit
+        - services
+
+    - name: Build running services list
+      ansible.builtin.set_fact:
+        running_services:
+          stdout_lines: "{{ ansible_facts.services | dict2items | selectattr('value.state', 'equalto', 'running') | map(attribute='key') | sort | list }}"
+      tags:
+        - audit
+        - services
+
+    - name: Check open listening ports
+      ansible.builtin.command:
+        cmd: ss -tlnp
+      changed_when: false
+      become: true
+      register: open_ports
+      tags:
+        - audit
+        - ports
+
+    - name: Display open ports
+      ansible.builtin.debug:
+        var: open_ports.stdout_lines
+      tags:
+        - audit
+        - ports

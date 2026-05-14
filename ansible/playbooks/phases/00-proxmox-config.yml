@@ -1,0 +1,10 @@
+---
+# Phase 0: Proxmox Hypervisor Configuration
+# Run against Proxmox host to prepare for VM provisioning
+
+- name: Configure Proxmox hypervisor
+  hosts: proxmox
+  roles:
+    - proxmox
+  tags:
+    - proxmox

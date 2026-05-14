@@ -1,0 +1,38 @@
+---
+# Replicate wildcard TLS certificate to all labeled namespaces
+# Source: cert-manager/wildcard-tls (issued by letsencrypt-prod)
+# Target: any namespace with label tls.example.com/wildcard=true
+# Keeps secrets synchronized on cert renewal
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: sync-wildcard-tls
+  annotations:
+    policies.kyverno.io/title: Sync Wildcard TLS Certificate
+    policies.kyverno.io/category: Certificate Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      Replicates the wildcard TLS certificate from cert-manager namespace
+      to all namespaces labeled with tls.example.com/wildcard=true.
+      Synchronized on source secret changes (cert renewal).
+spec:
+  rules:
+    - name: clone-wildcard-tls
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  tls.example.com/wildcard: "true"
+      generate:
+        generateExisting: true
+        synchronize: true
+        apiVersion: v1
+        kind: Secret
+        name: wildcard-tls
+        namespace: "{{request.object.metadata.name}}"
+        clone:
+          namespace: cert-manager
+          name: wildcard-tls

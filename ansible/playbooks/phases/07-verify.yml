@@ -1,0 +1,92 @@
+---
+# Phase 7: Verification
+# Validates the entire infrastructure is healthy
+
+- name: Verify all hosts reachable
+  gather_facts: false
+  tasks:
+    - name: Ping all hosts
+      ansible.builtin.ping:
+      tags:
+        - verify
+
+- name: Verify infrastructure services
+  hosts: infrastructure
+  tasks:
+    - name: Check Docker daemon
+      ansible.builtin.command:
+        cmd: docker info
+      changed_when: false
+      become: true
+      tags:
+        - verify
+
+- name: Verify load balancers
+  hosts: load_balancers
+  tasks:
+    - name: Check HAProxy status
+      ansible.builtin.systemd:
+        name: haproxy
+      become: true
+      register: haproxy_status
+      tags:
+        - verify
+
+    - name: Verify HAProxy is running
+      ansible.builtin.assert:
+        that: haproxy_status.status.ActiveState == 'active'
+        fail_msg: "HAProxy is not running"
+      tags:
+        - verify
+
+    - name: Check keepalived status
+      ansible.builtin.systemd:
+        name: keepalived
+      become: true
+      register: keepalived_status
+      tags:
+        - verify
+
+    - name: Verify keepalived is running
+      ansible.builtin.assert:
+        that: keepalived_status.status.ActiveState == 'active'
+        fail_msg: "keepalived is not running"
+      tags:
+        - verify
+
+- name: Verify Kubernetes cluster
+  hosts: masters[0]
+  tasks:
+    - name: Check K8s node status
+      ansible.builtin.command:
+        cmd: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide
+      changed_when: false
+      become: true
+      register: k8s_nodes
+      tags:
+        - verify
+
+    - name: Display K8s nodes
+      ansible.builtin.debug:
+        var: k8s_nodes.stdout_lines
+      tags:
+        - verify
+
+    - name: Check FluxCD status
+      ansible.builtin.command:
+        cmd: flux get kustomizations
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+        PATH: "/var/lib/rancher/rke2/bin:{{ ansible_env.PATH }}"
+      changed_when: false
+      become: true
+      register: flux_status
+      failed_when: false
+      tags:
+        - verify
+
+    - name: Display Flux status
+      ansible.builtin.debug:
+        var: flux_status.stdout_lines
+      tags:
+        - verify

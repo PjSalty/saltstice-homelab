@@ -1,0 +1,238 @@
+---
+# Semaphore GitLab Repository Configuration Job
+# Automatically configures Semaphore to use the homelab GitLab repository
+# Uses Semaphore REST API for proper secret encryption
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: semaphore-setup-gitlab-repo
+  namespace: semaphore
+spec:
+  ttlSecondsAfterFinished: 86400  # Clean up after 24 hours
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+      - name: wait-for-semaphore
+        image: ${IMAGE_CURL}
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for Semaphore API to be ready..."
+          until curl -sf http://semaphore:3000/api/ping > /dev/null 2>&1; do
+            echo "Semaphore not ready yet, waiting..."
+            sleep 5
+          done
+          echo "Semaphore API is ready!"
+      containers:
+      - name: configure-repo
+        image: ${IMAGE_CURL}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+
+          echo "=== Semaphore GitLab Repository Setup via REST API ==="
+          echo ""
+
+          SEMAPHORE_URL="http://semaphore:3000"
+          GITLAB_REPO="https://gitlab.example.com/infrastructure/homelab-ansible.git"
+
+          echo "Step 1: Authenticating with Semaphore API..."
+
+          # Login and save cookie
+          LOGIN_RESP=$$(curl -s -c /tmp/cookies.txt -X POST "$${SEMAPHORE_URL}/api/auth/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"auth\": \"$${SEMAPHORE_ADMIN}\", \"password\": \"$${SEMAPHORE_ADMIN_PASSWORD}\"}" \
+            -w "\nHTTP_CODE:%{http_code}")
+
+          HTTP_CODE=$$(echo "$$LOGIN_RESP" | grep "HTTP_CODE:" | cut -d: -f2)
+          if [ "$$HTTP_CODE" != "204" ]; then
+            echo "ERROR: Login failed with HTTP $$HTTP_CODE"
+            exit 1
+          fi
+          echo "Login successful"
+
+          echo ""
+          echo "Step 2: Checking for existing project..."
+
+          PROJECTS=$$(curl -s -b /tmp/cookies.txt "$${SEMAPHORE_URL}/api/projects")
+          PROJECT_ID=$$(echo "$$PROJECTS" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+
+          if [ -n "$$PROJECT_ID" ] && [ "$$PROJECT_ID" != "" ]; then
+            echo "Found existing project with ID: $${PROJECT_ID}"
+          else
+            echo "Creating new project..."
+            PROJECT_RESP=$$(curl -s -b /tmp/cookies.txt -X POST "$${SEMAPHORE_URL}/api/projects" \
+              -H "Content-Type: application/json" \
+              -d '{"name": "Homelab Infrastructure", "alert": false, "max_parallel_tasks": 1}')
+            PROJECT_ID=$$(echo "$$PROJECT_RESP" | grep -o '"id":[0-9]*' | cut -d: -f2)
+            echo "Created project with ID: $${PROJECT_ID}"
+          fi
+
+          echo ""
+          echo "Step 3: Checking for existing SSH key..."
+
+          KEYS=$$(curl -s -b /tmp/cookies.txt "$${SEMAPHORE_URL}/api/project/$${PROJECT_ID}/keys")
+          VALID_KEY=$$(echo "$$KEYS" | grep -o '"type":"login_password"' | head -1)
+          KEY_ID=$$(echo "$$KEYS" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+
+          if [ -n "$$VALID_KEY" ]; then
+            echo "Found existing HTTPS token key with ID: $${KEY_ID}"
+          else
+            echo "Creating HTTPS token key for GitLab access..."
+
+            printf '{"name":"GitLab HTTPS Token","type":"login_password","project_id":%s,"login_password":{"login":"automation","password":"%s"}}' \
+              "$${PROJECT_ID}" "$${GITLAB_TOKEN}" > /tmp/key-payload.json
+
+            KEY_RESP=$$(curl -s -b /tmp/cookies.txt -X POST "$${SEMAPHORE_URL}/api/project/$${PROJECT_ID}/keys" \
+              -H "Content-Type: application/json" \
+              -d @/tmp/key-payload.json \
+              -w "\nHTTP_CODE:%{http_code}")
+
+            HTTP_CODE=$$(echo "$$KEY_RESP" | grep "HTTP_CODE:" | cut -d: -f2)
+            if [ "$$HTTP_CODE" = "201" ] || [ "$$HTTP_CODE" = "200" ]; then
+              KEYS=$$(curl -s -b /tmp/cookies.txt "$${SEMAPHORE_URL}/api/project/$${PROJECT_ID}/keys")
+              KEY_ID=$$(echo "$$KEYS" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+              echo "Created HTTPS token key with ID: $${KEY_ID}"
+            else
+              echo "ERROR: Failed to create key. HTTP: $$HTTP_CODE"
+              echo "Response: $$KEY_RESP"
+              exit 1
+            fi
+          fi
+
+          echo ""
+          echo "Step 4: Checking for existing inventory..."
+
+          INVENTORIES=$$(curl -s -b /tmp/cookies.txt "$${SEMAPHORE_URL}/api/project/$${PROJECT_ID}/inventory")
+          INV_ID=$$(echo "$$INVENTORIES" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+
+          if [ -n "$$INV_ID" ] && [ "$$INV_ID" != "" ]; then
+            echo "Found existing inventory with ID: $${INV_ID}"
+          else
+            echo "Creating inventory..."
+            INV_RESP=$$(curl -s -b /tmp/cookies.txt -X POST "$${SEMAPHORE_URL}/api/project/$${PROJECT_ID}/inventory" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"name\": \"Homelab Inventory\",
+                \"project_id\": $${PROJECT_ID},
+                \"type\": \"file\",
+                \"inventory\": \"inventory/hosts.yml\",
+                \"ssh_key_id\": $${KEY_ID}
+              }")
+            INV_ID=$$(echo "$$INV_RESP" | grep -o '"id":[0-9]*' | cut -d: -f2)
+            echo "Created inventory with ID: $${INV_ID}"
+          fi
+
+          echo ""
+          echo "Step 5: Checking for existing repository..."
+
+          REPOS=$$(curl -s -b /tmp/cookies.txt "$${SEMAPHORE_URL}/api/project/$${PROJECT_ID}/repositories")
+          REPO_ID=$$(echo "$$REPOS" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+
+          if [ -n "$$REPO_ID" ] && [ "$$REPO_ID" != "" ]; then
+            echo "Found existing repository with ID: $${REPO_ID}"
+          else
+            echo "Creating GitLab repository..."
+            REPO_RESP=$$(curl -s -b /tmp/cookies.txt -X POST "$${SEMAPHORE_URL}/api/project/$${PROJECT_ID}/repositories" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"name\": \"Homelab GitLab\",
+                \"project_id\": $${PROJECT_ID},
+                \"git_url\": \"$${GITLAB_REPO}\",
+                \"git_branch\": \"main\",
+                \"ssh_key_id\": $${KEY_ID}
+              }")
+            REPO_ID=$$(echo "$$REPO_RESP" | grep -o '"id":[0-9]*' | cut -d: -f2)
+            echo "Created repository with ID: $${REPO_ID}"
+          fi
+
+          echo ""
+          echo "Step 6: Creating task templates..."
+
+          # Get current templates count
+          TEMPLATES=$$(curl -s -b /tmp/cookies.txt "$${SEMAPHORE_URL}/api/project/$${PROJECT_ID}/templates")
+          TEMPLATE_COUNT=$$(echo "$$TEMPLATES" | grep -o '"id"' | wc -l)
+
+          if [ "$$TEMPLATE_COUNT" -gt 0 ]; then
+            echo "Found $${TEMPLATE_COUNT} existing templates, skipping creation"
+          else
+            echo "Creating task templates..."
+
+            # Template definitions — playbook paths relative to repo root
+            PLAYBOOKS="playbooks/site.yml:Converge All
+          playbooks/operations/patch-systems.yml:Patch Systems
+          playbooks/operations/deploy-certificates.yml:Deploy VM Certificates
+          playbooks/operations/rotate-credentials.yml:Credential Rotation
+          playbooks/operations/backup-verify.yml:Backup Verify
+          playbooks/operations/audit-config-drift.yml:Audit Config Drift
+          playbooks/operations/scale-cluster.yml:Scale Cluster
+          playbooks/bootstrap.yml:Bootstrap (Full)
+          playbooks/phases/02-base-config.yml:Phase: Base Config
+          playbooks/phases/03-infrastructure.yml:Phase: Infrastructure
+          playbooks/phases/04-load-balancers.yml:Phase: Load Balancers
+          playbooks/phases/05-kubernetes.yml:Phase: Kubernetes"
+
+            echo "$$PLAYBOOKS" | while IFS=: read -r playbook name; do
+              echo "  Creating template: $$name"
+              curl -s -b /tmp/cookies.txt -X POST "$${SEMAPHORE_URL}/api/project/$${PROJECT_ID}/templates" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"name\": \"$${name}\",
+                  \"project_id\": $${PROJECT_ID},
+                  \"repository_id\": $${REPO_ID},
+                  \"inventory_id\": $${INV_ID},
+                  \"playbook\": \"$${playbook}\",
+                  \"app\": \"ansible\",
+                  \"type\": \"\"
+                }" > /dev/null
+            done
+
+            echo "Created all templates"
+          fi
+
+          echo ""
+          echo "=== Configuration Complete ==="
+          echo "Project ID: $${PROJECT_ID}"
+          echo "SSH Key ID: $${KEY_ID}"
+          echo "Inventory ID: $${INV_ID}"
+          echo "Repository ID: $${REPO_ID}"
+          echo "Repository URL: $${GITLAB_REPO}"
+          echo ""
+          echo "Semaphore configured via REST API"
+          echo "SSH key properly encrypted by Semaphore"
+          echo "All playbooks from ansible/playbooks/ are now accessible"
+          echo ""
+          echo "Login at: https://semaphore.example.com"
+          echo "Username: admin"
+          echo "Password: $${SEMAPHORE_ADMIN_PASSWORD}"
+        env:
+        - name: SEMAPHORE_ADMIN
+          value: "admin"
+        - name: SEMAPHORE_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: semaphore-secrets
+              key: admin-password
+        - name: GITLAB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: semaphore-secrets
+              key: gitlab-token

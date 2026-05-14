@@ -1,0 +1,99 @@
+---
+# Media namespace - Jellyfin + media-drop-watcher
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-media
+  namespace: media
+spec:
+  description: "Allow Jellyfin media server"
+  endpointSelector: {}
+  ingress:
+    # Allow Traefik for web UI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "8096"
+              protocol: TCP
+    # Allow Cloudflare Tunnel (cloudflared) for external access
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cloudflared
+      toPorts:
+        - ports:
+            - port: "8096"
+              protocol: TCP
+    # Allow direct LoadBalancer access for streaming
+    - fromEntities:
+        - world
+        - cluster
+      toPorts:
+        - ports:
+            - port: "8096"
+              protocol: TCP
+            - port: "7359"
+              protocol: UDP
+    # Allow Prometheus to scrape media-drop-watcher metrics
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9091"
+              protocol: TCP
+  egress:
+    # Allow intra-namespace (user-sync → jellyfin, media-drop-watcher)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+      toPorts:
+        - ports:
+            - port: "8096"
+              protocol: TCP
+    # Allow Authentik for SSO
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: authentik
+      toPorts:
+        - ports:
+            - port: "9443"
+              protocol: TCP
+    # Allow NFS storage (TrueNAS)
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "2049"
+              protocol: TCP
+    # Allow Traefik for OIDC SSO (auth.example.com via LoadBalancer)
+    # toCIDR 0.0.0.0/0 doesn't match Cilium LoadBalancer IPs
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "8443"
+              protocol: TCP
+    # Allow metadata providers (TMDb, TVDB, etc.)
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

@@ -1,0 +1,445 @@
+---
+# NetBox Automation Scripts ConfigMap
+# Contains Python scripts for population and DNS sync
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netbox-scripts
+  namespace: netbox
+  labels:
+    app: netbox
+data:
+  netbox-populate-infrastructure.py: |
+    #!/usr/bin/env python3
+    """
+    NetBox Infrastructure Population Script
+    Populates NetBox with all homelab infrastructure as source of truth
+
+    Usage:
+        Set environment variable NETBOX_TOKEN before running
+        python3 netbox-populate-infrastructure.py
+    """
+
+    import requests
+    import json
+    import os
+    import sys
+    import yaml
+    from typing import Dict, List, Optional
+    import urllib3
+
+    # Disable SSL warnings for self-signed certs
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    NETBOX_URL = os.getenv("NETBOX_URL", "https://netbox.example.com")
+    NETBOX_TOKEN = os.getenv("NETBOX_TOKEN", "")
+
+    class NetBoxPopulator:
+        def __init__(self, url: str, token: str):
+            self.url = url.rstrip('/')
+            self.token = token
+            self.headers = {
+                "Authorization": f"Token {token}",
+                "Content-Type": "application/json"
+            }
+            self.session = requests.Session()
+            self.session.headers.update(self.headers)
+            self.session.verify = False
+
+        def get_or_create(self, endpoint: str, data: Dict, search_field: str = "name") -> Dict:
+            """Get existing object or create new one"""
+            # Search for existing
+            search_value = data.get(search_field)
+            response = self.session.get(
+                f"{self.url}/api/{endpoint}/",
+                params={search_field: search_value}
+            )
+
+            if response.status_code == 200:
+                results = response.json().get("results", [])
+                if results:
+                    print(f"  Found existing {endpoint}: {search_value}")
+                    return results[0]
+
+            # Create new
+            response = self.session.post(
+                f"{self.url}/api/{endpoint}/",
+                json=data
+            )
+
+            if response.status_code in [200, 201]:
+                print(f"   Created {endpoint}: {search_value}")
+                return response.json()
+            else:
+                print(f"   Failed to create {endpoint}: {response.status_code} - {response.text}")
+                return None
+
+        def populate_sites(self):
+            """Create site structure"""
+            print("\n=== Populating Sites ===")
+
+            site = self.get_or_create("dcim/sites", {
+                "name": "Homelab",
+                "slug": "homelab",
+                "description": "Home laboratory infrastructure",
+                "physical_address": "Home",
+                "status": "active"
+            })
+
+            return site
+
+        def populate_manufacturers(self):
+            """Create manufacturers"""
+            print("\n=== Populating Manufacturers ===")
+
+            manufacturers = {}
+            for mfg in ["Proxmox", "Generic", "TrueNAS", "Custom"]:
+                manufacturers[mfg] = self.get_or_create("dcim/manufacturers", {
+                    "name": mfg,
+                    "slug": mfg.lower()
+                })
+
+            return manufacturers
+
+        def populate_device_roles(self):
+            """Create device roles"""
+            print("\n=== Populating Device Roles ===")
+
+            roles_data = {
+                "Hypervisor": {"color": "9c27b0", "vm_role": False},
+                "Infrastructure": {"color": "2196f3", "vm_role": True},
+                "Load Balancer": {"color": "ff9800", "vm_role": True},
+                "Kubernetes Master": {"color": "4caf50", "vm_role": True},
+                "Kubernetes Worker": {"color": "8bc34a", "vm_role": True},
+                "Storage": {"color": "607d8b", "vm_role": False}
+            }
+
+            roles = {}
+            for role_name, config in roles_data.items():
+                roles[role_name] = self.get_or_create("dcim/device-roles", {
+                    "name": role_name,
+                    "slug": role_name.lower().replace(" ", "-"),
+                    "color": config["color"],
+                    "vm_role": config["vm_role"]
+                })
+
+            return roles
+
+        def populate_device_types(self):
+            """Create device types"""
+            print("\n=== Populating Device Types ===")
+
+            manufacturers = self.populate_manufacturers()
+
+            types_data = [
+                {"name": "Proxmox VE Server", "manufacturer": "Proxmox", "model": "proxmox-ve", "u_height": 1},
+                {"name": "TrueNAS Core", "manufacturer": "TrueNAS", "model": "truenas-core", "u_height": 1},
+                {"name": "Virtual Machine", "manufacturer": "Generic", "model": "vm", "u_height": 0},
+            ]
+
+            types = {}
+            for type_data in types_data:
+                mfg_name = type_data.pop("manufacturer")
+                type_data["manufacturer"] = manufacturers[mfg_name]["id"]
+                type_data["slug"] = type_data["model"]
+
+                types[type_data["name"]] = self.get_or_create("dcim/device-types", type_data, "model")
+
+            return types
+
+        def populate_ip_addresses(self, site_id: int):
+            """Populate IP addresses and DNS"""
+            print("\n=== Populating IP Addresses ===")
+
+            # Infrastructure IP mappings from ansible/inventory/hosts.yml
+            ip_mappings = {
+                # Hypervisor
+                "<mgmt-ip>": {"name": "proxmox-salty", "dns": "proxmox.example.com", "role": "Hypervisor"},
+
+                # Infrastructure
+                "<internal-ip>": {"name": "truenas", "dns": "truenas.example.com", "role": "Storage"},
+                "<mgmt-ip>": {"name": "harbor", "dns": "harbor.example.com", "role": "Infrastructure"},
+                "<mgmt-ip>": {"name": "gitlab", "dns": "gitlab.example.com", "role": "Infrastructure"},
+
+                # Load Balancers
+                "<mgmt-ip>": {"name": "haproxy-1", "dns": "haproxy-1.example.com", "role": "Load Balancer"},
+                "<mgmt-ip>": {"name": "haproxy-2", "dns": "haproxy-2.example.com", "role": "Load Balancer"},
+                "<mgmt-ip>": {"name": "vip-k8s", "dns": "k8s.example.com", "role": "VIP"},
+
+                # Kubernetes Masters
+                "<mgmt-ip>": {"name": "k8s-master-1", "dns": "k8s-master-1.example.com", "role": "Kubernetes Master"},
+                "<mgmt-ip>": {"name": "k8s-master-2", "dns": "k8s-master-2.example.com", "role": "Kubernetes Master"},
+                "<mgmt-ip>": {"name": "k8s-master-3", "dns": "k8s-master-3.example.com", "role": "Kubernetes Master"},
+
+                # Kubernetes Workers
+                "<mgmt-ip>": {"name": "k8s-worker-1", "dns": "k8s-worker-1.example.com", "role": "Kubernetes Worker"},
+                "<mgmt-ip>": {"name": "k8s-worker-2", "dns": "k8s-worker-2.example.com", "role": "Kubernetes Worker"},
+                "<mgmt-ip>": {"name": "k8s-worker-3", "dns": "k8s-worker-3.example.com", "role": "Kubernetes Worker"},
+
+                # Services (Kubernetes Ingress)
+                "<mgmt-ip>": {"name": "traefik-ingress", "dns": "*.example.com", "role": "Ingress"},
+            }
+
+            for ip, data in ip_mappings.items():
+                ip_obj = self.get_or_create("ipam/ip-addresses", {
+                    "address": f"{ip}/24",
+                    "dns_name": data["dns"],
+                    "description": f"{data['name']} - {data['role']}",
+                    "status": "active"
+                }, search_field="address")
+
+        def populate_devices(self, site_id: int):
+            """Populate devices from Ansible inventory"""
+            print("\n=== Populating Devices ===")
+
+            roles = self.populate_device_roles()
+            device_types = self.populate_device_types()
+
+            # Check if inventory file exists
+            inventory_path = "/ansible/inventory/hosts.yml"
+            if not os.path.exists(inventory_path):
+                print(f"   Warning: Ansible inventory not found at {inventory_path}")
+                print("  Skipping device population from inventory")
+                return
+
+            # Load Ansible inventory
+            with open(inventory_path, 'r') as f:
+                inventory = yaml.safe_load(f)
+
+            # Proxmox Hypervisor
+            if 'proxmox' in inventory.get('all', {}).get('children', {}):
+                proxmox_hosts = inventory['all']['children']['proxmox']['hosts']
+                for hostname, vars in proxmox_hosts.items():
+                    self.get_or_create("dcim/devices", {
+                        "name": hostname,
+                        "device_type": device_types["Proxmox VE Server"]["id"],
+                        "role": roles["Hypervisor"]["id"],
+                        "site": site_id,
+                        "status": "active",
+                        "primary_ip4": None,  # Set after creating interfaces
+                        "comments": f"Node: {vars.get('node_name', 'N/A')}"
+                    })
+
+            # Virtual Machines
+            vm_groups = {
+                'infrastructure': 'Infrastructure',
+                'load_balancers': 'Load Balancer',
+                'k8s_masters': 'Kubernetes Master',
+                'k8s_workers': 'Kubernetes Worker'
+            }
+
+            for group_name, role_name in vm_groups.items():
+                try:
+                    if group_name == 'k8s_masters' or group_name == 'k8s_workers':
+                        hosts = inventory['all']['children']['kubernetes']['children'][group_name]['hosts']
+                    else:
+                        hosts = inventory['all']['children'][group_name]['hosts']
+
+                    for hostname, vars in hosts.items():
+                        self.get_or_create("virtualization/virtual-machines", {
+                            "name": hostname,
+                            "role": roles[role_name]["id"],
+                            "site": site_id,
+                            "status": "active",
+                            "vcpus": 2,  # Default values
+                            "memory": 4096,
+                            "disk": 50,
+                            "comments": f"VM ID: {vars.get('vm_id', 'N/A')}, IP: {vars.get('ansible_host', 'N/A')}"
+                        })
+                except KeyError as e:
+                    print(f"   Warning: Group {group_name} not found in inventory: {e}")
+                    continue
+
+    def main():
+        if not NETBOX_TOKEN:
+            print(" NETBOX_TOKEN environment variable not set")
+            sys.exit(1)
+
+        populator = NetBoxPopulator(NETBOX_URL, NETBOX_TOKEN)
+
+        print(f"NetBox URL: {NETBOX_URL}")
+        print("=" * 60)
+
+        # Populate in order
+        site = populator.populate_sites()
+        if not site:
+            print(" Failed to create site")
+            sys.exit(1)
+
+        populator.populate_manufacturers()
+        populator.populate_device_roles()
+        populator.populate_device_types()
+        populator.populate_ip_addresses(site["id"])
+        populator.populate_devices(site["id"])
+
+        print("\n" + "=" * 60)
+        print(" NetBox population complete!")
+        print(f"  View at: {NETBOX_URL}")
+
+    if __name__ == "__main__":
+        main()
+
+  netbox-dns-sync.py: |
+    #!/usr/bin/env python3
+    """
+    NetBox  AdGuard Home DNS Sync
+    Synchronizes DNS records from NetBox to AdGuard Home
+
+    Usage:
+        Set environment variables NETBOX_TOKEN, ADGUARD_USERNAME, ADGUARD_PASSWORD
+        python3 netbox-dns-sync.py
+    """
+
+    import requests
+    import json
+    import os
+    import sys
+    import urllib3
+    from typing import Dict, List
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # Configuration
+    NETBOX_URL = os.getenv("NETBOX_URL", "https://netbox.example.com")
+    NETBOX_TOKEN = os.getenv("NETBOX_TOKEN", "")
+    ADGUARD_URL = os.getenv("ADGUARD_URL", "https://adguard.example.com")
+    ADGUARD_USER = os.getenv("ADGUARD_USERNAME", "admin")
+    ADGUARD_PASS = os.getenv("ADGUARD_PASSWORD", "")
+    DNS_ZONE = "example.com"
+
+    class NetBoxDNSSync:
+        def __init__(self):
+            self.netbox = requests.Session()
+            self.netbox.headers.update({
+                "Authorization": f"Token {NETBOX_TOKEN}",
+                "Content-Type": "application/json"
+            })
+            self.netbox.verify = False
+
+            self.adguard = requests.Session()
+            self.adguard.auth = (ADGUARD_USER, ADGUARD_PASS)
+            self.adguard.verify = False
+
+        def get_netbox_ips(self) -> List[Dict]:
+            """Fetch all IP addresses from NetBox with DNS names"""
+            print("Fetching IP addresses from NetBox...")
+
+            response = self.netbox.get(f"{NETBOX_URL}/api/ipam/ip-addresses/", params={
+                "dns_name__ic": DNS_ZONE  # Case-insensitive contains
+            })
+
+            if response.status_code != 200:
+                print(f" Failed to fetch IPs: {response.status_code}")
+                return []
+
+            results = response.json().get("results", [])
+            print(f"  Found {len(results)} IP addresses with DNS names")
+
+            dns_records = []
+            for ip in results:
+                if ip.get("dns_name"):
+                    # Extract IP address (remove /24 suffix)
+                    addr = ip["address"].split("/")[0]
+                    dns_name = ip["dns_name"]
+
+                    dns_records.append({
+                        "domain": dns_name,
+                        "answer": addr
+                    })
+
+            return dns_records
+
+        def get_adguard_rewrites(self) -> List[Dict]:
+            """Get current DNS rewrites from AdGuard Home"""
+            print("Fetching DNS rewrites from AdGuard Home...")
+
+            response = self.adguard.get(f"{ADGUARD_URL}/control/rewrite/list")
+
+            if response.status_code != 200:
+                print(f" Failed to fetch rewrites: {response.status_code}")
+                return []
+
+            rewrites = response.json()
+            print(f"  Found {len(rewrites)} existing rewrites")
+            return rewrites
+
+        def add_rewrite(self, domain: str, answer: str) -> bool:
+            """Add DNS rewrite to AdGuard Home"""
+            response = self.adguard.post(f"{ADGUARD_URL}/control/rewrite/add", json={
+                "domain": domain,
+                "answer": answer
+            })
+
+            if response.status_code == 200:
+                print(f"   Added: {domain}  {answer}")
+                return True
+            else:
+                print(f"   Failed to add {domain}: {response.status_code}")
+                return False
+
+        def delete_rewrite(self, domain: str, answer: str) -> bool:
+            """Delete DNS rewrite from AdGuard Home"""
+            response = self.adguard.post(f"{ADGUARD_URL}/control/rewrite/delete", json={
+                "domain": domain,
+                "answer": answer
+            })
+
+            if response.status_code == 200:
+                print(f"   Deleted: {domain}  {answer}")
+                return True
+            else:
+                print(f"   Failed to delete {domain}: {response.status_code}")
+                return False
+
+        def sync(self):
+            """Synchronize NetBox DNS records to AdGuard Home"""
+            print("\n" + "=" * 60)
+            print("NetBox  AdGuard Home DNS Sync")
+            print("=" * 60 + "\n")
+
+            # Get data from both sources
+            netbox_records = self.get_netbox_ips()
+            adguard_rewrites = self.get_adguard_rewrites()
+
+            # Convert to sets for comparison
+            netbox_set = {(r["domain"], r["answer"]) for r in netbox_records}
+            adguard_set = {(r["domain"], r["answer"]) for r in adguard_rewrites}
+
+            # Find differences
+            to_add = netbox_set - adguard_set
+            to_delete = adguard_set - netbox_set
+
+            # Apply changes
+            print(f"\nChanges to apply:")
+            print(f"  Add: {len(to_add)}")
+            print(f"  Delete: {len(to_delete)}")
+
+            if to_add or to_delete:
+                print("\nApplying changes...")
+
+                for domain, answer in to_add:
+                    self.add_rewrite(domain, answer)
+
+                # Only delete records in our zone (safety check)
+                for domain, answer in to_delete:
+                    if DNS_ZONE in domain:
+                        self.delete_rewrite(domain, answer)
+
+                print("\n DNS sync complete!")
+            else:
+                print("\n DNS already in sync, no changes needed")
+
+    def main():
+        if not NETBOX_TOKEN:
+            print(" NETBOX_TOKEN environment variable not set")
+            sys.exit(1)
+
+        if not ADGUARD_PASS:
+            print(" ADGUARD_PASSWORD environment variable not set")
+            sys.exit(1)
+
+        syncer = NetBoxDNSSync()
+        syncer.sync()
+
+    if __name__ == "__main__":
+        main()

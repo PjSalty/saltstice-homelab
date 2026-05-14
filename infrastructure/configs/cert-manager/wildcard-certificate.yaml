@@ -1,0 +1,18 @@
+---
+# Cluster-wide wildcard TLS certificate for *.example.com + *.example.com
+# Issued by Let's Encrypt via DNS-01 challenge (acme-dns delegation)
+# Kyverno policy sync-wildcard-tls replicates this secret to all namespaces
+# *.example.com added for external access (Jellyfin NAT on non-standard port)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-tls
+  namespace: cert-manager
+spec:
+  secretName: wildcard-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.example.com"
+    - "*.example.com"

@@ -1,0 +1,44 @@
+---
+# Monitoring stack custom resources
+# Core stack (Prometheus, Grafana, AlertManager, node_exporter) deployed via
+# kube-prometheus-stack HelmRelease
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # kube-prometheus-stack HelmRelease (main monitoring stack)
+  - monitoring-release.yaml
+  # VPA autoscaling for all monitoring workloads
+  - autoscaling
+  # MKTXP removed — MCP server provides MikroTik monitoring via REST API.
+  # MKTXP leaked 27+ api-ssl connections to the router, adding CPU load.
+  # pve-exporter - Proxmox VE Prometheus Exporter
+  - pve-exporter/base
+  # idrac_exporter - Dell iDRAC Prometheus Exporter (Redfish)
+  - idrac-exporter/base
+  # Additional ServiceMonitors for applications
+  - servicemonitors
+  # Custom Grafana dashboards
+  # mikrotik-dashboard removed with mktxp
+  - grafana/dashboards/idrac-dashboard.yaml
+  - grafana/dashboards/security-overview-dashboard.yaml
+  - grafana/dashboards/kubernetes-audit-dashboard.yaml
+  - grafana/dashboards/trivy-vulnerability-dashboard.yaml
+  - grafana/dashboards/homelab-overview-dashboard.yaml
+  - grafana/dashboards/media-drop-watcher-dashboard.yaml
+  # Custom PrometheusRules for infrastructure alerts
+  - prometheus/base/rules/infrastructure-alerts.yaml
+  - prometheus/base/rules/media-drop-alerts.yaml
+  - prometheus/base/rules/trivy-security-alerts.yaml
+  - prometheus/base/rules/mcp-server-alerts.yaml
+  # SLO definitions (availability, latency, error budget)
+  - prometheus/base/rules/slo-alerts.yaml
+  # Flux GitOps SLO alerts (controller health, reconciliation lag)
+  - prometheus/base/rules/flux-slo.yaml
+  # Cilium agent / mesh / drop-rate alerts
+  - prometheus/base/rules/cilium-alerts.yaml
+  # Blackbox Exporter (HTTP/TCP probes for service availability)
+  - blackbox-exporter
+labels:
+  - pairs:
+      monitoring.homelab.example.com/stack: "true"

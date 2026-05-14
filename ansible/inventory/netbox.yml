@@ -1,0 +1,156 @@
+---
+# File: ansible/inventory/netbox.yml
+# Purpose: NetBox dynamic inventory for Ansible
+# Validates: ansible-inventory -i ansible/inventory/netbox.yml --list
+# Docs: https://docs.ansible.com/projects/ansible/latest/collections/netbox/netbox/nb_inventory_inventory.html
+#
+# Usage:
+#   ansible-playbook -i inventory/netbox.yml playbooks/site.yml
+#
+# Environment variables required:
+#   NETBOX_API: https://netbox.example.com (optional, defaults to this)
+#   NETBOX_TOKEN: your-api-token (required)
+
+plugin: netbox.netbox.nb_inventory
+
+api_endpoint: "{{ lookup('env', 'NETBOX_API') | default('https://netbox.example.com', true) }}"
+token: "{{ lookup('env', 'NETBOX_TOKEN') }}"
+validate_certs: true
+
+# Cache configuration for performance
+cache: true
+cache_plugin: jsonfile
+cache_timeout: 3600
+cache_connection: /tmp/netbox_inventory_cache
+
+# Fetch both devices and virtual machines
+fetch_all: true
+
+# Query filters - only include active VMs with primary IPs
+query_filters:
+  - has_primary_ip: 'true'
+  - status: 'active'
+
+# Device query filters (for physical devices if any)
+device_query_filters:
+  - has_primary_ip: 'true'
+  - status: 'active'
+
+# Virtual machine query filters
+virtual_machine_query_filters:
+  - has_primary_ip: 'true'
+  - status: 'active'
+
+# Flatten custom fields for direct access in playbooks
+# Instead of hostvars['host']['custom_fields']['field']
+# Use hostvars['host']['field']
+flatten_custom_fields: true
+
+# Group hosts by these attributes
+group_by:
+  - sites
+  - device_roles
+  - platforms
+  - cluster_group
+  - cluster
+
+# Use device role as primary group
+group_names_raw: false
+
+# Keyed groups for custom grouping
+keyed_groups:
+  # Group by role slug (e.g., role_k8s_control_plane)
+  - prefix: role
+    key: device_role.slug | default('unknown')
+    separator: "_"
+
+  # Group by cluster name (e.g., cluster_homelab_rke2)
+  - prefix: cluster
+    key: cluster.name | default('none') | regex_replace('[^a-zA-Z0-9]', '_') | lower
+    separator: "_"
+
+  # Group by site slug
+  - prefix: site
+    key: site.slug | default('unknown')
+    separator: "_"
+
+  # Group by status
+  - prefix: status
+    key: status.value | default('unknown')
+    separator: "_"
+
+  # Group by VM template (from custom field)
+  - prefix: template
+    key: custom_fields.vm_template | default('none')
+    separator: "_"
+
+  # Group GPU nodes
+  - prefix: gpu
+    key: custom_fields.gpu_passthrough | default(false) | ternary('enabled', 'disabled')
+    separator: "_"
+
+  # Group SSO-enabled services
+  - prefix: sso
+    key: custom_fields.sso_enabled | default(false) | ternary('enabled', 'disabled')
+    separator: "_"
+
+  # Group by Terraform managed status
+  - prefix: terraform
+    key: custom_fields.terraform_managed | default(false) | ternary('managed', 'unmanaged')
+    separator: "_"
+
+  # Group by backup status
+  - prefix: backup
+    key: custom_fields.backup_enabled | default(true) | ternary('enabled', 'disabled')
+    separator: "_"
+
+# Compose variables from NetBox data
+compose:
+  # Set ansible_host to the primary IPv4 address
+  ansible_host: primary_ip4.address | ansible.utils.ipaddr('address')
+
+  # Map custom fields to standard variable names
+  proxmox_vmid: custom_fields.proxmox_vmid | default(0)
+  cpu_cores: custom_fields.cpu_cores | default(2)
+  memory_mb: custom_fields.memory_mb | default(2048)
+  disk_gb: custom_fields.disk_gb | default(32)
+  gpu_enabled: custom_fields.gpu_passthrough | default(false)
+  sso_enabled: custom_fields.sso_enabled | default(false)
+  backup_enabled: custom_fields.backup_enabled | default(true)
+  terraform_managed: custom_fields.terraform_managed | default(false)
+
+  # Parse ansible_groups from JSON string to list
+  ansible_group_list: custom_fields.ansible_groups | default('[]') | from_json
+
+  # Node type from device role
+  node_type: device_role.name | default('unknown') | lower | replace(' ', '_')
+
+  # K8s role for kubernetes nodes
+  k8s_role: >-
+    {%- if 'k8s-control-plane' in (device_role.slug | default('')) -%}master
+    {%- elif 'k8s-worker' in (device_role.slug | default('')) -%}worker
+    {%- else -%}none{%- endif -%}
+
+  # DNS name from IP custom field or generate from hostname
+  dns_name: primary_ip4.dns_name | default(name + '.example.com')
+
+  # VM ID for Proxmox operations
+  vm_id: custom_fields.proxmox_vmid | default(none)
+
+  # VM template for sizing
+  vm_template: custom_fields.vm_template | default('medium')
+
+# Strict mode - fail if filters/compose expressions fail
+strict: false
+
+# Include config context for additional variables
+config_context: true
+
+# Services to include in inventory (if using services)
+services: false
+
+# Interfaces to include
+interfaces: true
+
+# Use DNS name as inventory hostname when available
+dns_name: true

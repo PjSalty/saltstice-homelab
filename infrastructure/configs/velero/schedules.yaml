@@ -1,0 +1,46 @@
+---
+# Daily full cluster backup (2am UTC, retain 3 days)
+# Databases have dedicated pg_dump CronJobs with 7-day retention
+# storage/monitoring excluded — reproducible from Git
+# media excluded — NFS-backed, TrueNAS snapshots handle data backup
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-full
+  namespace: velero
+spec:
+  schedule: "0 2 * * *"
+  template:
+    ttl: 72h0m0s
+    includedNamespaces:
+      - authentik
+      - vaultwarden
+      - docmost
+      - semaphore
+    storageLocation: default
+    defaultVolumesToFsBackup: true
+---
+# Hourly stateful app backup (retain 48h)
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: hourly-stateful
+  namespace: velero
+spec:
+  schedule: "15 * * * *"
+  template:
+    ttl: 48h0m0s
+    includedNamespaces:
+      - authentik
+      - vaultwarden
+    storageLocation: default
+    defaultVolumesToFsBackup: true
+    # Only back up PVCs and secrets for hourly (lighter)
+    includedResources:
+      - persistentvolumeclaims
+      - persistentvolumes
+      - secrets
+      - configmaps
+      - deployments
+      - statefulsets
+      - services

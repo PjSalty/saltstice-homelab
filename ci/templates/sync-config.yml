@@ -1,0 +1,34 @@
+# Config Sync Template
+# Version: 2026-04-11
+#
+# Automatically syncs shared configs to other repos
+#
+# STATUS: DISABLED
+# This job requires a custom image with git+curl+jq pre-installed.
+# The GitLab runner security context prevents package installation.
+#
+# To enable:
+# 1. Build and push: harbor.example.com/tools/git-curl-jq:latest
+# 2. Set ENABLE_CONFIG_SYNC=true in CI/CD variables
+# 3. Set GITLAB_TOKEN with API access
+# 4. Set SSH_PRIVATE_KEY for git operations
+
+.sync:config:
+  stage: deploy
+  interruptible: true
+  timeout: 10 minutes
+  image: harbor.example.com/dockerhub-proxy/alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709
+  script:
+    - echo "Config sync is currently DISABLED"
+    - echo "Requires custom image with git+curl+jq"
+    - echo "Set ENABLE_CONFIG_SYNC=true when image is available"
+  rules:
+    # Only run if explicitly enabled via CI/CD variable
+    - if: $ENABLE_CONFIG_SYNC == "true" && $CI_COMMIT_BRANCH == "main"
+      changes:
+        - .pre-commit-config.yaml
+        - .yamllint
+        - CODEOWNERS.template
+        - .gitlab/merge_request_templates/**/*
+    # Otherwise skip
+    - when: never

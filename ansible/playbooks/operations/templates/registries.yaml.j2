@@ -1,0 +1,36 @@
+# RKE2 Registry Configuration
+# Managed by Ansible — do not edit manually
+# Upstream pulls route through Harbor proxy caches
+mirrors:
+{% for mirror in rke2_custom_registry_mirrors %}
+  "{{ mirror.name }}":
+    endpoint:
+{% for ep in mirror.endpoint %}
+      - "{{ ep }}"
+{% endfor %}
+{% if mirror.rewrite is defined %}
+    rewrite:
+      {{ mirror.rewrite }}
+{% endif %}
+{% endfor %}
+  "harbor.example.com":
+    endpoint:
+      - "https://harbor.example.com"
+configs:
+{% for cfg in rke2_custom_registry_configs %}
+  "{{ cfg.endpoint }}":
+{% if cfg.config.auth is defined %}
+    auth:
+      username: "{{ cfg.config.auth.username }}"
+      password: "{{ cfg.config.auth.password }}"
+{% endif %}
+{% if cfg.config.tls is defined %}
+    tls:
+{% if cfg.config.tls.ca_file is defined %}
+      ca_file: "{{ cfg.config.tls.ca_file }}"
+{% endif %}
+{% if cfg.config.tls.insecure_skip_verify is defined %}
+      insecure_skip_verify: {{ cfg.config.tls.insecure_skip_verify | lower }}
+{% endif %}
+{% endif %}
+{% endfor %}

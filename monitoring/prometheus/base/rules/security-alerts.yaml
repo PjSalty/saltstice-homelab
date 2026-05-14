@@ -1,0 +1,115 @@
+---
+# Security-focused alerting rules for community platform and cluster hardening
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: security-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+    app.kubernetes.io/component: security
+spec:
+  groups:
+    # =========================================================================
+    # Kubernetes API Security
+    # =========================================================================
+    - name: kube-api-security
+      interval: 1m
+      rules:
+        # Excessive unauthorized access attempts
+        - alert: KubeAPIUnauthorizedAccess
+          expr: |
+            sum(rate(apiserver_request_total{code=~"401|403"}[5m])) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Excessive unauthorized Kubernetes API requests"
+            description: >-
+              More than 0.5 req/s of 401/403 responses from the API server
+              over the last 10 minutes. This may indicate credential stuffing
+              or misconfigured service accounts.
+            runbook: "Check audit logs: kubectl logs -n kube-system -l component=kube-apiserver | grep -E '401|403'"
+
+        # New cluster-admin bindings (watches for privilege escalation)
+        - alert: NewClusterAdminBinding
+          expr: |
+            count(kube_clusterrolebinding_info{clusterrolebinding=~".*", role="cluster-admin"})
+            > count(kube_clusterrolebinding_info{clusterrolebinding=~".*", role="cluster-admin"} offset 1h)
+          for: 1m
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "New cluster-admin ClusterRoleBinding detected"
+            description: >-
+              A new cluster-admin binding was created in the last hour.
+              This could indicate privilege escalation. Verify immediately.
+            runbook: "kubectl get clusterrolebinding -o json | jq '.items[] | select(.roleRef.name==\"cluster-admin\") | .metadata.name'"
+
+    # =========================================================================
+    # Pod Security Admission
+    # =========================================================================
+    - name: pod-security
+      interval: 5m
+      rules:
+        # PSA audit violations detected in API server audit logs
+        - alert: PodSecurityViolation
+          expr: |
+            sum(rate(apiserver_audit_event_total{verb="create", resource="pods"}[15m])) by (namespace)
+            - sum(rate(apiserver_audit_event_total{verb="create", resource="pods", code="201"}[15m])) by (namespace)
+            > 0.1
+          for: 15m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Pod creation failures detected in {{ $labels.namespace }}"
+            description: >-
+              Pods are being rejected in namespace {{ $labels.namespace }}.
+              This may indicate PSA policy violations or misconfigured security contexts.
+
+    # =========================================================================
+    # Community Services Health (DMZ)
+    # =========================================================================
+    - name: community-services
+      interval: 1m
+      rules:
+        # Matrix: ARCHIVED 2026-03-22 — alerts disabled, service suspended
+        # Restore these when Matrix is re-enabled
+
+        # DMZ Traefik down
+        - alert: TraefikDMZDown
+          expr: |
+            kube_deployment_status_replicas_available{namespace="traefik-dmz", deployment="traefik-dmz"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: community
+          annotations:
+            summary: "DMZ Traefik ingress controller is down"
+            description: >-
+              The DMZ Traefik instance has no available replicas.
+              All community-facing services (Matrix, Fluxer) are unreachable from external.
+
+    # =========================================================================
+    # Authentication Security
+    # =========================================================================
+    - name: auth-security
+      interval: 5m
+      rules:
+        # Excessive failed Authentik logins
+        - alert: AuthentikBruteForce
+          expr: |
+            rate(authentik_login_failed_total[5m]) > 0.1
+          for: 15m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Excessive failed Authentik login attempts"
+            description: >-
+              More than 6 failed logins per minute over 15 minutes.
+              Possible brute-force attack against SSO.

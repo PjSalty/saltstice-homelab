@@ -1,0 +1,45 @@
+---
+- name: Ensure SSL directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/ssl/certs
+    - /etc/ssl/private
+  become: true
+  tags:
+    - certificates
+
+- name: Deploy TLS certificate
+  ansible.builtin.copy:
+    content: "{{ cert_content }}"
+    dest: "{{ certificates_deploy_paths[cert_name].cert }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - cert_name is defined
+    - cert_content is defined
+    - cert_name in certificates_deploy_paths
+  become: true
+  notify: Restart pveproxy
+  tags:
+    - certificates
+
+- name: Deploy TLS private key
+  ansible.builtin.copy:
+    content: "{{ cert_key_content }}"
+    dest: "{{ certificates_deploy_paths[cert_name].key }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - cert_name is defined
+    - cert_key_content is defined
+    - cert_name in certificates_deploy_paths
+  become: true
+  tags:
+    - certificates

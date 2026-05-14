@@ -1,0 +1,4 @@
+---
+# qemu-guest-agent role defaults
+
+qemu_guest_agent_enabled: true

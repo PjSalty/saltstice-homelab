@@ -1,0 +1,12 @@
+---
+# auto-updates role defaults
+
+auto_updates_enabled: true
+auto_updates_type: security
+auto_updates_auto_reboot: false
+auto_updates_reboot_time: "03:00"
+auto_updates_mail: ""
+
+# Extra APT origins for unattended-upgrades (e.g., Proxmox PVE repos)
+# Each entry is a full Origins-Pattern string
+auto_updates_extra_origins: []

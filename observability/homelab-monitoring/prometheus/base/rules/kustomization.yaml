@@ -1,0 +1,11 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - infrastructure-alerts.yaml
+  - trivy-security-alerts.yaml
+  - slo-alerts.yaml
+  - dns-network-alerts.yaml
+  - haproxy-alerts.yaml
+  - recording-rules.yaml

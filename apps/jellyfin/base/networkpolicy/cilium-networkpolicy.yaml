@@ -1,0 +1,63 @@
+---
+# CiliumNetworkPolicy for Jellyfin media server
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: jellyfin
+  namespace: jellyfin
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: jellyfin
+  ingress:
+    # Allow web traffic from Traefik (internal + external via DMZ)
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: traefik
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: traefik-dmz
+      toPorts:
+        - ports:
+            - port: "8096"
+              protocol: TCP
+    # Allow DLNA/discovery (UDP broadcast)
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "7359"
+              protocol: UDP
+    # Allow Prometheus metrics
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "8096"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+    # NFS to TrueNAS for media library
+    - toCIDR:
+        - <vlan-cidr>
+      toPorts:
+        - ports:
+            - port: "2049"
+              protocol: TCP
+            - port: "111"
+              protocol: TCP
+    # Metadata fetching (TMDB, TVDB, etc.)
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

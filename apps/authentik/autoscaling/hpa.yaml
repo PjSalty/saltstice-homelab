@@ -1,0 +1,35 @@
+---
+# Server scales replicas on CPU. Worker, PostgreSQL, Redis are not
+# horizontally scalable; their resources are managed by VPA only.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: authentik-server
+  namespace: authentik
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: authentik-server
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600   # conservative — avoid flapping
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 120   # responsive to spikes
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

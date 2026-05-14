@@ -1,0 +1,14 @@
+---
+# Standalone StorageClass for iSCSI CSI (not Helm-managed).
+# Helm cannot update immutable StorageClass fields on chart upgrades,
+# so the HelmRelease has storageClasses: [] and we manage it here.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: iscsi-csi
+provisioner: org.democratic-csi.iscsi
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+parameters:
+  fsType: ext4

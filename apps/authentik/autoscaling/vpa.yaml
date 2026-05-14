@@ -1,0 +1,71 @@
+---
+# Server: memory-only because CPU is managed by HPA. Avoids HPA<->VPA
+# fight over CPU.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-server
+  namespace: authentik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: authentik-server
+  updatePolicy: { updateMode: Auto }
+  resourcePolicy:
+    containerPolicies:
+      - containerName: authentik
+        controlledResources: [memory]
+        minAllowed: { memory: 512Mi }
+        maxAllowed: { memory: 3Gi }
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-worker
+  namespace: authentik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: authentik-worker
+  updatePolicy: { updateMode: Auto }
+  resourcePolicy:
+    containerPolicies:
+      - containerName: authentik
+        minAllowed: { cpu: 100m, memory: 640Mi }
+        maxAllowed: { cpu: "1", memory: 2Gi }
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-postgresql
+  namespace: authentik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: authentik-postgresql
+  updatePolicy: { updateMode: Auto }
+  resourcePolicy:
+    containerPolicies:
+      - containerName: postgresql
+        minAllowed: { cpu: 50m, memory: 128Mi }
+        maxAllowed: { cpu: "1", memory: 2Gi }
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: authentik-redis
+  namespace: authentik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: authentik-redis
+  updatePolicy: { updateMode: Auto }
+  resourcePolicy:
+    containerPolicies:
+      - containerName: redis
+        minAllowed: { cpu: 10m, memory: 64Mi }
+        maxAllowed: { cpu: 500m, memory: 512Mi }

@@ -1,0 +1,31 @@
+---
+# VPA for unifi (Auto mode - applies recommendations)
+# Stateful controller - single instance, no HPA
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: unifi
+  namespace: unifi
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: unifi
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: unifi
+        minAllowed:
+          cpu: 100m
+          memory: 512Mi
+        maxAllowed:
+          cpu: "2"
+          memory: 2Gi
+      - containerName: automation
+        minAllowed:
+          cpu: 10m
+          memory: 32Mi
+        maxAllowed:
+          cpu: 100m
+          memory: 256Mi

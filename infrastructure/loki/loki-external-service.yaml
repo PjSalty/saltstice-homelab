@@ -1,0 +1,24 @@
+# Loki External Service for VM Log Ingestion
+# Exposes Loki push endpoint to infrastructure VMs via MetalLB
+# Used by Grafana Alloy running on VMs (Harbor, GitLab, etc.)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-external
+  namespace: loki
+  labels:
+    app: loki
+    purpose: vm-log-ingestion
+  annotations:
+    metallb.io/loadBalancerIPs: "${LOKI_EXTERNAL_LB_IP}"
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: single-binary

@@ -1,0 +1,61 @@
+# harbor-pull-secret: now managed by Kyverno sync-harbor-pull-secret policy
+# (clones from flux-system/harbor-pull-secret to all namespaces)
+---
+# seaweedfs-s3-credentials: S3 credentials for gitlab-runner cache
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: seaweedfs-s3-credentials
+  namespace: gitlab-runner
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: seaweedfs-s3-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/managed-by: "external-secrets"
+  data:
+  - secretKey: access-key
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_GITLAB_RUNNER_SEAWEEDFS_ACCESS_KEY
+  - secretKey: secret-key
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_GITLAB_RUNNER_SEAWEEDFS_SECRET_KEY
+---
+# gitlab-runner-token: GitLab runner registration/auth token
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: gitlab-runner-token
+  namespace: gitlab-runner
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: gitlab-runner-token
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/managed-by: "external-secrets"
+        annotations:
+          kustomize.toolkit.fluxcd.io/prune: "disabled"
+      data:
+        runner-registration-token: "{{ .runner_token }}"
+        runner-token: "{{ .runner_token }}"
+  data:
+  - secretKey: runner_token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_GITLAB_RUNNER_RUNNER_TOKEN

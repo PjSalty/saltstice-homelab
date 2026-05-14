@@ -1,0 +1,11 @@
+---
+# =============================================================================
+# AMP Game Server Variables
+# =============================================================================
+
+# Firewall
+firewall_extra_ports:
+  - { port: 8081, proto: tcp, comment: "AMP Web UI" }
+  - { port: "25000:25199", proto: tcp, comment: "Game servers" }
+  - { port: "25000:25199", proto: udp, comment: "Game servers" }
+  - { port: 9100, proto: tcp, comment: "node_exporter" }

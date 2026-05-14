@@ -1,0 +1,28 @@
+---
+# Trivy Security Scanner
+# SSOT: Versions from config/versions.yaml, network from config/network.yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: trivy
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./apps/security/trivy
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  wait: true
+  retryInterval: 2m0s
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config

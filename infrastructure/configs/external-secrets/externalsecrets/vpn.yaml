@@ -1,0 +1,27 @@
+# vpn-credentials: WireGuard Easy admin password
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: vpn-credentials
+  namespace: vpn
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-network
+    kind: SecretStore
+  target:
+    name: vpn-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/managed-by: "external-secrets"
+          app.kubernetes.io/part-of: "vpn"
+      data:
+        wgeasy-password: "{{ .wgeasy_password }}"
+  data:
+  - secretKey: wgeasy_password
+    remoteRef:
+      key: cred-ssot-network
+      property: CRED_VPN_WGEASY_PASSWORD

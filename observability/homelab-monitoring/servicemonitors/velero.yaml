@@ -1,0 +1,25 @@
+---
+# Velero ServiceMonitor
+# Velero exposes Prometheus metrics on port 8085 (/metrics endpoint).
+# Metrics include backup/restore counts, durations, and failure rates.
+# Source: https://velero.io/docs/main/metrics/
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: velero
+  namespace: monitoring
+  labels:
+    app: velero
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - velero
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: velero
+  endpoints:
+    - port: monitoring
+      path: /metrics
+      interval: 60s
+      scrapeTimeout: 30s

@@ -1,0 +1,96 @@
+---
+# SeaweedFS Bucket Initialization Job
+# Creates required S3 buckets after SeaweedFS is ready
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seaweedfs-bucket-init
+  namespace: storage
+  labels:
+    app.kubernetes.io/name: seaweedfs
+    app.kubernetes.io/component: init
+spec:
+  ttlSecondsAfterFinished: 86400  # Clean up after 24 hours
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: seaweedfs-bucket-init
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: init
+          image: harbor.example.com/dockerhub-proxy/curlimages/curl:8.11.1
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              MASTER_ENDPOINT="http://seaweedfs-master.storage.svc:9333"
+              FILER_ENDPOINT="http://seaweedfs-filer.storage.svc:8888"
+
+              echo "Waiting for SeaweedFS master to be ready..."
+              until curl -sf "$MASTER_ENDPOINT/cluster/status" >/dev/null 2>&1; do
+                echo "SeaweedFS master not ready, waiting..."
+                sleep 5
+              done
+
+              echo "Waiting for SeaweedFS filer to be ready..."
+              until curl -sf "$FILER_ENDPOINT" >/dev/null 2>&1; do
+                echo "SeaweedFS filer not ready, waiting..."
+                sleep 5
+              done
+
+              echo "SeaweedFS S3 is ready. Creating buckets..."
+
+              # Function to create bucket using S3 API
+              create_bucket() {
+                bucket_name="$1"
+                echo "Creating bucket: $bucket_name"
+
+                # Use SeaweedFS filer to create bucket directory
+                # Buckets in SeaweedFS are just directories under /buckets/
+                curl -sf -X PUT "http://seaweedfs-filer.storage.svc:8888/buckets/$bucket_name/" || true
+                echo "Bucket $bucket_name created (or already exists)"
+              }
+
+              # Create buckets
+              create_bucket "gitlab-runner-cache"
+              create_bucket "amp-backups"
+              create_bucket "velero"
+              create_bucket "backups"
+              create_bucket "etcd-backups"
+
+              echo ""
+              echo "=== Bucket Initialization Complete ==="
+              echo "Buckets created:"
+              echo "  - gitlab-runner-cache (GitLab CI cache)"
+              echo "  - amp-backups (AMP game server backups)"
+              echo "  - velero (Kubernetes backups)"
+              echo "  - backups (General backups)"
+              echo "  - etcd-backups (RKE2 etcd snapshots)"
+              echo ""
+              echo "S3 Endpoint: http://seaweedfs-s3.storage.svc:8333"
+              echo "External: https://s3.\${DOMAIN}"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

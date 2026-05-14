@@ -1,0 +1,53 @@
+---
+# VM Certificates namespace — cert-manager issues certs here,
+# cert-sync CronJob deploys wildcard cert to VMs via SSH
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-vm-certificates
+  namespace: vm-certificates
+spec:
+  description: "Allow cert management and VM cert deployment"
+  endpointSelector: {}
+  ingress:
+    # Allow cert-manager to manage secrets
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cert-manager
+  egress:
+    # Allow SSH to VMs for cert deployment
+    - toCIDR:
+        - <host>/32
+        - <host>/32
+        - 10.x0.100/32
+      toPorts:
+        - ports:
+            - port: "22"
+              protocol: TCP
+    # Allow TrueNAS API for cert import (HTTP port 80)
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "22"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+    # Allow kube-apiserver (read wildcard-tls secret)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

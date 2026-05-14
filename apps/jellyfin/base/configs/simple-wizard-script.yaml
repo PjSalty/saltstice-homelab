@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jellyfin-simple-wizard
+  namespace: media
+data:
+  wizard.sh: |
+    #!/bin/sh
+    set -e
+
+    JELLYFIN_URL="${JELLYFIN_URL:-http://jellyfin.media.svc.cluster.local:8096}"
+    ADMIN_USER="${ADMIN_USERNAME:-admin}"
+    ADMIN_PASS="${ADMIN_PASSWORD}"
+
+    echo "=== Jellyfin Simple Wizard via REST API ==="
+    echo
+
+    # Step 1: Set UI culture
+    echo "[1/5] Setting UI culture to en-US..."
+    curl -s -X POST "$JELLYFIN_URL/Startup/Configuration" \
+      -H "Content-Type: application/json" \
+      -d '{"UICulture":"en-US","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}'
+    echo " "
+
+    # Step 2: Set remote access (required before creating user)
+    echo "[2/5] Configuring remote access..."
+    curl -s -X POST "$JELLYFIN_URL/Startup/RemoteAccess" \
+      -H "Content-Type: application/json" \
+      -d '{"EnableRemoteAccess":true,"EnableAutomaticPortMapping":false}'
+    echo " "
+
+    # Step 3: Complete wizard WITHOUT creating user (API is broken in 10.x)
+    echo "[3/5] Completing wizard..."
+    curl -s -X POST "$JELLYFIN_URL/Startup/Complete"
+    echo " "
+
+    # Step 4: Create admin user via regular API (after wizard is complete)
+    echo "[4/5] Creating admin user '$ADMIN_USER' (post-wizard)..."
+    # The /Users/New endpoint works without authentication when no users exist
+    echo "{\"Name\":\"$ADMIN_USER\",\"Password\":\"$ADMIN_PASS\"}" > /tmp/user.json
+    USER_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$JELLYFIN_URL/Users/New" \
+      -H "Content-Type: application/json" \
+      -d @/tmp/user.json)
+    rm -f /tmp/user.json
+    HTTP_CODE=$(echo "$USER_RESPONSE" | tail -n 1)
+    RESPONSE_BODY=$(echo "$USER_RESPONSE" | sed '$d')
+
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+      echo " "
+    else
+      echo "  Failed (HTTP $HTTP_CODE)"
+      echo "Response: $RESPONSE_BODY"
+      # Don't exit - try to continue anyway
+    fi
+
+    # Step 5: Verify
+    echo "[5/5] Verifying..."
+    RESPONSE=$(curl -s "$JELLYFIN_URL/System/Info/Public")
+    WIZARD_DONE=$(echo "$RESPONSE" | grep -o '"StartupWizardCompleted":[^,}]*' | cut -d: -f2)
+    echo "Wizard completed: $WIZARD_DONE"
+
+    if [ "$WIZARD_DONE" = "true" ]; then
+      echo
+      echo " SUCCESS! Jellyfin wizard completed"
+      echo "  URL: https://jellyfin.example.com"
+      echo "  Username: $ADMIN_USER"
+      exit 0
+    else
+      echo
+      echo " FAILED - Wizard not completed"
+      echo "Response: $RESPONSE"
+      exit 1
+    fi

@@ -1,0 +1,13 @@
+---
+# Phase 4: Load Balancers
+# Deploys HAProxy + keepalived HA pair for K8s API load balancing
+
+- name: Load SSOT credentials
+  ansible.builtin.import_playbook: ../includes/load-ssot.yml
+
+- name: Deploy load balancers
+  hosts: load_balancers
+  roles:
+    - haproxy
+  tags:
+    - load-balancers

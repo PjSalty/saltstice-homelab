@@ -1,0 +1,184 @@
+---
+# HTTPS Redirect Middleware
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+  namespace: traefik
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+# Security Headers Middleware
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: traefik
+spec:
+  headers:
+    frameDeny: true
+    browserXssFilter: true
+    contentTypeNosniff: true
+    forceSTSHeader: true
+    stsIncludeSubdomains: true
+    stsPreload: true
+    stsSeconds: 31536000
+    customFrameOptionsValue: "SAMEORIGIN"
+    referrerPolicy: "strict-origin-when-cross-origin"
+    permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
+    contentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' wss:; frame-ancestors 'self'"
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+---
+# Security Headers for Proxmox (ExtJS requires unsafe-eval)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: proxmox-security-headers
+  namespace: traefik
+spec:
+  headers:
+    frameDeny: true
+    browserXssFilter: true
+    contentTypeNosniff: true
+    forceSTSHeader: true
+    stsIncludeSubdomains: true
+    stsPreload: true
+    stsSeconds: 31536000
+    customFrameOptionsValue: "SAMEORIGIN"
+    referrerPolicy: "strict-origin-when-cross-origin"
+    permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
+    contentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' wss:; frame-ancestors 'self'"
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+---
+# Compression Middleware
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: compression
+  namespace: traefik
+spec:
+  compress:
+    excludedContentTypes:
+      - text/event-stream
+---
+# Rate Limiting Middleware
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit
+  namespace: traefik
+spec:
+  rateLimit:
+    average: 100
+    burst: 50
+---
+# Rate Limiting Strict (for auth endpoints)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit-strict
+  namespace: traefik
+spec:
+  rateLimit:
+    average: 10
+    burst: 5
+---
+# Request Body Size Limit (10MB default, override per-service as needed)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: body-size-limit
+  namespace: traefik
+spec:
+  buffering:
+    maxRequestBodyBytes: 10485760
+---
+# Middleware Chain - Common (HTTPS + Security + Compression + Body Size Limit)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: default-chain
+  namespace: traefik
+spec:
+  chain:
+    middlewares:
+      - name: https-redirect
+      - name: security-headers
+      - name: compression
+      - name: body-size-limit
+---
+# Middleware Chain - With Rate Limiting
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: default-chain-with-ratelimit
+  namespace: traefik
+spec:
+  chain:
+    middlewares:
+      - name: https-redirect
+      - name: security-headers
+      - name: compression
+      - name: rate-limit
+---
+# Authentik Forward Auth Middleware
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: authentik-forward-auth
+  namespace: traefik
+spec:
+  forwardAuth:
+    address: http://authentik-server.authentik.svc.cluster.local/outpost.goauthentik.io/auth/traefik
+    trustForwardHeader: true
+    authResponseHeaders:
+      - Authorization
+      - X-authentik-username
+      - X-authentik-groups
+      - X-authentik-email
+      - X-authentik-name
+      - X-authentik-uid
+      - X-authentik-jwt
+      - X-authentik-meta-jwks
+      - X-authentik-meta-outpost
+      - X-authentik-meta-provider
+      - X-authentik-meta-app
+      - X-authentik-meta-version
+---
+# CrowdSec Bouncer Middleware (IPS - blocks malicious IPs)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: crowdsec-bouncer
+  namespace: traefik
+spec:
+  plugin:
+    crowdsec-bouncer:
+      enabled: true
+      crowdsecMode: stream
+      updateIntervalSeconds: 60
+      crowdsecLapiHost: crowdsec-service.crowdsec.svc.cluster.local:8080
+      crowdsecLapiScheme: http
+      crowdsecLapiKey: "${CROWDSEC_BOUNCER_KEY}"
+      forwardedHeadersTrustedIPs:
+        - <vlan-cidr>
+        - 10.x0.0/24
+        - <vlan-cidr>
+---
+# Middleware Chain - Forward Auth with Default
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: default-chain-with-auth
+  namespace: traefik
+spec:
+  chain:
+    middlewares:
+      - name: https-redirect
+      - name: security-headers
+      - name: compression
+      - name: authentik-forward-auth

@@ -1,0 +1,73 @@
+# UniFi Storage Initialization Job
+# Creates NFS directories on TrueNAS if they don't exist
+# Must complete before UniFi deployment starts
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: unifi-init-storage
+  namespace: unifi
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-5"
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: unifi-init-storage
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init-storage
+          image: ${IMAGE_BUSYBOX}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Creating UniFi storage directories on NFS..."
+
+              # Create config directory
+              if [ ! -d /mnt/unifi-config ]; then
+                echo "Directory /mnt/unifi-config does not exist, creating..."
+                mkdir -p /mnt/unifi-config
+                chmod 755 /mnt/unifi-config
+                chown 999:999 /mnt/unifi-config
+                echo "Created unifi-config directory"
+              else
+                echo "unifi-config directory already exists"
+              fi
+
+              # Create db directory
+              if [ ! -d /mnt/unifi-db ]; then
+                echo "Directory /mnt/unifi-db does not exist, creating..."
+                mkdir -p /mnt/unifi-db
+                chmod 755 /mnt/unifi-db
+                chown 999:999 /mnt/unifi-db
+                echo "Created unifi-db directory"
+              else
+                echo "unifi-db directory already exists"
+              fi
+
+              echo "Storage initialization complete"
+              ls -la /mnt/
+          volumeMounts:
+            - name: nfs-root
+              mountPath: /mnt/unifi-config
+              subPath: unifi-config
+            - name: nfs-root
+              mountPath: /mnt/unifi-db
+              subPath: unifi-db
+      volumes:
+        - name: nfs-root
+          nfs:
+            server: ${NFS_SERVER}
+            path: /mnt/tank/kubernetes

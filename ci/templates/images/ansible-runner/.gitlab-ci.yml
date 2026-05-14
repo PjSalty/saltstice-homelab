@@ -1,0 +1,37 @@
+# Build and push ansible-runner image to Harbor
+# This is a child pipeline included by the main CI
+# NOTE: The main .gitlab-ci.yml has the primary build job.
+# This file is only used if triggered as a child pipeline.
+
+build:ansible-runner:
+  stage: build
+  image:
+    name: harbor.example.com/dockerhub-proxy/library/docker:29@sha256:8bcbad4b45f0bff9d3e809d85a7ac589390f0be8acbc526850c998c35c1243fd
+    entrypoint: [""]
+  services:
+    - name: harbor.example.com/dockerhub-proxy/library/docker:29-dind@sha256:8bcbad4b45f0bff9d3e809d85a7ac589390f0be8acbc526850c998c35c1243fd
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+    IMAGE_NAME: harbor.example.com/tools/ansible-runner
+  before_script:
+    - until docker info; do sleep 1; done
+    - |
+      if [ -n "${HARBOR_USERNAME:-}" ] && [ -n "${HARBOR_PASSWORD:-}" ]; then
+        echo "$HARBOR_PASSWORD" | docker login harbor.example.com -u "$HARBOR_USERNAME" --password-stdin
+      else
+        echo "ERROR: HARBOR_USERNAME and HARBOR_PASSWORD required"
+        exit 1
+      fi
+  script:
+    - cd images/ansible-runner
+    - docker build -t ${IMAGE_NAME}:latest -t ${IMAGE_NAME}:$(date +%Y%m%d) .
+    - docker push ${IMAGE_NAME}:latest
+    - docker push ${IMAGE_NAME}:$(date +%Y%m%d)
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - images/ansible-runner/**/*

@@ -1,0 +1,151 @@
+# mcp-server-credentials: Aggregated from 4 SSOT domains via ESO merge
+# Each ExternalSecret targets the same secret name; ESO merges them.
+---
+# Core domain: Authentik, Semaphore, MCP auth
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: mcp-creds-core
+  namespace: mcp-server
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: mcp-server-credentials
+    creationPolicy: Merge
+    template:
+      type: Opaque
+      mergePolicy: Merge
+      data:
+        AUTHENTIK_API_TOKEN: "{{ .authentik_api_token }}"
+        AUTHENTIK_TOKEN: "{{ .authentik_api_token }}"
+        AUTHENTIK_AUTH_FLOW: "c9bc5867-090d-4ec2-a7ff-88479a40637f"
+        AUTHENTIK_INVAL_FLOW: "d2d68e2b-23b0-4aa0-9f14-2e0a6a518821"
+        MCP_AUTH_TOKEN: "{{ .authentik_api_token }}"
+        SEMAPHORE_TOKEN: "{{ .semaphore_token }}"
+        GITLAB_TOKEN: "{{ .gitlab_token }}"
+        HARBOR_PASSWORD: "{{ .harbor_password }}"
+  data:
+  - secretKey: authentik_api_token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTHENTIK_API_TOKEN
+  - secretKey: semaphore_token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_MCP_SEMAPHORE_TOKEN
+  - secretKey: gitlab_token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTOMATION_GITLAB_TOKEN
+  - secretKey: harbor_password
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTOMATION_HARBOR_PASSWORD
+---
+# Media domain: Jellyfin
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: mcp-creds-media
+  namespace: mcp-server
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-media
+    kind: SecretStore
+  target:
+    name: mcp-server-credentials
+    creationPolicy: Merge
+    template:
+      type: Opaque
+      mergePolicy: Merge
+      data:
+        JELLYFIN_API_KEY: "{{ .jellyfin_api_key }}"
+  data:
+  - secretKey: jellyfin_api_key
+    remoteRef:
+      key: cred-ssot-media
+      property: CRED_MEDIA_JELLYFIN_API_KEY
+---
+# Monitoring domain: Grafana, iDRAC, MikroTik, Proxmox exporter
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: mcp-creds-monitoring
+  namespace: mcp-server
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-monitoring
+    kind: SecretStore
+  target:
+    name: mcp-server-credentials
+    creationPolicy: Merge
+    template:
+      type: Opaque
+      mergePolicy: Merge
+      data:
+        IDRAC_PASSWORD: "{{ .idrac_password }}"
+        MIKROTIK_PASSWORD: "{{ .mikrotik_password }}"
+        GRAFANA_TOKEN: "{{ .grafana_admin_password }}"
+  data:
+  - secretKey: idrac_password
+    remoteRef:
+      key: cred-ssot-monitoring
+      property: CRED_MONITORING_IDRAC_PASSWORD
+  - secretKey: mikrotik_password
+    remoteRef:
+      key: cred-ssot-monitoring
+      property: CRED_MONITORING_MKTXP_PASSWORD
+  - secretKey: grafana_admin_password
+    remoteRef:
+      key: cred-ssot-monitoring
+      property: CRED_MONITORING_GRAFANA_ADMIN_PASSWORD
+---
+# Network domain: AdGuard, NetBox, Proxmox, TrueNAS, VPN
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: mcp-creds-network
+  namespace: mcp-server
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-network
+    kind: SecretStore
+  target:
+    name: mcp-server-credentials
+    creationPolicy: Merge
+    template:
+      type: Opaque
+      mergePolicy: Merge
+      data:
+        ADGUARD_PASSWORD: "{{ .adguard_password }}"
+        NETBOX_TOKEN: "{{ .netbox_token }}"
+        PROXMOX_API_TOKEN: "automation@pam!terraform={{ .proxmox_api_token }}"
+        TRUENAS_API_KEY: "{{ .truenas_api_key }}"
+        VPN_PASSWORD: "{{ .vpn_password }}"
+  data:
+  - secretKey: adguard_password
+    remoteRef:
+      key: cred-ssot-network
+      property: CRED_EXTERNAL_DNS_ADGUARD_PASSWORD
+  - secretKey: netbox_token
+    remoteRef:
+      key: cred-ssot-network
+      property: CRED_EXTERNAL_DNS_NETBOX_TOKEN
+  - secretKey: proxmox_api_token
+    remoteRef:
+      key: cred-ssot-network
+      property: INFRA_PROXMOX_API_TOKEN
+  - secretKey: truenas_api_key
+    remoteRef:
+      key: cred-ssot-network
+      property: INFRA_TRUENAS_API_KEY
+  - secretKey: vpn_password
+    remoteRef:
+      key: cred-ssot-network
+      property: CRED_VPN_WGEASY_PASSWORD

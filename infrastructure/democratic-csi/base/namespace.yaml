@@ -1,0 +1,13 @@
+# Democratic-CSI Namespace for iSCSI storage provisioner
+# Provides block storage for workloads requiring file locking (MongoDB, databases)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: democratic-csi
+  labels:
+    app.kubernetes.io/name: democratic-csi
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged
+    goldilocks.fairwinds.com/enabled: "true"

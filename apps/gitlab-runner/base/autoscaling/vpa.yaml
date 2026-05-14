@@ -1,0 +1,24 @@
+---
+# VPA for gitlab-runner (Auto mode - applies recommendations)
+# Runner has variable resource needs depending on job load
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: gitlab-runner
+  namespace: gitlab-runner
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gitlab-runner
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: gitlab-runner
+        minAllowed:
+          cpu: 50m
+          memory: 128Mi
+        maxAllowed:
+          cpu: 500m
+          memory: 512Mi

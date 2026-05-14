@@ -1,0 +1,25 @@
+# Headlamp-specific forward-auth: omits Authorization header
+# Identical to traefik/authentik-forward-auth but without passing
+# the Authorization header, so Headlamp's K8s proxy falls back to
+# the in-cluster SA token instead of using the Authentik Bearer token.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: forward-auth-no-bearer
+  namespace: headlamp
+spec:
+  forwardAuth:
+    address: http://authentik-server.authentik.svc.cluster.local/outpost.goauthentik.io/auth/traefik
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-authentik-username
+      - X-authentik-groups
+      - X-authentik-email
+      - X-authentik-name
+      - X-authentik-uid
+      - X-authentik-jwt
+      - X-authentik-meta-jwks
+      - X-authentik-meta-outpost
+      - X-authentik-meta-provider
+      - X-authentik-meta-app
+      - X-authentik-meta-version

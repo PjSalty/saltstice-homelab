@@ -1,0 +1,47 @@
+---
+# Kyverno policy engine needs webhook and cluster access
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-kyverno
+  namespace: kyverno
+spec:
+  description: "Allow Kyverno for policy enforcement"
+  endpointSelector: {}
+  ingress:
+    # Allow webhook calls from API server
+    - fromEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "9443"
+              protocol: TCP
+    # Allow internal communication (policy reports, background scans)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kyverno
+      toPorts:
+        - ports:
+            - port: "9443"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
+  egress:
+    # Allow Kubernetes API for policy checks
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

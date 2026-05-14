@@ -1,0 +1,125 @@
+# Application: Headlamp
+# Version: v0.40.0
+# Updated: 2026-04-17
+# Source: https://github.com/kubernetes-sigs/headlamp/releases
+# Auth: Traefik forward-auth (Authentik) + kubeconfig with SA token for K8s API
+# Why kubeconfig instead of -in-cluster: in -in-cluster mode the frontend
+# prompts for an auth token on every visit. With a pre-built kubeconfig
+# containing the SA token, Headlamp picks up the context silently.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: headlamp
+    namespace: headlamp
+    labels:
+        app: headlamp
+spec:
+    # replicas managed by HPA (autoscaling/hpa.yaml)
+    selector:
+        matchLabels:
+            app: headlamp
+    template:
+        metadata:
+            labels:
+                app: headlamp
+        spec:
+            serviceAccountName: headlamp
+            securityContext:
+                seccompProfile:
+                    type: RuntimeDefault
+            initContainers:
+                - name: generate-kubeconfig
+                  image: ${IMAGE_BUSYBOX}
+                  command: ["/bin/sh", "-c"]
+                  args:
+                    - |
+                      TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                      printf '%s\n' \
+                        "apiVersion: v1" \
+                        "kind: Config" \
+                        "clusters:" \
+                        "  - name: main" \
+                        "    cluster:" \
+                        "      server: https://kubernetes.default.svc:443" \
+                        "      certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt" \
+                        "users:" \
+                        "  - name: headlamp" \
+                        "    user:" \
+                        "      token: $TOKEN" \
+                        "contexts:" \
+                        "  - name: main" \
+                        "    context:" \
+                        "      cluster: main" \
+                        "      user: headlamp" \
+                        "current-context: main" \
+                        > /kubeconfig/config
+                  resources:
+                    requests:
+                      cpu: 10m
+                      memory: 16Mi
+                    limits:
+                      cpu: 50m
+                      memory: 32Mi
+                  securityContext:
+                    runAsNonRoot: true
+                    runAsUser: 100
+                    allowPrivilegeEscalation: false
+                    readOnlyRootFilesystem: true
+                    capabilities:
+                        drop:
+                            - ALL
+                  volumeMounts:
+                    - name: kubeconfig
+                      mountPath: /kubeconfig
+            containers:
+                - name: headlamp
+                  image: ${IMAGE_HEADLAMP}
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - -kubeconfig=/kubeconfig/config
+                  ports:
+                    - containerPort: 4466
+                      name: http
+                      protocol: TCP
+                  resources:
+                    requests:
+                        cpu: 100m
+                        memory: 128Mi
+                    limits:
+                        cpu: 500m
+                        memory: 512Mi
+                  livenessProbe:
+                    httpGet:
+                        path: /
+                        port: 4466
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                  readinessProbe:
+                    httpGet:
+                        path: /
+                        port: 4466
+                    initialDelaySeconds: 10
+                    periodSeconds: 5
+                  securityContext:
+                    runAsNonRoot: true
+                    runAsUser: 100
+                    allowPrivilegeEscalation: false
+                    readOnlyRootFilesystem: true
+                    capabilities:
+                        drop:
+                            - ALL
+                  volumeMounts:
+                    - name: tmp
+                      mountPath: /tmp
+                    - name: headlamp-config
+                      mountPath: /home/headlamp/.config
+                    - name: kubeconfig
+                      mountPath: /kubeconfig
+                      readOnly: true
+            volumes:
+                - name: tmp
+                  emptyDir: {}
+                - name: headlamp-config
+                  emptyDir: {}
+                - name: kubeconfig
+                  emptyDir: {}

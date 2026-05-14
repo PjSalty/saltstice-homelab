@@ -1,0 +1,99 @@
+---
+# CrowdSec IPS/IDS - Intrusion Prevention System
+# Researched: 2026-02-25
+# Chart: 0.22.0, App: v1.7.6
+# Source: https://artifacthub.io/packages/helm/crowdsec/crowdsec
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: crowdsec
+  namespace: flux-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: crowdsec
+      version: "0.23.0"
+      sourceRef:
+        kind: HelmRepository
+        name: crowdsec
+        namespace: flux-system
+      interval: 12h
+  targetNamespace: crowdsec
+  install:
+    createNamespace: false
+    timeout: 10m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 10m
+    remediation:
+      retries: 3
+  values:
+    # LAPI - Local API (central decision engine)
+    lapi:
+      replicas: 1
+      env:
+        # Enroll in CrowdSec Console for community blocklists
+        - name: ENROLL_INSTANCE_NAME
+          value: "homelab-saltstice"
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      persistentVolume:
+        data:
+          enabled: true
+          storageClassName: nfs-client
+          size: 1Gi
+        config:
+          enabled: true
+          storageClassName: nfs-client
+          size: 100Mi
+      metrics:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+
+    # Agent - Log parser (DaemonSet on worker nodes only)
+    # Scoped to workers to reduce endpoint churn on control-plane
+    agent:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      env:
+        # Collections to install (community threat intelligence)
+        - name: COLLECTIONS
+          value: "crowdsecurity/linux crowdsecurity/traefik"
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      metrics:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+      # Parse Traefik access logs
+      acquisition:
+        - namespace: traefik
+          podName: traefik-*
+          program: traefik
+      # Mount host logs for node-level detection
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+      volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true

@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# proxmox-maintenance.sh — Weekly hypervisor maintenance window
+# Safely drains K8s, shuts down VMs in dependency order, patches, and reboots.
+# Runs on the Proxmox host via systemd timer (the only thing that survives reboot).
+#
+# Post-boot verification is handled by proxmox-post-maintenance.service (oneshot).
+#
+
+set -uo pipefail
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+readonly LOG="/var/log/proxmox-maintenance.log"
+readonly LOCKFILE="/var/run/proxmox-maintenance.lock"
+readonly STATE_DIR="/var/lib/proxmox-maintenance"
+readonly SSH_KEY="{{ proxmox_maintenance_ssh_key }}"
+readonly SSH_USER="{{ proxmox_maintenance_ssh_user }}"
+readonly K8S_MASTER="{{ proxmox_maintenance_k8s_master }}"
+readonly KUBECTL="{{ proxmox_maintenance_kubectl }}"
+readonly KUBECONFIG="{{ proxmox_maintenance_kubeconfig }}"
+readonly NTFY_URL="{{ proxmox_maintenance_ntfy_url }}"
+readonly NTFY_PRIORITY="{{ proxmox_maintenance_ntfy_priority }}"
+readonly TRUENAS_IP="{{ proxmox_maintenance_truenas_ip }}"
+readonly HAPROXY_VIP="{{ proxmox_maintenance_haproxy_vip }}"
+readonly K8S_API_PORT="{{ proxmox_maintenance_k8s_api_port }}"
+readonly VM_SHUTDOWN_TIMEOUT="{{ proxmox_maintenance_vm_shutdown_timeout }}"
+readonly K8S_DRAIN_TIMEOUT="{{ proxmox_maintenance_k8s_drain_timeout }}"
+readonly MIN_DISK_GB="{{ proxmox_maintenance_min_disk_gb }}"
+
+mkdir -p "$STATE_DIR"
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+log_section() { log ""; log "========== $* =========="; }
+die() { log "FATAL: $*"; notify_failure "$*"; exit 1; }
+
+# =============================================================================
+# NOTIFICATIONS
+# =============================================================================
+
+notify() {
+    local title="$1" message="$2" priority="${3:-$NTFY_PRIORITY}"
+    curl -sf -o /dev/null \
+        -H "Title: $title" \
+        -H "Priority: $priority" \
+        -H "Tags: wrench,homelab" \
+        -d "$message" \
+        "$NTFY_URL" 2>/dev/null || true
+}
+
+notify_failure() {
+    notify "Maintenance FAILED" "$1" "urgent"
+}
+
+# =============================================================================
+# SSH HELPER — run commands on K8s master
+# =============================================================================
+
+k8s_ssh() {
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+        -i "$SSH_KEY" "${SSH_USER}@${K8S_MASTER}" \
+        "sudo $KUBECTL --kubeconfig=$KUBECONFIG $*" 2>&1
+}
+
+vm_ssh() {
+    local host="$1"; shift
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+        -i "$SSH_KEY" "${SSH_USER}@${host}" "$@" 2>&1
+}
+
+# =============================================================================
+# LOCKING
+# =============================================================================
+
+exec 200>"$LOCKFILE"
+flock -n 200 || { log "Another maintenance window is running. Exiting."; exit 0; }
+
+START_TIME=$(date +%s)
+log_section "PROXMOX MAINTENANCE WINDOW STARTING"
+log "Host: $(hostname), Date: $(date), Kernel: $(uname -r)"
+
+# =============================================================================
+# PHASE 0: PRE-FLIGHT CHECKS
+# =============================================================================
+
+log_section "PHASE 0: PRE-FLIGHT CHECKS"
+
+PREFLIGHT_FAIL=0
+
+# Check all VMs are running
+RUNNING_VMS=$(qm list 2>/dev/null | awk 'NR>1 && $3=="running" {count++} END {print count+0}')
+TOTAL_VMS=$(qm list 2>/dev/null | awk 'NR>1 && $3!="stopped" || $2==9000 {next} {count++} END {print count+0}')
+log "VMs running: $RUNNING_VMS"
+# Template (9000) is always stopped — exclude it
+EXPECTED_VMS=$(qm list 2>/dev/null | awk 'NR>1 && $1!=9000 {count++} END {print count+0}')
+STOPPED_VMS=$(qm list 2>/dev/null | awk 'NR>1 && $3!="running" && $1!=9000 {print $1, $2}')
+if [ -n "$STOPPED_VMS" ]; then
+    log "WARNING: Non-running VMs detected: $STOPPED_VMS"
+    PREFLIGHT_FAIL=1
+fi
+
+# Check disk space
+FREE_GB=$(df -BG /var/lib/vz | awk 'NR==2 {gsub("G",""); print $4}')
+log "Proxmox free disk: ${FREE_GB}GB (minimum: ${MIN_DISK_GB}GB)"
+if [ "$FREE_GB" -lt "$MIN_DISK_GB" ]; then
+    log "FAIL: Insufficient disk space"
+    PREFLIGHT_FAIL=1
+fi
+
+# Check K8s nodes
+K8S_NODES=$(k8s_ssh "get nodes --no-headers" 2>/dev/null)
+READY_NODES=$(echo "$K8S_NODES" | grep -c " Ready " || true)
+TOTAL_NODES=$(echo "$K8S_NODES" | grep -c "" || true)
+log "K8s nodes: $READY_NODES/$TOTAL_NODES Ready"
+if [ "$READY_NODES" -lt "$TOTAL_NODES" ]; then
+    log "FAIL: Not all K8s nodes are Ready"
+    PREFLIGHT_FAIL=1
+fi
+
+# Check etcd snapshots (< 24h old)
+ETCD_SNAPS=$(k8s_ssh "get nodes --no-headers" >/dev/null 2>&1 && \
+    vm_ssh "$K8S_MASTER" "sudo find /var/lib/rancher/rke2/server/db/snapshots -name '*.db' -mmin -1440 2>/dev/null | wc -l")
+log "etcd snapshots (last 24h): $ETCD_SNAPS"
+if [ "${ETCD_SNAPS:-0}" -eq 0 ]; then
+    log "FAIL: No recent etcd snapshots"
+    PREFLIGHT_FAIL=1
+fi
+
+# Check pending updates
+UPDATES=$(apt list --upgradable 2>/dev/null | grep -c upgradable || true)
+log "Pending updates: $UPDATES"
+if [ "$UPDATES" -eq 0 ]; then
+    log "No updates pending. Skipping maintenance window."
+    exit 0
+fi
+
+# Record baseline pod count
+BASELINE_PODS=$(k8s_ssh "get pods -A --no-headers --field-selector=status.phase=Running" 2>/dev/null | wc -l)
+echo "$BASELINE_PODS" > "$STATE_DIR/baseline-pods"
+log "Baseline running pods: $BASELINE_PODS"
+
+if [ "$PREFLIGHT_FAIL" -ne 0 ]; then
+    die "Pre-flight checks failed. Aborting maintenance."
+fi
+
+log "All pre-flight checks passed."
+notify "Maintenance Starting" "Starting weekly maintenance window. $UPDATES updates pending. $BASELINE_PODS pods running."
+
+# =============================================================================
+# PHASE 1: K8S GRACEFUL TEARDOWN
+# =============================================================================
+
+log_section "PHASE 1: K8S GRACEFUL TEARDOWN"
+
+# 1a. Suspend Flux
+log "Suspending Flux reconciliation..."
+k8s_ssh "get kustomization -A --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name" 2>/dev/null | \
+while read -r ns name; do
+    k8s_ssh "-n $ns patch kustomization $name --type=merge -p '{\"spec\":{\"suspend\":true}}'" >/dev/null 2>&1
+done
+log "Flux suspended."
+
+# 1b. Scale down iSCSI-backed workloads
+log "Scaling down iSCSI-backed workloads..."
+{% for workload in proxmox_maintenance_iscsi_workloads %}
+log "  Scaling {{ workload.namespace }}/{{ workload.name }} to 0..."
+k8s_ssh "-n {{ workload.namespace }} scale {{ workload.kind }}/{{ workload.name }} --replicas=0" 2>/dev/null || \
+    log "  WARNING: Failed to scale {{ workload.namespace }}/{{ workload.name }}"
+{% endfor %}
+
+# 1c. Wait for iSCSI pods to terminate (max 120s)
+log "Waiting for iSCSI workload pods to terminate..."
+ISCSI_WAIT=0
+while [ "$ISCSI_WAIT" -lt 120 ]; do
+    ISCSI_PODS=0
+{% for workload in proxmox_maintenance_iscsi_workloads %}
+    COUNT=$(k8s_ssh "-n {{ workload.namespace }} get pods -l app={{ workload.name }} --no-headers 2>/dev/null" | grep -cv "Completed" || true)
+    ISCSI_PODS=$((ISCSI_PODS + COUNT))
+{% endfor %}
+    [ "$ISCSI_PODS" -eq 0 ] && break
+    log "  Still $ISCSI_PODS iSCSI pods running, waiting... (${ISCSI_WAIT}s)"
+    sleep 10
+    ISCSI_WAIT=$((ISCSI_WAIT + 10))
+done
+
+# 1d. Verify iSCSI sessions cleared on workers
+log "Verifying iSCSI sessions cleared..."
+{% for worker_ip in proxmox_maintenance_iscsi_workers %}
+SESSIONS=$(vm_ssh "{{ worker_ip }}" "sudo iscsiadm -m session 2>/dev/null | wc -l" || echo "0")
+if [ "${SESSIONS:-0}" -gt 0 ]; then
+    log "  WARNING: {{ worker_ip }} still has $SESSIONS iSCSI sessions — forcing logout"
+    vm_ssh "{{ worker_ip }}" "sudo iscsiadm -m node --logoutall=all 2>/dev/null" || true
+    sleep 5
+fi
+{% endfor %}
+log "iSCSI sessions cleared."
+
+# 1e. Drain K8s workers (one at a time)
+log "Draining K8s workers..."
+for worker in k8s-worker-3 k8s-worker-2 k8s-worker-1; do
+    log "  Draining $worker..."
+    k8s_ssh "drain $worker --ignore-daemonsets --delete-emptydir-data --timeout=${K8S_DRAIN_TIMEOUT}s --force" 2>/dev/null || \
+        log "  WARNING: Drain of $worker had errors (continuing)"
+    sleep 15
+done
+log "Workers drained."
+
+# 1f. Drain K8s masters (one at a time, verify etcd quorum)
+log "Draining K8s masters..."
+for master in k8s-master-1 k8s-master-2 k8s-master-3; do
+    # Verify etcd quorum before draining
+    ETCD_MEMBERS=$(k8s_ssh "get endpoints -n kube-system etcd -o jsonpath='{.subsets[0].addresses[*].ip}'" 2>/dev/null | wc -w)
+    if [ "${ETCD_MEMBERS:-0}" -lt 2 ]; then
+        log "  WARNING: etcd members=$ETCD_MEMBERS, skipping drain of $master to preserve quorum"
+        continue
+    fi
+    log "  Draining $master (etcd members: $ETCD_MEMBERS)..."
+    # For masters, delegate to a different master if possible
+    k8s_ssh "drain $master --ignore-daemonsets --delete-emptydir-data --timeout=${K8S_DRAIN_TIMEOUT}s --force" 2>/dev/null || \
+        log "  WARNING: Drain of $master had errors (continuing)"
+    sleep 15
+done
+log "Masters drained."
+
+# =============================================================================
+# PHASE 2: VM SHUTDOWN
+# =============================================================================
+
+log_section "PHASE 2: VM SHUTDOWN"
+
+{% for group in proxmox_maintenance_shutdown_order %}
+log "Shutting down: {{ group.name }} (VMIDs: {{ group.vmids | join(', ') }})..."
+{% for vmid in group.vmids %}
+qm shutdown {{ vmid }} --timeout "$VM_SHUTDOWN_TIMEOUT" 2>/dev/null &
+{% endfor %}
+
+# Wait for all VMs in this group to stop
+WAIT_START=$(date +%s)
+while true; do
+    ALL_STOPPED=true
+{% for vmid in group.vmids %}
+    STATUS=$(qm status {{ vmid }} 2>/dev/null | awk '{print $2}')
+    [ "$STATUS" = "stopped" ] || ALL_STOPPED=false
+{% endfor %}
+    $ALL_STOPPED && break
+
+    ELAPSED=$(( $(date +%s) - WAIT_START ))
+    if [ "$ELAPSED" -gt "$VM_SHUTDOWN_TIMEOUT" ]; then
+        log "  WARNING: Timeout waiting for {{ group.name }} to stop. Force-stopping..."
+{% for vmid in group.vmids %}
+        STATUS=$(qm status {{ vmid }} 2>/dev/null | awk '{print $2}')
+        if [ "$STATUS" != "stopped" ]; then
+            log "  Force-stopping VMID {{ vmid }}..."
+            qm stop {{ vmid }} 2>/dev/null || true
+        fi
+{% endfor %}
+        break
+    fi
+    sleep 5
+done
+log "  {{ group.name }} stopped."
+
+{% endfor %}
+
+# Final verification: all VMs stopped
+STILL_RUNNING=$(qm list 2>/dev/null | awk 'NR>1 && $3=="running" {print $1, $2}')
+if [ -n "$STILL_RUNNING" ]; then
+    log "WARNING: VMs still running after shutdown: $STILL_RUNNING"
+fi
+
+log "All VMs stopped."
+
+# =============================================================================
+# PHASE 3: PATCH AND REBOOT
+# =============================================================================
+
+log_section "PHASE 3: PATCH AND REBOOT"
+
+log "Running apt update..."
+apt-get update -qq >> "$LOG" 2>&1
+
+# dist-upgrade (PVE-aware verb): the proxmox-kernel-* package on each
+# point release pulls new dependencies that plain `upgrade` holds back.
+# This is also the documented PVE 9.0 -> 9.1 in-place upgrade path.
+log "Running apt dist-upgrade..."
+DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -qq >> "$LOG" 2>&1
+UPGRADE_STATUS=$?
+
+# Log what was upgraded
+UPGRADED=$(apt-get dist-upgrade -s 2>/dev/null | grep "^Inst" | wc -l || echo "done")
+log "Upgrade exit code: $UPGRADE_STATUS"
+
+# Check if reboot is needed
+if [ -f /var/run/reboot-required ]; then
+    log "Reboot required. Rebooting Proxmox host..."
+    echo "$(date +%s)" > "$STATE_DIR/reboot-timestamp"
+    echo "$UPDATES" > "$STATE_DIR/updates-applied"
+
+    # Ensure post-boot service is enabled
+    systemctl enable proxmox-post-boot.service 2>/dev/null
+
+    sync
+    sleep 2
+    reboot
+else
+    log "No reboot required. Starting VMs manually..."
+    # If no reboot needed, start VMs and run post-maintenance directly
+    echo "$(date +%s)" > "$STATE_DIR/reboot-timestamp"
+    echo "$UPDATES" > "$STATE_DIR/updates-applied"
+    /usr/local/bin/proxmox-post-maintenance.sh
+fi

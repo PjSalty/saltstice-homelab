@@ -1,0 +1,14 @@
+---
+# BGPAdvertisement - Configures how MetalLB advertises IPs via BGP
+# This advertisement will announce all IPs in the homelab-pool
+# to the BGP peer (MikroTik router)
+apiVersion: metallb.io/v1beta1
+kind: BGPAdvertisement
+metadata:
+  name: homelab-bgp
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - default-pool
+  aggregationLength: 32  # Advertise individual /32 routes (per-IP)
+  localPref: 100         # BGP local preference

@@ -1,0 +1,44 @@
+---
+# External Service pointing to AMP VM (<internal-ip>)
+# AMP runs directly on the VM, not in Kubernetes
+apiVersion: v1
+kind: Service
+metadata:
+  name: amp-external
+  namespace: amp
+  labels:
+    app.kubernetes.io/name: amp
+    app.kubernetes.io/component: external-service
+spec:
+  type: ExternalName
+  externalName: amp-direct.example.com
+---
+# Alternative: Endpoints-based service for more reliable routing
+apiVersion: v1
+kind: Service
+metadata:
+  name: amp
+  namespace: amp
+  labels:
+    app.kubernetes.io/name: amp
+    app.kubernetes.io/component: external-service
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: amp
+  namespace: amp
+subsets:
+  - addresses:
+      - ip: <internal-ip>
+    ports:
+      - name: http
+        port: 8081
+        protocol: TCP

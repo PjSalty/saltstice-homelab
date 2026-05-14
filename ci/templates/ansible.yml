@@ -1,0 +1,126 @@
+# Ansible CI/CD Template
+# Version: 2026-04-11
+#
+# Usage: include in .gitlab-ci.yml with:
+#   include:
+#     - project: 'infrastructure/homelab-ci-templates'
+#       ref: main
+#       file: '/ansible.yml'
+#
+# Available jobs:
+#   .ansible:lint     - Syntax check + ansible-lint
+#   .ansible:check    - Dry-run (--check --diff)
+#   .ansible:deploy   - Full playbook run
+#   .ansible:molecule - Molecule role testing (requires DinD)
+
+.ansible:base:
+  # Use full Python image (includes curl, ssh) - slim/alpine require root for pkg install
+  image: harbor.example.com/dockerhub-proxy/library/python:3.11@sha256:ff461875d046c85ecc529e93cf2a0004f29df70566194936214115b36703d866
+  cache:
+    key: pip-ansible
+    paths:
+      - .cache/pip
+    policy: pull-push
+  before_script:
+    # No apk/apt needed - python:3.11 full image has curl/ssh
+    - pip install --user ansible==11.5.0 ansible-lint==25.6.1 pynetbox==7.4.1
+    - export PATH="$HOME/.local/bin:$PATH"
+    - mkdir -p ~/.ssh
+    - |
+      if [ -n "$SSH_PRIVATE_KEY" ]; then
+        printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+      fi
+    - echo "Host *" >> ~/.ssh/config
+    - echo "  StrictHostKeyChecking accept-new" >> ~/.ssh/config
+    - chmod 600 ~/.ssh/config
+  after_script:
+    # Security: Clean up SSH credentials after job completion
+    # Use /tmp/ci-home — container may run as non-root (uid 1000)
+    - |
+      SSH_DIR="${HOME}/.ssh"
+      [ -d "/tmp/ci-home/.ssh" ] && SSH_DIR="/tmp/ci-home/.ssh"
+      if [ -f "${SSH_DIR}/id_rsa" ]; then
+        cat /dev/urandom 2>/dev/null | head -c 4096 > "${SSH_DIR}/id_rsa" 2>/dev/null || true
+        rm "${SSH_DIR}/id_rsa" 2>/dev/null || true
+      fi
+      rm "${SSH_DIR}/config" 2>/dev/null || true
+
+.ansible:lint:
+  extends: .ansible:base
+  stage: validate
+  interruptible: true
+  timeout: 10 minutes
+  script:
+    - export PATH="$HOME/.local/bin:$PATH"
+    - cd ${ANSIBLE_DIR:-ansible}
+    - ansible-playbook --syntax-check playbooks/*.yml
+    - ansible-lint playbooks/*.yml
+  rules:
+    - changes:
+        - ansible/**/*.yml
+
+.ansible:check:
+  extends: .ansible:base
+  stage: plan
+  interruptible: true
+  timeout: 15 minutes
+  script:
+    - cd ${ANSIBLE_DIR:-ansible}
+    - export ANSIBLE_CONFIG=$CI_PROJECT_DIR/${ANSIBLE_DIR:-ansible}/ansible.cfg
+    - ansible-playbook -i inventory/hosts.yml playbooks/site.yml --check --diff
+  rules:
+    - if: $CI_COMMIT_BRANCH != "main"
+      changes:
+        - ansible/**/*
+
+.ansible:deploy:
+  extends: .ansible:base
+  stage: deploy
+  interruptible: false
+  timeout: 30 minutes
+  # Prevent concurrent deployments to the same infrastructure
+  resource_group: ansible-deploy
+  script:
+    - cd ${ANSIBLE_DIR:-ansible}
+    - export ANSIBLE_CONFIG=$CI_PROJECT_DIR/${ANSIBLE_DIR:-ansible}/ansible.cfg
+    - ansible-playbook -i inventory/hosts.yml playbooks/site.yml
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - ansible/**/*
+
+# =============================================================================
+# Molecule Testing (Role Unit Tests)
+# =============================================================================
+# Requires Docker-in-Docker or a Docker socket
+.ansible:molecule:
+  stage: test
+  interruptible: true
+  timeout: 15 minutes
+  # NOTE: geerlingguy image only provides :latest - no versioned tags available
+  # See: https://hub.docker.com/r/geerlingguy/docker-ubuntu2204-ansible/tags
+  image: harbor.example.com/dockerhub-proxy/geerlingguy/docker-ubuntu2204-ansible:latest
+  services:
+    # Version pinned per ADR-0001 SSOT - Researched: 2026-02-02
+    - name: harbor.example.com/dockerhub-proxy/library/docker:29.2.0-dind
+      alias: docker
+  variables:
+    # DinD without TLS is acceptable for Molecule CI testing — both containers
+    # run in the same GitLab CI job pod. TLS breaks geerlingguy test images.
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - pip install molecule==25.6.0 molecule-docker==2.1.0 ansible-lint==25.6.1
+  script:
+    - cd ${ANSIBLE_DIR:-ansible}/roles/${ROLE_NAME}
+    - molecule test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - ansible/roles/${ROLE_NAME}/**/*
+  parallel:
+    matrix:
+      - ROLE_NAME:
+          - common
+          - docker

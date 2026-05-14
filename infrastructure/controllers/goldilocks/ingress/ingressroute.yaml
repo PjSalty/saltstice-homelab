@@ -1,0 +1,26 @@
+---
+# Goldilocks IngressRoute with Authentik Forward Auth
+# Kustomize namespace override places this in goldilocks namespace
+# Traefik watches all namespaces for IngressRoute resources
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: goldilocks
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: goldilocks.example.com
+    external-dns.alpha.kubernetes.io/target: <internal-ip>
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`goldilocks.example.com`)
+      kind: Rule
+      services:
+        - name: goldilocks-dashboard
+          namespace: goldilocks
+          port: 80
+      middlewares:
+        - name: default-chain-with-auth
+          namespace: traefik
+  tls:
+    secretName: wildcard-tls

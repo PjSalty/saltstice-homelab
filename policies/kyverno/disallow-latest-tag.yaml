@@ -1,0 +1,85 @@
+---
+# Kyverno Policy: Disallow Latest Tag
+# Ensures container images use pinned version tags, not :latest or untagged.
+# Version pins should come from config/versions.yaml (the SSOT for versions).
+#
+# Mode: Enforce (blocks unpinned images at admission)
+# Background: false (only checks at admission time, prevents event noise)
+#
+# Uses pattern-based validation (upstream best practice) instead of JMESPath
+# split() — avoids autogen JMESPath parsing issues with Flux variable substitution.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/title: Disallow Latest Tag
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      The ':latest' tag is mutable and can lead to unexpected behavior.
+      This policy prevents containers from using the :latest tag.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: require-image-tag
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - flux-system
+                - kyverno
+                - karpenter
+                - gitlab-runner
+                - default
+                - security
+                - velero
+                - democratic-csi
+                - cilium-secrets
+      validate:
+        message: "Container images must have a tag. Untagged images are not allowed."
+        pattern:
+          spec:
+            containers:
+              - image: "*:*"
+            =(initContainers):
+              - image: "*:*"
+            =(ephemeralContainers):
+              - image: "*:*"
+    - name: validate-image-tag
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - flux-system
+                - kyverno
+                - karpenter
+                - gitlab-runner
+                - default
+                - security
+                - velero
+                - democratic-csi
+                - cilium-secrets
+      validate:
+        message: "Using ':latest' tag is not allowed. Pin to a specific version."
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"
+            =(initContainers):
+              - image: "!*:latest"
+            =(ephemeralContainers):
+              - image: "!*:latest"

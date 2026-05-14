@@ -1,0 +1,34 @@
+## gitleaks config for saltstice-homelab
+##
+## Uses the default rule set plus a strict allowlist for documentation
+## fixtures. Real credentials in source files remain blocked.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Path excludes and documentation placeholders"
+
+paths = [
+  # Build artifacts and module caches
+  '''^vendor/.*''',
+  '''^node_modules/.*''',
+  '''^dist/.*''',
+  '''^build/.*''',
+  '''\.terraform/.*''',
+  # Test fixtures and example HCL/YAML — placeholder values only
+  '''_test\.go$''',
+  '''^testdata/.*''',
+  '''^examples/.*\.(tf|hcl|yaml|yml)$''',
+  # Documentation may contain placeholder secrets in code blocks
+  '''^docs/.*\.md$''',
+  '''^incidents/.*\.md$''',
+  '''^README\.md$''',
+]
+
+# Allow base64-encoded CA certificates (BEGIN CERTIFICATE blocks)
+# in Kubernetes Secret manifests — these are public PEM material.
+regexes = [
+  '''LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0t.*''',
+  '''-----BEGIN CERTIFICATE-----''',
+]

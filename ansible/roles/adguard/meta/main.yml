@@ -1,0 +1,14 @@
+---
+dependencies: []
+
+galaxy_info:
+  author: salty
+  license: MIT
+  role_name: adguard
+  description: Configure AdGuard Home DNS rewrites, upstreams, and filtering via REST API
+  company: Salty Homelab
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie

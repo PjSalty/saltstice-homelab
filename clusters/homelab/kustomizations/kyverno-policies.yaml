@@ -1,0 +1,30 @@
+# Kyverno Policies Kustomization
+# Deploys security policies for SSOT enforcement
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kyverno-policies
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./policies/kyverno
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  dependsOn:
+    - name: kyverno  # Wait for Kyverno controller to be ready
+  healthChecks:
+    - apiVersion: kyverno.io/v1
+      kind: ClusterPolicy
+      name: disallow-latest-tag
+    - apiVersion: kyverno.io/v1
+      kind: ClusterPolicy
+      name: require-resource-limits
+    - apiVersion: kyverno.io/v1
+      kind: ClusterPolicy
+      name: require-harbor-registry
+    - apiVersion: kyverno.io/v1
+      kind: ClusterPolicy
+      name: require-ssot-labels-on-secrets

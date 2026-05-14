@@ -1,0 +1,291 @@
+---
+# ServiceAccount for certificate sync job
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-sync
+  namespace: vm-certificates
+---
+# ClusterRole to read the wildcard cert from cert-manager namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vm-cert-sync
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+  resourceNames: ["wildcard-tls"]
+---
+# Bind to cert-manager namespace specifically
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-cert-sync
+  namespace: cert-manager
+subjects:
+- kind: ServiceAccount
+  name: cert-sync
+  namespace: vm-certificates
+roleRef:
+  kind: ClusterRole
+  name: vm-cert-sync
+  apiGroup: rbac.authorization.k8s.io
+---
+# Also keep local secret read for the SSH key
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cert-sync
+  namespace: vm-certificates
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cert-sync
+  namespace: vm-certificates
+subjects:
+- kind: ServiceAccount
+  name: cert-sync
+  namespace: vm-certificates
+roleRef:
+  kind: Role
+  name: cert-sync
+  apiGroup: rbac.authorization.k8s.io
+---
+# ConfigMap with deployment script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cert-sync-script
+  namespace: vm-certificates
+data:
+  sync-certs.sh: |
+    #!/bin/sh
+    set -e
+
+    echo "=== VM Certificate Deployment ==="
+    date -u
+
+    # openssh-client, openssl, curl, kubectl all baked into homelab-tooling.
+
+    SSH_KEY="/ssh/ssh-privatekey"
+    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR -i $${SSH_KEY}"
+    ERRORS=0
+
+    # Extract wildcard cert from cert-manager namespace
+    echo "Extracting wildcard cert..."
+    kubectl get secret wildcard-tls -n cert-manager \
+      -o jsonpath='{.data.tls\.crt}' | base64 -d > /tmp/wildcard.crt
+    kubectl get secret wildcard-tls -n cert-manager \
+      -o jsonpath='{.data.tls\.key}' | base64 -d > /tmp/wildcard.key
+
+    # Verify cert is valid and not expiring within 7 days
+    if ! openssl x509 -in /tmp/wildcard.crt -noout -checkend 604800 2>/dev/null; then
+      echo "WARNING: Certificate expires within 7 days or is invalid"
+    fi
+
+    SERIAL=$$(openssl x509 -in /tmp/wildcard.crt -noout -serial 2>/dev/null | cut -d= -f2)
+    EXPIRY=$$(openssl x509 -in /tmp/wildcard.crt -noout -enddate 2>/dev/null | cut -d= -f2)
+    echo "Cert serial: $${SERIAL}"
+    echo "Cert expiry: $${EXPIRY}"
+
+    # --- GitLab (<internal-ip>) ---
+    echo ""
+    echo "--- GitLab ---"
+    REMOTE_SERIAL=$$(echo | timeout 5 openssl s_client -connect <internal-ip>:443 2>/dev/null \
+      | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || echo "NONE")
+    if [ "$${REMOTE_SERIAL}" = "$${SERIAL}" ]; then
+      echo "SKIP: Already current"
+    else
+      if scp $${SSH_OPTS} /tmp/wildcard.crt /tmp/wildcard.key root@<internal-ip>:/tmp/ 2>/dev/null && \
+         ssh $${SSH_OPTS} root@<internal-ip> "\
+           mkdir -p /data/gitlab/config/ssl && \
+           cp /tmp/wildcard.crt /data/gitlab/config/ssl/gitlab.example.com.crt && \
+           cp /tmp/wildcard.key /data/gitlab/config/ssl/gitlab.example.com.key && \
+           chmod 644 /data/gitlab/config/ssl/gitlab.example.com.crt && \
+           chmod 600 /data/gitlab/config/ssl/gitlab.example.com.key && \
+           rm -f /tmp/wildcard.crt /tmp/wildcard.key && \
+           docker exec gitlab gitlab-ctl hup nginx" 2>/dev/null; then
+        echo "OK: Deployed"
+      else
+        echo "ERROR: Deployment failed"
+        ERRORS=$$((ERRORS + 1))
+      fi
+    fi
+
+    # --- Harbor (<internal-ip>) ---
+    echo ""
+    echo "--- Harbor ---"
+    REMOTE_SERIAL=$$(echo | timeout 5 openssl s_client -connect <internal-ip>:443 2>/dev/null \
+      | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || echo "NONE")
+    if [ "$${REMOTE_SERIAL}" = "$${SERIAL}" ]; then
+      echo "SKIP: Already current"
+    else
+      if scp $${SSH_OPTS} /tmp/wildcard.crt /tmp/wildcard.key root@<internal-ip>:/tmp/ 2>/dev/null && \
+         ssh $${SSH_OPTS} root@<internal-ip> "\
+           cp /tmp/wildcard.crt /data/harbor/secret/cert/server.crt && \
+           cp /tmp/wildcard.key /data/harbor/secret/cert/server.key && \
+           chown 10000:10000 /data/harbor/secret/cert/server.crt /data/harbor/secret/cert/server.key && \
+           chmod 600 /data/harbor/secret/cert/server.crt /data/harbor/secret/cert/server.key && \
+           rm -f /tmp/wildcard.crt /tmp/wildcard.key && \
+           cd /opt/harbor && docker compose restart proxy" 2>/dev/null; then
+        echo "OK: Deployed"
+      else
+        echo "ERROR: Deployment failed"
+        ERRORS=$$((ERRORS + 1))
+      fi
+    fi
+
+    # --- Proxmox (10.x0.100) ---
+    echo ""
+    echo "--- Proxmox ---"
+    REMOTE_SERIAL=$$(echo | timeout 5 openssl s_client -connect 10.x0.100:8006 2>/dev/null \
+      | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || echo "NONE")
+    if [ "$${REMOTE_SERIAL}" = "$${SERIAL}" ]; then
+      echo "SKIP: Already current"
+    else
+      if scp $${SSH_OPTS} /tmp/wildcard.crt /tmp/wildcard.key root@10.x0.100:/tmp/ 2>/dev/null && \
+         ssh $${SSH_OPTS} root@10.x0.100 "\
+           cp /tmp/wildcard.crt /etc/pve/local/pveproxy-ssl.pem && \
+           cp /tmp/wildcard.key /etc/pve/local/pveproxy-ssl.key && \
+           rm -f /tmp/wildcard.crt /tmp/wildcard.key && \
+           systemctl restart pveproxy" 2>/dev/null; then
+        echo "OK: Deployed"
+      else
+        echo "ERROR: Deployment failed"
+        ERRORS=$$((ERRORS + 1))
+      fi
+    fi
+
+    # --- TrueNAS (<internal-ip>) via API ---
+    echo ""
+    echo "--- TrueNAS ---"
+    REMOTE_SERIAL=$$(echo | timeout 5 openssl s_client -connect <internal-ip>:443 2>/dev/null \
+      | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || echo "NONE")
+    if [ "$${REMOTE_SERIAL}" = "$${SERIAL}" ]; then
+      echo "SKIP: Already current"
+    else
+      TRUENAS_API="http://<internal-ip>/api/v2.0"
+      TRUENAS_KEY="${TRUENAS_API_KEY}"
+
+      # Delete old cert if exists
+      OLD_ID=$$(curl -sf -H "Authorization: Bearer $${TRUENAS_KEY}" \
+        "$${TRUENAS_API}/certificate" 2>/dev/null \
+        | python3 -c "import sys,json; [print(c['id']) for c in json.load(sys.stdin) if c['name']=='letsencrypt-wildcard']" 2>/dev/null || true)
+      if [ -n "$${OLD_ID}" ]; then
+        curl -sf -X DELETE -H "Authorization: Bearer $${TRUENAS_KEY}" \
+          "$${TRUENAS_API}/certificate/id/$${OLD_ID}" 2>/dev/null || true
+        sleep 2
+      fi
+
+      # Import new cert
+      CERT_DATA=$$(python3 -c "import json; print(json.dumps(open('/tmp/wildcard.crt').read()))")
+      KEY_DATA=$$(python3 -c "import json; print(json.dumps(open('/tmp/wildcard.key').read()))")
+      NEW_ID=$$(curl -sf -X POST -H "Authorization: Bearer $${TRUENAS_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "{\"name\":\"letsencrypt-wildcard\",\"create_type\":\"CERTIFICATE_CREATE_IMPORTED\",\"certificate\":$${CERT_DATA},\"privatekey\":$${KEY_DATA}}" \
+        "$${TRUENAS_API}/certificate" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin))" 2>/dev/null)
+
+      if [ -n "$${NEW_ID}" ]; then
+        # Set as active UI cert
+        curl -sf -X PUT -H "Authorization: Bearer $${TRUENAS_KEY}" \
+          -H "Content-Type: application/json" \
+          -d "{\"ui_certificate\":$${NEW_ID}}" \
+          "$${TRUENAS_API}/system/general" > /dev/null 2>&1
+
+        # Restart UI
+        curl -sf -X POST -H "Authorization: Bearer $${TRUENAS_KEY}" \
+          "$${TRUENAS_API}/system/general/ui_restart" > /dev/null 2>&1 || true
+
+        echo "OK: Deployed via API"
+      else
+        echo "ERROR: TrueNAS API cert import failed"
+        ERRORS=$$((ERRORS + 1))
+      fi
+    fi
+
+    # Cleanup
+    rm -f /tmp/wildcard.crt /tmp/wildcard.key
+
+    echo ""
+    echo "=== Complete (errors: $${ERRORS}) ==="
+    [ "$$ERRORS" -eq 0 ] || exit 1
+---
+# CronJob to deploy wildcard cert to VMs weekly
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vm-cert-sync
+  namespace: vm-certificates
+spec:
+  # Run every Sunday at 3 AM UTC
+  schedule: "0 3 * * 0"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: cert-sync
+        spec:
+          serviceAccountName: cert-sync
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: cert-sync
+            # openssh-client, openssl, curl, kubectl baked into homelab-tooling.
+            image: ${IMAGE_HOMELAB_TOOLING}
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop: ["ALL"]
+            command:
+            - /bin/sh
+            - /scripts/sync-certs.sh
+            env:
+            - name: TRUENAS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: truenas-api-key
+                  key: api-key
+                  optional: true
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 200m
+                memory: 128Mi
+            volumeMounts:
+            - name: script
+              mountPath: /scripts
+            - name: ssh-key
+              mountPath: /ssh
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: script
+            configMap:
+              name: cert-sync-script
+              defaultMode: 0755
+          - name: ssh-key
+            secret:
+              secretName: vm-cert-deploy-ssh
+              defaultMode: 0400
+          - name: tmp
+            emptyDir: {}

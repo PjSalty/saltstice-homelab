@@ -1,0 +1,19 @@
+---
+# =============================================================================
+# Kubernetes Master Node Variables
+# =============================================================================
+
+# Firewall — control plane ports
+firewall_extra_ports:
+  - { port: 6443, proto: tcp, comment: "K8s API" }
+  - { port: 9345, proto: tcp, comment: "RKE2 supervisor" }
+  - { port: "2379:2380", proto: tcp, comment: "etcd" }
+  - { port: 10250, proto: tcp, comment: "kubelet API" }
+  - { port: 8472, proto: udp, comment: "Cilium VXLAN" }
+  - { port: 4240, proto: tcp, comment: "Cilium health" }
+  - { port: 4244, proto: tcp, comment: "Hubble relay" }
+  - { port: 9100, proto: tcp, comment: "node_exporter" }
+  - { port: "9962:9965", proto: tcp, comment: "Cilium metrics" }
+  - { port: 179, proto: tcp, comment: "MetalLB BGP" }
+  - { port: 7946, proto: tcp, comment: "MetalLB memberlist" }
+  - { port: 7946, proto: udp, comment: "MetalLB memberlist" }

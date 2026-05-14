@@ -1,0 +1,11 @@
+---
+# File: kubernetes/infrastructure/controllers/nvidia-device-plugin/kustomization.yaml
+# Purpose: NVIDIA GPU Device Plugin for Kubernetes
+# Validates: kubectl get pods -n nvidia-device-plugin
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - runtimeclass.yaml
+  - helmrelease.yaml
+  - dcgm-exporter.yaml

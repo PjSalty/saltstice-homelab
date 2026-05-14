@@ -1,0 +1,123 @@
+---
+# Cilium CNI alerts
+# Detects the silent-degradation pattern that hit worker-2 on 2026-04-25 →
+# 2026-04-27, where the agent process was alive but the datapath was
+# broken for 2.5 days because the upstream-default liveness probe is too
+# permissive to catch it.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cilium-health-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    - name: cilium-agent-health
+      interval: 1m
+      rules:
+        - alert: CiliumNodeUnreachable
+          expr: |
+            sum(cilium_unreachable_nodes) by (instance) > 0
+          for: 5m
+          labels:
+            severity: critical
+            category: networking
+            component: cilium
+          annotations:
+            summary: "Cilium agent on {{ $labels.instance }} cannot reach {{ $value }} cluster mate(s)"
+            description: |
+              Cilium cluster mesh is partial from this node's view. Either
+              this agent or one of its peers has a broken datapath.
+              Recovery: cordon → drain (--ignore-daemonsets) → delete the
+              cilium pod on the affected node. DaemonSet recreates it.
+              Runbook: infrastructure/cilium/README.md → Rollback section.
+
+        - alert: CiliumEndpointUnreachable
+          expr: |
+            sum(cilium_unreachable_health_endpoints) by (instance) > 0
+          for: 5m
+          labels:
+            severity: critical
+            category: networking
+            component: cilium
+          annotations:
+            summary: "Cilium agent on {{ $labels.instance }} sees {{ $value }} unreachable health endpoint(s)"
+            description: |
+              The cilium-health pod on at least one node is unreachable
+              from this agent — typically a broken local veth/BPF program
+              or a stuck endpoint regeneration. Same response as
+              CiliumNodeUnreachable.
+
+        - alert: CiliumPolicyDropRateHigh
+          expr: |
+            sum(rate(cilium_drop_count_total{reason!="Policy denied"}[5m]))
+              by (reason, instance) > 5
+          for: 10m
+          labels:
+            severity: warning
+            category: networking
+            component: cilium
+          annotations:
+            summary: "Cilium dropping {{ $value | printf \"%.1f\" }} pkts/s on {{ $labels.instance }} ({{ $labels.reason }})"
+            description: |
+              Excludes legitimate policy denies. Sustained drops for any
+              other reason indicate datapath misbehaviour.
+
+        - alert: CiliumAgentRestartRateHigh
+          expr: |
+            sum(increase(kube_pod_container_status_restarts_total{
+              namespace="kube-system",
+              pod=~"cilium-.*",
+              container="cilium-agent"
+            }[15m])) by (pod) >= 3
+          for: 5m
+          labels:
+            severity: warning
+            category: networking
+            component: cilium
+          annotations:
+            summary: "Cilium agent {{ $labels.pod }} restarted 3+ times in 15m"
+            description: |
+              Sustained agent restarts mean the new tighter probes are
+              firing repeatedly — investigate before assuming the probe
+              tuning is too aggressive.
+
+        - alert: CiliumOperatorDown
+          expr: |
+            kube_deployment_status_replicas_available{
+              namespace="kube-system",
+              deployment="cilium-operator"
+            } == 0
+          for: 5m
+          labels:
+            severity: critical
+            category: networking
+            component: cilium
+          annotations:
+            summary: "cilium-operator has 0 available replicas"
+            description: |
+              Without the operator, IPAM allocation and node-taint clearing
+              stops. New pods will be stuck Pending until it recovers.
+
+    - name: hubble-health
+      interval: 1m
+      rules:
+        - alert: HubbleRelayDown
+          expr: |
+            kube_deployment_status_replicas_available{
+              namespace="kube-system",
+              deployment="hubble-relay"
+            } == 0
+          for: 10m
+          labels:
+            severity: warning
+            category: observability
+            component: cilium
+          annotations:
+            summary: "hubble-relay has 0 available replicas for 10m+"
+            description: |
+              Cilium flows + drop visibility is degraded. Other Cilium
+              alerts may not fire reliably until relay is back.

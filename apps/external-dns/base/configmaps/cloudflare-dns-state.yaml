@@ -1,0 +1,12 @@
+# State tracking for Cloudflare public DNS sync CronJob
+# Updated automatically by cloudflare-dns-sync CronJob
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflare-dns-state
+  namespace: external-dns
+data:
+  last-wan-ip: ""
+  last-sync: ""
+  managed-records: "[]"

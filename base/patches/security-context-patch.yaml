@@ -1,0 +1,28 @@
+---
+# Security Context Patch
+# Adds standard security settings to all Deployments
+# Apply via Kustomize patches:
+#   patches:
+#     - path: ../../../base/patches/security-context-patch.yaml
+#       target:
+#         kind: Deployment
+#
+# Note: Some workloads may need custom settings.
+# Override as needed in individual kustomizations.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: not-used  # Kustomize replaces this
+spec:
+  template:
+    spec:
+      securityContext:
+        # Seccomp profile restricts system calls for security
+        seccompProfile:
+          type: RuntimeDefault
+        # Run as non-root user
+        runAsNonRoot: true
+        # Default FS group for volume mounts
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch

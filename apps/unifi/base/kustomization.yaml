@@ -1,0 +1,26 @@
+---
+# UniFi Controller - Complete End-to-End Automation
+# Deployment order:
+# 1. Storage (NFS config + iSCSI for MongoDB)
+# 2. Secrets (credentials for API/MongoDB + NetBox token)
+# 3. Init storage job (sets permissions)
+# 4. Deployment (UniFi Controller + automation sidecar)
+#
+# Note: Bootstrap and WiFi setup are now handled by automation sidecar
+# container in the deployment (shares localhost with MongoDB/UniFi API)
+#
+# AP Inventory: Fetched from NetBox VM (<internal-ip>) - Source of Truth per automation.md
+# The configmaps/ap-inventory.yaml is DEPRECATED - use NetBox instead
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: unifi
+resources:
+  - storage/storage.yaml
+  - secrets/unifi-credentials.yaml
+  - secrets/netbox-token.yaml
+  # DEPRECATED: ap-inventory.yaml - now using NetBox VM as source of truth
+  # - configmaps/ap-inventory.yaml
+  - jobs/init-storage-job.yaml
+  - deployments/unifi-deployment.yaml
+  - ingress/ingress.yaml
+  - autoscaling

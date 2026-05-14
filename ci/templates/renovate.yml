@@ -1,0 +1,203 @@
+# Renovate Bot CI Template for Self-Hosted GitLab
+# Version: 2026-04-11
+#
+# Scans all infrastructure repos for dependency updates, creates MRs
+#
+# Required CI/CD Variables (set at group or project level):
+#   RENOVATE_TOKEN - GitLab personal access token with api scope
+#   GITHUB_COM_TOKEN - (Optional) GitHub token for rate limiting
+#
+# Optional CI/CD Variables:
+#   GITLAB_API_HOST - GitLab API endpoint (default: gitlab.example.com)
+#
+# Usage in .gitlab-ci.yml:
+#   include:
+#     - project: 'infrastructure/homelab-ci-templates'
+#       file: '/renovate.yml'
+#
+#   renovate:
+#     extends: .renovate:run
+#     variables:
+#       RENOVATE_REPOSITORIES: infrastructure/homelab-kubernetes
+#
+# For scheduled runs, create a pipeline schedule in GitLab with:
+#   - Cron: 0 5 * * 1 (Mondays at 5am)
+#   - Target branch: main
+#   - Variable: RENOVATE_RUN=true
+#
+
+# =============================================================================
+# Renovate Scan Job (Dry Run)
+# =============================================================================
+.renovate:scan:
+  stage: test
+  interruptible: true
+  timeout: 30 minutes
+  image: harbor.example.com/dockerhub-proxy/renovate/renovate:43.15.3@sha256:b9eb8dfd3033cf694956eedb80f2a1db8ec0d033554f9e224fbd134e4c764b2c
+  variables:
+    # Required: GitLab token with API access
+    RENOVATE_PLATFORM: gitlab
+    # GitLab API endpoint - override GITLAB_API_HOST to change
+    GITLAB_API_HOST: gitlab.example.com
+    # Dry run mode - shows what would be updated without creating MRs
+    RENOVATE_DRY_RUN: "full"
+    # Repository to scan (override in extending job)
+    RENOVATE_REPOSITORIES: ""
+    # Log level (debug for troubleshooting)
+    LOG_LEVEL: info
+    NODE_TLS_REJECT_UNAUTHORIZED: "1"
+  before_script:
+    - export RENOVATE_ENDPOINT="https://${GITLAB_API_HOST}/api/v4"
+  script:
+    - |
+      if [ -z "$RENOVATE_TOKEN" ]; then
+        echo "ERROR: RENOVATE_TOKEN not set"
+        exit 1
+      fi
+    - |
+      if [ -z "$RENOVATE_REPOSITORIES" ]; then
+        echo "ERROR: RENOVATE_REPOSITORIES not set"
+        exit 1
+      fi
+    - |
+      # Renovate v40+ uses env vars for config, not CLI flags
+      renovate ${RENOVATE_REPOSITORIES}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $RENOVATE_SCAN == "true"
+    - when: manual
+      allow_failure: true
+
+# =============================================================================
+# Renovate Run Job (Creates MRs)
+# =============================================================================
+.renovate:run:
+  stage: deploy
+  interruptible: true
+  timeout: 45 minutes
+  image: harbor.example.com/dockerhub-proxy/renovate/renovate:43.15.3@sha256:b9eb8dfd3033cf694956eedb80f2a1db8ec0d033554f9e224fbd134e4c764b2c
+  resource_group: renovate
+  variables:
+    RENOVATE_PLATFORM: gitlab
+    # GitLab API endpoint - override GITLAB_API_HOST to change
+    GITLAB_API_HOST: gitlab.example.com
+    RENOVATE_DRY_RUN: "false"
+    RENOVATE_REPOSITORIES: ""
+    LOG_LEVEL: info
+    # Git author for commits
+    RENOVATE_GIT_AUTHOR: "Renovate Bot <renovate@example.com>"
+    # Onboarding disabled - we create renovate.json manually
+    RENOVATE_ONBOARDING: "false"
+    # Require config file
+    RENOVATE_REQUIRE_CONFIG: required
+    NODE_TLS_REJECT_UNAUTHORIZED: "1"
+  before_script:
+    - export RENOVATE_ENDPOINT="https://${GITLAB_API_HOST}/api/v4"
+  script:
+    - |
+      if [ -z "$RENOVATE_TOKEN" ]; then
+        echo "ERROR: RENOVATE_TOKEN not set"
+        exit 1
+      fi
+    - |
+      if [ -z "$RENOVATE_REPOSITORIES" ]; then
+        echo "ERROR: RENOVATE_REPOSITORIES not set"
+        exit 1
+      fi
+    - |
+      echo "Running Renovate for: ${RENOVATE_REPOSITORIES}"
+      # Renovate v40+ uses env vars for config, not CLI flags
+      renovate ${RENOVATE_REPOSITORIES}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN == "true"
+    - if: $RENOVATE_RUN == "true"
+    - when: manual
+      allow_failure: true
+
+# =============================================================================
+# Renovate Multi-Repo Job
+# =============================================================================
+# Scans multiple repositories in one job
+.renovate:multi-repo:
+  stage: deploy
+  interruptible: true
+  timeout: 60 minutes
+  image: harbor.example.com/dockerhub-proxy/renovate/renovate:43.15.3@sha256:b9eb8dfd3033cf694956eedb80f2a1db8ec0d033554f9e224fbd134e4c764b2c
+  resource_group: renovate
+  variables:
+    RENOVATE_PLATFORM: gitlab
+    # GitLab API endpoint - override GITLAB_API_HOST to change
+    GITLAB_API_HOST: gitlab.example.com
+    RENOVATE_DRY_RUN: "false"
+    LOG_LEVEL: info
+    RENOVATE_GIT_AUTHOR: "Renovate Bot <renovate@example.com>"
+    RENOVATE_ONBOARDING: "false"
+    RENOVATE_REQUIRE_CONFIG: required
+    # Default repos to scan (space-separated)
+    RENOVATE_AUTODISCOVER: "false"
+    RENOVATE_AUTODISCOVER_FILTER: "infrastructure/*"
+    NODE_TLS_REJECT_UNAUTHORIZED: "1"
+  before_script:
+    - export RENOVATE_ENDPOINT="https://${GITLAB_API_HOST}/api/v4"
+  script:
+    - |
+      if [ -z "$RENOVATE_TOKEN" ]; then
+        echo "ERROR: RENOVATE_TOKEN not set"
+        exit 1
+      fi
+    - |
+      # List of repos to scan
+      REPOS=(
+        "infrastructure/homelab-kubernetes"
+        "infrastructure/homelab-terraform"
+        "infrastructure/homelab-ansible"
+        "infrastructure/homelab-monitoring"
+        "infrastructure/homelab-ci-templates"
+        "infrastructure/homelab-cli"
+        "infrastructure/homelab-scripts"
+        "infrastructure/homelab-agents"
+        "infrastructure/homelab-docs"
+        "infrastructure/homelab-dotfiles"
+      )
+
+      for repo in "${REPOS[@]}"; do
+        echo "========================================"
+        echo "Scanning: $repo"
+        echo "========================================"
+        # Renovate v40+ uses env vars for config, not CLI flags
+        # Override require-config for multi-repo scan
+        renovate "$repo" || echo "Warning: $repo scan completed with issues"
+      done
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $RENOVATE_RUN == "true"
+    - when: manual
+      allow_failure: true
+
+# =============================================================================
+# Renovate Dependency Dashboard
+# =============================================================================
+# Creates/updates a dependency dashboard issue
+.renovate:dashboard:
+  stage: deploy
+  interruptible: true
+  timeout: 30 minutes
+  image: harbor.example.com/dockerhub-proxy/renovate/renovate:43.15.3@sha256:b9eb8dfd3033cf694956eedb80f2a1db8ec0d033554f9e224fbd134e4c764b2c
+  variables:
+    RENOVATE_PLATFORM: gitlab
+    # GitLab API endpoint - override GITLAB_API_HOST to change
+    GITLAB_API_HOST: gitlab.example.com
+    RENOVATE_DRY_RUN: "true"
+    LOG_LEVEL: info
+    RENOVATE_DEPENDENCY_DASHBOARD: "true"
+    NODE_TLS_REJECT_UNAUTHORIZED: "1"
+  before_script:
+    - export RENOVATE_ENDPOINT="https://${GITLAB_API_HOST}/api/v4"
+  script:
+    - |
+      # Renovate v40+ uses env vars for config, not CLI flags
+      renovate ${RENOVATE_REPOSITORIES}
+  rules:
+    - when: manual
+      allow_failure: true

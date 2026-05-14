@@ -1,0 +1,199 @@
+# Kubernetes/FluxCD CI/CD Template
+# Version: 2026-04-11
+#
+# Usage: include in .gitlab-ci.yml with:
+#   include:
+#     - project: 'infrastructure/homelab-ci-templates'
+#       ref: main
+#       file: '/kubernetes.yml'
+#
+# Available jobs:
+#   .kubernetes:validate - Kustomize build validation
+#   .kubernetes:diff     - kubectl diff against live cluster
+#   .kubernetes:verify   - Post-deploy health check
+#   .flux:reconcile      - Trigger Flux reconciliation
+
+.kubernetes:base:
+  image: harbor.example.com/dockerhub-proxy/alpine/k8s:1.35.0@sha256:18bc02c1e0df04451f4f9194eb7b7341c1165da5495459b52f85f72fb9545032
+  before_script:
+    - mkdir -p $(dirname ${KUBECONFIG:-/tmp/kubeconfig})
+    - |
+      if [ -n "$KUBE_CONFIG" ]; then
+        if ! echo "$KUBE_CONFIG" | base64 -d > ${KUBECONFIG:-/tmp/kubeconfig} 2>/dev/null; then
+          echo "ERROR: Failed to decode KUBE_CONFIG - base64 data may be truncated or corrupted"
+          exit 1
+        fi
+        chmod 600 ${KUBECONFIG:-/tmp/kubeconfig}
+        # Validate kubeconfig is valid YAML and has required fields
+        if ! kubectl config view --kubeconfig=${KUBECONFIG:-/tmp/kubeconfig} > /dev/null 2>&1; then
+          echo "ERROR: Invalid kubeconfig - failed to parse"
+          exit 1
+        fi
+        echo "Kubeconfig validated successfully"
+      else
+        echo "WARNING: KUBE_CONFIG not set - kubernetes operations will fail"
+      fi
+
+# NOTE: yamllint validation moved to lint.yml (.lint:yamllint)
+# Consumer repos should include lint.yml and extend .lint:yamllint
+
+.kubernetes:validate:
+  extends: .kubernetes:base
+  stage: plan
+  interruptible: true
+  timeout: 10 minutes
+  variables:
+    K8S_PATH: "kubernetes"
+  script:
+    # Validate kustomization builds
+    - |
+      FAILED=0
+      echo "=== Kustomize Build Validation ==="
+      for dir in $(find ${K8S_PATH} -name "kustomization.yaml" -exec dirname {} \;); do
+        echo "Validating: $dir"
+        if ! kustomize build "$dir" > /dev/null 2>&1; then
+          echo "ERROR: kustomize build failed for $dir"
+          kustomize build "$dir" 2>&1 || true
+          FAILED=1
+        fi
+      done
+      if [ "$FAILED" -eq 0 ]; then
+        echo "All kustomization builds passed"
+      fi
+      exit $FAILED
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - kubernetes/**/*
+
+.kubernetes:diff:
+  extends: .kubernetes:base
+  stage: plan
+  interruptible: true
+  timeout: 10 minutes
+  script:
+    # Exit codes: 0=no diff, 1=diff found (expected), 2+=error
+    - |
+      kubectl diff -f kubernetes/apps/
+      rc=$?
+      if [ $rc -eq 0 ]; then
+        echo "No changes detected"
+      elif [ $rc -eq 1 ]; then
+        echo "Changes detected (expected in MR pipeline)"
+      else
+        echo "ERROR: kubectl diff failed with exit code $rc"
+        exit 1
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH != "main"
+      changes:
+        - kubernetes/apps/**/*
+
+.flux:reconcile:
+  stage: deploy
+  image: harbor.example.com/ghcr-proxy/fluxcd/flux-cli:v2.7.5@sha256:3a4f9b0a26c26db8193c476e0abe33c32187eae8ce7a0a604d38a51783544946
+  interruptible: false
+  timeout: 30 minutes
+  # Prevent concurrent Flux reconciliations
+  resource_group: flux-deploy
+  before_script:
+    - mkdir -p $(dirname ${KUBECONFIG:-/tmp/kubeconfig})
+    - |
+      if [ -z "$KUBE_CONFIG" ]; then
+        echo "ERROR: KUBE_CONFIG not set"
+        exit 1
+      fi
+    - |
+      if ! echo "$KUBE_CONFIG" | base64 -d > ${KUBECONFIG:-/tmp/kubeconfig} 2>/dev/null; then
+        echo "ERROR: Failed to decode KUBE_CONFIG - base64 data may be truncated or corrupted"
+        exit 1
+      fi
+    - chmod 600 ${KUBECONFIG:-/tmp/kubeconfig}
+    # Validate kubeconfig before proceeding
+    - |
+      if ! flux check --kubeconfig=${KUBECONFIG:-/tmp/kubeconfig} > /dev/null 2>&1; then
+        echo "WARNING: flux check failed, but continuing (cluster may still be accessible)"
+      fi
+  script:
+    - |
+      FAILED=0
+
+      # Reconcile the flux-system source (this repo)
+      echo "Reconciling source git/flux-system..."
+      if ! flux reconcile source git flux-system; then
+        echo "WARNING: Failed to reconcile source git/flux-system"
+        FAILED=1
+      fi
+
+      # Determine which kustomizations are affected by changed files
+      CHANGED_DIRS=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -oE '^(apps|infrastructure)/[^/]+(/[^/]+)?' | sort -u || true)
+      echo "Changed directories: ${CHANGED_DIRS:-<none>}"
+
+      AFFECTED_KS=""
+      if echo "$CHANGED_DIRS" | grep -q "^infrastructure/"; then
+        echo "Infrastructure change detected — reconciling all kustomizations"
+        AFFECTED_KS=$(flux get kustomizations --no-header 2>/dev/null | awk '{print $1}')
+      else
+        for dir in $CHANGED_DIRS; do
+          KS_NAME=$(echo "$dir" | awk -F/ '{print $2}')
+          if [ -n "$KS_NAME" ]; then
+            if flux get kustomization "$KS_NAME" --no-header 2>/dev/null | grep -q .; then
+              AFFECTED_KS="$AFFECTED_KS $KS_NAME"
+            fi
+          fi
+        done
+        AFFECTED_KS=$(echo "$AFFECTED_KS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+      fi
+      if [ -z "$AFFECTED_KS" ]; then
+        echo "No matching kustomizations found — reconciling flux-system only"
+        AFFECTED_KS="flux-system"
+      fi
+      echo "Kustomizations to reconcile: $AFFECTED_KS"
+
+      # Reconcile affected kustomizations
+      for ks in $AFFECTED_KS; do
+        echo "Reconciling kustomization/${ks}..."
+        if ! flux reconcile kustomization "$ks"; then
+          echo "WARNING: Failed to reconcile kustomization/${ks}"
+          FAILED=1
+        fi
+      done
+
+      # Wait for reconciliation to settle
+      sleep 10
+
+      # Check status
+      echo "Reconciled kustomization status:"
+      for ks in $AFFECTED_KS; do
+        STATUS=$(flux get kustomization "$ks" --no-header 2>/dev/null | awk '{print $4}')
+        if [ "$STATUS" = "False" ]; then
+          echo "WARNING: kustomization/${ks} is unhealthy"
+        fi
+        flux get kustomization "$ks" 2>/dev/null
+      done
+
+      if [ "$FAILED" -eq 1 ]; then
+        echo "WARNING: Some reconciliations failed — check above for details"
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - kubernetes/**/*
+  retry:
+    max: 2
+    when:
+      - script_failure
+
+.kubernetes:verify:
+  extends: .kubernetes:base
+  stage: verify
+  interruptible: true
+  timeout: 5 minutes
+  script:
+    - kubectl get nodes
+    - kubectl get pods -A | grep -v "Running\|Completed" || true
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - kubernetes/**/*
+  allow_failure: true

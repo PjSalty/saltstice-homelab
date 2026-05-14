@@ -1,0 +1,22 @@
+---
+# ServiceMonitor for media-drop-watcher metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: media-drop-watcher
+  namespace: monitoring
+  labels:
+    app: media-drop-watcher
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - media
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: media-drop-watcher
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

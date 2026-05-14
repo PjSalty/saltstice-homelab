@@ -1,0 +1,42 @@
+---
+# SeaweedFS Object Storage
+# Provides S3-compatible storage for:
+#   - GitLab Runner cache
+#   - AMP game server backups
+#   - Velero Kubernetes backups
+#   - General object storage
+#
+# URLs:
+#   S3 API: https://s3.example.com (or internal: seaweedfs-s3.storage.svc:8333)
+#   Filer UI: https://seaweedfs.example.com (SSO protected)
+#
+# Data stored on TrueNAS via NFS
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: seaweedfs
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/storage/seaweedfs/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: nfs-storage      # Requires NFS storage for PVC
+    - name: secrets          # Requires secrets repo for credentials
+    - name: cert-manager     # Requires cert-manager for TLS
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config

@@ -1,0 +1,43 @@
+# ==============================================================================
+# DEPRECATED - DO NOT USE
+# ==============================================================================
+# This K8s-deployed NetBox is DEPRECATED in favor of the NetBox VM at <internal-ip>
+# Per automation.md, NetBox should be an Infrastructure VM (VLAN 20), NOT in K8s.
+#
+# The canonical NetBox instance is:
+#   - URL: http://<internal-ip> (Host: netbox.example.com)
+#   - Deployed via: ansible/playbooks/07-deploy-netbox.yml
+#   - Credentials in: group_vars or Ansible Vault
+#
+# This K8s deployment is kept for reference only. Do NOT apply these resources.
+# ==============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Core
+  - namespace.yaml
+
+  # Configuration (SOPS encrypted)
+  - configmaps/netbox-config.yaml
+  - configmaps/netbox-scripts.yaml
+  - configmaps/ansible-inventory.yaml
+  - configmaps/netbox-extra-config.yaml
+
+  # Secrets (SOPS encrypted)
+  - secrets/netbox-secret.yaml
+  - secrets/adguard-credentials.yaml
+  - secrets/netbox-admin-secret.yaml
+  - secrets/automation-tokens.yaml  # NetBox and GitLab automation tokens
+
+  # Deployments and Services
+  - deployments/netbox-deployment.yaml
+  - ingress/netbox-ingress.yaml
+
+  # Automation Scripts (IP Discovery, Git Sync)
+  - configs/discovery-script.yaml
+
+  # Jobs and CronJobs
+  - jobs/netbox-init-job.yaml
+  - jobs/netbox-ip-discovery.yaml  # IP scanning & DNS discovery
+  - cronjobs/netbox-dns-sync.yaml

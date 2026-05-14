@@ -1,0 +1,87 @@
+---
+# =============================================================================
+# Ansible Inventory: Bootstrap Phase
+# Description: Inventory for Phase 0 bootstrap operations
+# =============================================================================
+
+all:
+  vars:
+    ansible_user: root
+    ansible_ssh_private_key_file: ~/.ssh/automation-key
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+  children:
+    # =========================================================================
+    # Proxmox Hypervisor
+    # =========================================================================
+    proxmox:
+      hosts:
+        salty:
+          ansible_host: <mgmt-ip>
+          ansible_connection: ssh
+
+    # =========================================================================
+    # Phase 0 Infrastructure VMs (will be created)
+    # =========================================================================
+    infrastructure:
+      children:
+        storage:
+          hosts:
+            truenas:
+              ansible_host: <internal-ip>
+              vm_id: 100
+
+        registry:
+          hosts:
+            harbor:
+              ansible_host: <internal-ip>
+              vm_id: 101
+
+        cicd:
+          hosts:
+            gitlab:
+              ansible_host: <internal-ip>
+              vm_id: 102
+
+        ipam:
+          hosts:
+            netbox:
+              ansible_host: <internal-ip>
+              vm_id: 103
+
+        loadbalancer:
+          hosts:
+            haproxy:
+              ansible_host: <internal-ip>
+              vm_id: 104
+
+    # =========================================================================
+    # Kubernetes Cluster (Phase 1, will be created)
+    # =========================================================================
+    kubernetes:
+      children:
+        k8s_control_plane:
+          hosts:
+            k8s-cp-01:
+              ansible_host: <internal-ip>
+              vm_id: 201
+            k8s-cp-02:
+              ansible_host: <internal-ip>
+              vm_id: 202
+            k8s-cp-03:
+              ansible_host: <internal-ip>
+              vm_id: 203
+
+        k8s_workers:
+          hosts:
+            k8s-worker-01:
+              ansible_host: <internal-ip>
+              vm_id: 211
+            k8s-worker-02:
+              ansible_host: <internal-ip>
+              vm_id: 212
+            k8s-worker-03:
+              ansible_host: <internal-ip>
+              vm_id: 213
+              gpu: true
+              gpu_pci_id: "5e:00.0"

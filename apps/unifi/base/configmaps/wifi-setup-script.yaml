@@ -1,0 +1,414 @@
+# UniFi WiFi Setup Script ConfigMap
+# Contains the script that configures WiFi networks via Unifi API
+# Updated for AP-less operation - creates networks/SSIDs without adopted APs
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unifi-wifi-setup-script
+  namespace: unifi
+data:
+  setup-wifi.sh: |
+    #!/bin/bash
+    # =============================================================================
+    # Unifi WiFi Network Configuration Script (Kubernetes Job version)
+    # Creates VLAN-tagged WiFi networks via Unifi API v9+
+    # Supports AP-less operation - creates all config before APs are adopted
+    # =============================================================================
+    set -e
+
+    # Configuration - use service DNS name within the cluster
+    UNIFI_URL="${UNIFI_URL:-https://unifi.unifi.svc.cluster.local:8443}"
+    UNIFI_SITE="default"
+    COOKIE_FILE="/tmp/unifi_cookie.txt"
+
+    # Color output
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m'
+
+    log() { echo -e "${GREEN}[INFO]${NC} $1"; }
+    warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+    error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+    # Wait for Unifi to be ready (uses login API instead of /status)
+    wait_for_unifi() {
+        log "Waiting for Unifi Controller to be ready..."
+        for i in $(seq 1 90); do
+            # Check if port is open first
+            if nc -z unifi.unifi.svc.cluster.local 8443 2>/dev/null; then
+                # Try a simple HTTPS request
+                HTTP_CODE=$(curl -sk -o /dev/null -w "%{http_code}" "${UNIFI_URL}/manage/account/login" 2>/dev/null || echo "000")
+                if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
+                    log "Unifi Controller is ready (HTTP $HTTP_CODE)"
+                    return 0
+                fi
+            fi
+            echo "Attempt $i/90 - waiting 10s..."
+            sleep 10
+        done
+        error "Unifi Controller did not become ready in 15 minutes"
+    }
+
+    # Login to Unifi Controller
+    login() {
+        log "Logging in to Unifi Controller..."
+        RESPONSE=$(curl -sk -c "$COOKIE_FILE" -b "$COOKIE_FILE" \
+            -X POST "${UNIFI_URL}/api/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"${UNIFI_USER}\",\"password\":\"${UNIFI_PASS}\"}" \
+            -w "\n%{http_code}")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        if [ "$HTTP_CODE" != "200" ]; then
+            error "Login failed with HTTP $HTTP_CODE"
+        fi
+        log "Login successful"
+    }
+
+    # Get existing networks
+    get_networks() {
+        curl -sk -b "$COOKIE_FILE" \
+            "${UNIFI_URL}/api/s/${UNIFI_SITE}/rest/networkconf" \
+            -H "Content-Type: application/json" 2>/dev/null
+    }
+
+    # Get existing WLANs
+    get_wlans() {
+        curl -sk -b "$COOKIE_FILE" \
+            "${UNIFI_URL}/api/s/${UNIFI_SITE}/rest/wlanconf" \
+            -H "Content-Type: application/json" 2>/dev/null
+    }
+
+    # Get AP Groups (v2 API - required for Unifi v9+)
+    get_ap_groups() {
+        curl -sk -b "$COOKIE_FILE" \
+            "${UNIFI_URL}/v2/api/site/${UNIFI_SITE}/apgroups" \
+            -H "Content-Type: application/json" 2>/dev/null
+    }
+
+    # Get adopted APs
+    get_adopted_aps() {
+        curl -sk -b "$COOKIE_FILE" \
+            "${UNIFI_URL}/api/s/${UNIFI_SITE}/stat/device" \
+            -H "Content-Type: application/json" 2>/dev/null | \
+            jq -r '.data[] | select(.adopted==true and .type=="uap") | .mac'
+    }
+
+    # Create AP Group (v2 API - required for Unifi v9+)
+    create_ap_group() {
+        local name="$1"
+        shift
+        local macs=("$@")
+
+        log "Creating AP Group: $name..."
+
+        EXISTING=$(get_ap_groups | jq -r ".[] | select(.name==\"$name\") | ._id")
+        if [ -n "$EXISTING" ]; then
+            warn "AP Group '$name' already exists (ID: $EXISTING)"
+            echo "$EXISTING"
+            return 0
+        fi
+
+        MAC_JSON=$(printf '%s\n' "${macs[@]}" | jq -R . | jq -s .)
+
+        RESPONSE=$(curl -sk -b "$COOKIE_FILE" \
+            -X POST "${UNIFI_URL}/v2/api/site/${UNIFI_SITE}/apgroups" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\": \"${name}\", \"device_macs\": ${MAC_JSON}}" \
+            -w "\n%{http_code}")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | head -n -1)
+
+        if [ "$HTTP_CODE" = "200" ]; then
+            GROUP_ID=$(echo "$BODY" | jq -r '._id')
+            log "AP Group '$name' created (ID: $GROUP_ID)"
+            echo "$GROUP_ID"
+        else
+            warn "Failed to create AP Group '$name': $BODY"
+            return 1
+        fi
+    }
+
+    # Create a VLAN network
+    create_network() {
+        local name="$1"
+        local vlan_id="$2"
+        local purpose="${3:-vlan-only}"
+
+        log "Creating network: $name (VLAN $vlan_id)..."
+
+        EXISTING=$(get_networks | jq -r ".data[] | select(.name==\"$name\") | ._id")
+        if [ -n "$EXISTING" ]; then
+            warn "Network '$name' already exists, skipping..."
+            echo "$EXISTING"
+            return 0
+        fi
+
+        if [ "$purpose" = "vlan-only" ]; then
+            NETWORK_DATA="{\"name\": \"${name}\", \"purpose\": \"vlan-only\", \"vlan_enabled\": true, \"vlan\": \"${vlan_id}\", \"enabled\": true}"
+        else
+            NETWORK_DATA="{\"name\": \"${name}\", \"purpose\": \"${purpose}\", \"vlan_enabled\": true, \"vlan\": \"${vlan_id}\", \"networkgroup\": \"LAN\", \"dhcpd_enabled\": false, \"enabled\": true}"
+        fi
+
+        RESPONSE=$(curl -sk -b "$COOKIE_FILE" \
+            -X POST "${UNIFI_URL}/api/s/${UNIFI_SITE}/rest/networkconf" \
+            -H "Content-Type: application/json" \
+            -d "$NETWORK_DATA" \
+            -w "\n%{http_code}")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | head -n -1)
+
+        if [ "$HTTP_CODE" = "200" ]; then
+            NETWORK_ID=$(echo "$BODY" | jq -r '.data[0]._id')
+            log "Network '$name' created (ID: $NETWORK_ID)"
+            echo "$NETWORK_ID"
+        else
+            warn "Failed to create network '$name': $BODY"
+            return 1
+        fi
+    }
+
+    # Create a WiFi SSID
+    create_wlan() {
+        local name="$1"
+        local ssid="$2"
+        local wifi_pass="$3"
+        local network_id="$4"
+        local ap_group_id="$5"
+        local security="${6:-wpapsk}"
+        local wpa_mode="${7:-wpa2}"
+        local guest_mode="${8:-false}"
+
+        log "Creating WLAN: $ssid..."
+
+        EXISTING=$(get_wlans | jq -r ".data[] | select(.name==\"$ssid\") | ._id")
+        if [ -n "$EXISTING" ]; then
+            warn "WLAN '$ssid' already exists, skipping..."
+            return 0
+        fi
+
+        if [ "$security" = "open" ]; then
+            WLAN_DATA="{\"name\": \"${ssid}\", \"security\": \"open\", \"networkconf_id\": \"${network_id}\", \"ap_group_ids\": [\"${ap_group_id}\"], \"enabled\": true, \"is_guest\": ${guest_mode}, \"wlan_band\": \"both\", \"hide_ssid\": false, \"pmf_mode\": \"disabled\"}"
+        else
+            WLAN_DATA="{\"name\": \"${ssid}\", \"security\": \"${security}\", \"x_passphrase\": \"${wifi_pass}\", \"networkconf_id\": \"${network_id}\", \"ap_group_ids\": [\"${ap_group_id}\"], \"enabled\": true, \"is_guest\": ${guest_mode}, \"wlan_band\": \"both\", \"wpa_mode\": \"${wpa_mode}\", \"wpa_enc\": \"ccmp\", \"hide_ssid\": false, \"pmf_mode\": \"optional\"}"
+        fi
+
+        RESPONSE=$(curl -sk -b "$COOKIE_FILE" \
+            -X POST "${UNIFI_URL}/api/s/${UNIFI_SITE}/rest/wlanconf" \
+            -H "Content-Type: application/json" \
+            -d "$WLAN_DATA" \
+            -w "\n%{http_code}")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | head -n -1)
+
+        if [ "$HTTP_CODE" = "200" ]; then
+            WLAN_ID=$(echo "$BODY" | jq -r '.data[0]._id')
+            log "WLAN '$ssid' created (ID: $WLAN_ID)"
+        else
+            warn "Failed to create WLAN '$ssid': $BODY"
+            return 1
+        fi
+    }
+
+    # Configure client isolation
+    configure_isolation() {
+        local network_name="$1"
+        log "Configuring isolation for $network_name..."
+
+        NETWORK_ID=$(get_networks | jq -r ".data[] | select(.name==\"$network_name\") | ._id")
+        if [ -z "$NETWORK_ID" ]; then
+            warn "Network '$network_name' not found"
+            return 1
+        fi
+
+        curl -sk -b "$COOKIE_FILE" \
+            -X PUT "${UNIFI_URL}/api/s/${UNIFI_SITE}/rest/networkconf/${NETWORK_ID}" \
+            -H "Content-Type: application/json" \
+            -d "{\"l2_isolation\": true, \"intra_network_access_enabled\": false}" \
+            >/dev/null 2>&1
+
+        log "Isolation configured for $network_name"
+    }
+
+    # Logout
+    logout() {
+        curl -sk -b "$COOKIE_FILE" \
+            -X POST "${UNIFI_URL}/api/logout" \
+            >/dev/null 2>&1
+        rm -f "$COOKIE_FILE"
+        log "Logged out"
+    }
+
+    trap logout EXIT
+
+    # Get or create default AP group (works without APs)
+    get_or_create_default_ap_group() {
+        log "Getting or creating default AP group for WLANs..."
+
+        # First check for existing AP groups
+        EXISTING_GROUPS=$(get_ap_groups)
+
+        # Look for "All APs" or "Default" group first
+        DEFAULT_GROUP=$(echo "$EXISTING_GROUPS" | jq -r '.[] | select(.name=="All APs" or .name=="Default" or .name=="Local") | ._id' | head -1)
+
+        if [ -n "$DEFAULT_GROUP" ] && [ "$DEFAULT_GROUP" != "null" ]; then
+            log "Found existing AP group: $DEFAULT_GROUP"
+            echo "$DEFAULT_GROUP"
+            return 0
+        fi
+
+        # Create "All APs" group with empty device list (works without adopted APs)
+        log "Creating 'All APs' group with empty device list..."
+        RESPONSE=$(curl -sk -b "$COOKIE_FILE" \
+            -X POST "${UNIFI_URL}/v2/api/site/${UNIFI_SITE}/apgroups" \
+            -H "Content-Type: application/json" \
+            -d '{"name": "All APs", "device_macs": []}' \
+            -w "\n%{http_code}")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | head -n -1)
+
+        if [ "$HTTP_CODE" = "200" ]; then
+            GROUP_ID=$(echo "$BODY" | jq -r '._id')
+            log "Created 'All APs' group: $GROUP_ID"
+            echo "$GROUP_ID"
+        else
+            warn "Failed to create AP group, trying fallback..."
+            # Fallback: use any existing group
+            FALLBACK=$(echo "$EXISTING_GROUPS" | jq -r '.[0]._id' 2>/dev/null)
+            if [ -n "$FALLBACK" ] && [ "$FALLBACK" != "null" ]; then
+                echo "$FALLBACK"
+            else
+                error "No AP groups available and couldn't create one"
+            fi
+        fi
+    }
+
+    # Create WLAN without AP group requirement (for AP-less deployment)
+    create_wlan_apless() {
+        local name="$1"
+        local ssid="$2"
+        local wifi_pass="$3"
+        local network_id="$4"
+        local ap_group_id="$5"
+        local security="${6:-wpapsk}"
+        local wpa_mode="${7:-wpa2}"
+        local guest_mode="${8:-false}"
+
+        log "Creating WLAN: $ssid (AP-less compatible)..."
+
+        EXISTING=$(get_wlans | jq -r ".data[] | select(.name==\"$ssid\") | ._id")
+        if [ -n "$EXISTING" ]; then
+            warn "WLAN '$ssid' already exists, skipping..."
+            return 0
+        fi
+
+        # Build WLAN data - ap_group_ids can be empty array for broadcast to all APs
+        if [ -z "$ap_group_id" ] || [ "$ap_group_id" = "null" ]; then
+            AP_GROUP_PART='"ap_group_ids": []'
+        else
+            AP_GROUP_PART="\"ap_group_ids\": [\"${ap_group_id}\"]"
+        fi
+
+        if [ "$security" = "open" ]; then
+            WLAN_DATA="{\"name\": \"${ssid}\", \"security\": \"open\", \"networkconf_id\": \"${network_id}\", ${AP_GROUP_PART}, \"enabled\": true, \"is_guest\": ${guest_mode}, \"wlan_band\": \"both\", \"hide_ssid\": false, \"pmf_mode\": \"disabled\"}"
+        else
+            WLAN_DATA="{\"name\": \"${ssid}\", \"security\": \"${security}\", \"x_passphrase\": \"${wifi_pass}\", \"networkconf_id\": \"${network_id}\", ${AP_GROUP_PART}, \"enabled\": true, \"is_guest\": ${guest_mode}, \"wlan_band\": \"both\", \"wpa_mode\": \"${wpa_mode}\", \"wpa_enc\": \"ccmp\", \"hide_ssid\": false, \"pmf_mode\": \"optional\"}"
+        fi
+
+        RESPONSE=$(curl -sk -b "$COOKIE_FILE" \
+            -X POST "${UNIFI_URL}/api/s/${UNIFI_SITE}/rest/wlanconf" \
+            -H "Content-Type: application/json" \
+            -d "$WLAN_DATA" \
+            -w "\n%{http_code}")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | head -n -1)
+
+        if [ "$HTTP_CODE" = "200" ]; then
+            WLAN_ID=$(echo "$BODY" | jq -r '.data[0]._id')
+            log "WLAN '$ssid' created (ID: $WLAN_ID)"
+        else
+            warn "Failed to create WLAN '$ssid': $BODY"
+            return 1
+        fi
+    }
+
+    # =============================================================================
+    # Main
+    # =============================================================================
+    log "============================================"
+    log "Unifi WiFi Network Configuration"
+    log "(AP-less compatible - works without adopted APs)"
+    log "============================================"
+
+    wait_for_unifi
+    login
+
+    # Create AP Groups (with empty device list for AP-less operation)
+    log ""
+    log "=== Creating AP Groups (AP-less compatible) ==="
+    ADOPTED_APS=($(get_adopted_aps 2>/dev/null || echo ""))
+    log "Found ${#ADOPTED_APS[@]} adopted AP(s)"
+
+    # Create groups with whatever APs exist (or empty)
+    LOCAL_GROUP_ID=$(create_ap_group "Local" "${ADOPTED_APS[@]}" 2>/dev/null || echo "")
+    REMOTE_GROUP_ID=$(create_ap_group "Remote" 2>/dev/null || echo "")
+
+    # Fallback to getting existing or creating default
+    if [ -z "$LOCAL_GROUP_ID" ] || [ "$LOCAL_GROUP_ID" = "null" ]; then
+        LOCAL_GROUP_ID=$(get_ap_groups | jq -r '.[] | select(.name=="Local") | ._id' 2>/dev/null)
+    fi
+    if [ -z "$LOCAL_GROUP_ID" ] || [ "$LOCAL_GROUP_ID" = "null" ]; then
+        LOCAL_GROUP_ID=$(get_or_create_default_ap_group)
+    fi
+
+    log "Using AP Group ID: $LOCAL_GROUP_ID"
+
+    # Create VLAN Networks (no APs required)
+    log ""
+    log "=== Creating VLAN Networks ==="
+    NACHO_NET_ID=$(create_network "Nacho" 70 "vlan-only")
+    IOT_NET_ID=$(create_network "IoT" 80 "vlan-only")
+    GUEST_NET_ID=$(create_network "Guest" 100 "guest")
+
+    if [ -z "$NACHO_NET_ID" ] || [ "$NACHO_NET_ID" = "null" ]; then
+        NACHO_NET_ID=$(get_networks | jq -r '.data[] | select(.name=="Nacho") | ._id')
+    fi
+    if [ -z "$IOT_NET_ID" ] || [ "$IOT_NET_ID" = "null" ]; then
+        IOT_NET_ID=$(get_networks | jq -r '.data[] | select(.name=="IoT") | ._id')
+    fi
+    if [ -z "$GUEST_NET_ID" ] || [ "$GUEST_NET_ID" = "null" ]; then
+        GUEST_NET_ID=$(get_networks | jq -r '.data[] | select(.name=="Guest") | ._id')
+    fi
+
+    log "Network IDs: Nacho=$NACHO_NET_ID, IoT=$IOT_NET_ID, Guest=$GUEST_NET_ID"
+
+    # Create WiFi SSIDs (using AP-less compatible function)
+    log ""
+    log "=== Creating WiFi Networks (AP-less compatible) ==="
+    create_wlan_apless "Nacho" "Nacho" "$NACHO_WIFI_PASS" "$NACHO_NET_ID" "$LOCAL_GROUP_ID" "wpapsk" "wpa2" "false"
+    create_wlan_apless "IoT" "IoT" "$IOT_WIFI_PASS" "$IOT_NET_ID" "$LOCAL_GROUP_ID" "wpapsk" "wpa2" "false"
+    create_wlan_apless "Guest" "Guest" "$GUEST_WIFI_PASS" "$GUEST_NET_ID" "$LOCAL_GROUP_ID" "wpapsk" "wpa2" "true"
+
+    # Configure Isolation
+    log ""
+    log "=== Configuring Network Isolation ==="
+    configure_isolation "IoT"
+    configure_isolation "Guest"
+
+    log ""
+    log "============================================"
+    log "WiFi Configuration Complete!"
+    log "============================================"
+    log "Networks: Nacho (VLAN 70), IoT (VLAN 80), Guest (VLAN 100)"
+    log "SSIDs: Nacho, IoT, Guest (all WPA2)"
+    log "AP Groups: Created with empty device list"
+    log "Note: When APs are adopted, assign them to groups manually"
+    log "      or they will use the 'All APs' broadcast group"
+    log "============================================"

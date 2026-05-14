@@ -1,0 +1,16 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - rbac/rbac.yaml
+  - config/configmap.yaml
+  - secrets/secret-template.yaml
+  - secrets/runner-token-template.yaml
+  - secrets/automation-ssh-key.yaml
+  - storage/pvc.yaml
+  - deployments/deployment.yaml
+  - jobs/runner-auto-register.yaml
+  - monitoring/service.yaml
+  - monitoring/servicemonitor.yaml
+  - autoscaling

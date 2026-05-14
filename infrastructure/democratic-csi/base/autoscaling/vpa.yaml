@@ -1,0 +1,59 @@
+---
+# VPA for democratic-csi iSCSI controller
+# Multi-container: csi-driver + sidecar containers
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: democratic-csi-iscsi-controller
+  namespace: democratic-csi
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: democratic-csi-iscsi-controller
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: csi-driver
+        minAllowed:
+          cpu: 25m
+          memory: 32Mi
+        maxAllowed:
+          cpu: 500m
+          memory: 256Mi
+      - containerName: external-provisioner
+        minAllowed:
+          cpu: 10m
+          memory: 16Mi
+        maxAllowed:
+          cpu: 100m
+          memory: 64Mi
+      - containerName: external-resizer
+        minAllowed:
+          cpu: 10m
+          memory: 16Mi
+        maxAllowed:
+          cpu: 100m
+          memory: 64Mi
+      - containerName: external-snapshotter
+        minAllowed:
+          cpu: 10m
+          memory: 16Mi
+        maxAllowed:
+          cpu: 100m
+          memory: 64Mi
+      - containerName: external-attacher
+        minAllowed:
+          cpu: 10m
+          memory: 16Mi
+        maxAllowed:
+          cpu: 100m
+          memory: 64Mi
+      - containerName: csi-proxy
+        minAllowed:
+          cpu: 10m
+          memory: 16Mi
+        maxAllowed:
+          cpu: 50m
+          memory: 64Mi

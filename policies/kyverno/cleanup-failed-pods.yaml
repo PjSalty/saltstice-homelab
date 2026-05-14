@@ -1,0 +1,30 @@
+---
+# Kyverno CleanupPolicy: Remove Failed Pods
+# Failed pods (non-evicted) that have been in Failed state.
+# The daily cluster-cleanup CronJob also catches these, but this provides
+# faster cleanup for pods that fail between daily runs.
+apiVersion: kyverno.io/v2
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-failed-pods
+  labels:
+    app.kubernetes.io/component: cleanup
+    app.kubernetes.io/part-of: kyverno
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+  exclude:
+    any:
+      - resources:
+          namespaces:
+            - kube-system
+            - flux-system
+  conditions:
+    all:
+      - key: "{{ status.phase }}"
+        operator: Equals
+        value: Failed

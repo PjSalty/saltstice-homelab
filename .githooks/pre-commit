@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# pre-commit hook — runs gitleaks + PII scan on staged content.
+# Install: git config core.hooksPath .githooks
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+# 1. gitleaks on staged changes
+if command -v gitleaks >/dev/null 2>&1; then
+  echo "→ gitleaks protect --staged"
+  gitleaks protect --staged --no-banner --redact || {
+    echo "✗ gitleaks blocked the commit."
+    exit 1
+  }
+else
+  echo "⚠ gitleaks not installed — skipping secret scan."
+  echo "  Install: go install github.com/zricethezav/gitleaks/v8@latest"
+fi
+
+# 2. PII scan on staged changes
+if [[ -x "$repo_root/scripts/pii-scan.sh" ]]; then
+  echo "→ pii-scan --staged"
+  "$repo_root/scripts/pii-scan.sh" --staged
+fi
+
+echo "✓ pre-commit checks passed"

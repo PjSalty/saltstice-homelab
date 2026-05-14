@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Proxmox Post-Maintenance Verification
+Documentation=https://gitlab.example.com/infrastructure/homelab-ansible
+# Run after Proxmox finishes starting all VMs
+After=pve-guests.service network-online.target
+Wants=network-online.target
+# Only run if maintenance was in progress (state file exists)
+ConditionPathExists=/var/lib/proxmox-maintenance/reboot-timestamp
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/proxmox-post-maintenance.sh
+TimeoutStartSec=1800
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,123 @@
+# Terraform CI/CD Template
+# Version: 2026-04-11
+#
+# Usage: include in .gitlab-ci.yml with:
+#   include:
+#     - project: 'infrastructure/homelab-ci-templates'
+#       ref: main
+#       file: '/terraform.yml'
+#
+# Available jobs:
+#   .terraform:validate - fmt + validate (no backend required)
+#   .terraform:plan     - Init + plan with remote state
+#   .terraform:apply    - Apply saved plan (manual gate on main)
+#
+# Variables:
+#   TF_DIR: Directory containing terraform files (default: terraform)
+#   TF_STATE_NAME: State file name (default: homelab)
+#   TF_HTTP_SKIP_CERT_VERIFICATION: Skip TLS verification (default: false)
+#
+# Shared variables for all Terraform jobs
+.terraform:base:
+  variables:
+    TF_HTTP_SKIP_CERT_VERIFICATION: "false"
+    TF_STATE_NAME: homelab
+    TF_HTTP_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}"
+    TF_HTTP_LOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}/lock"
+    TF_HTTP_UNLOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}/lock"
+    TF_HTTP_USERNAME: "gitlab-ci-token"
+    TF_HTTP_PASSWORD: "${CI_JOB_TOKEN}"
+    TF_HTTP_LOCK_METHOD: "POST"
+    TF_HTTP_UNLOCK_METHOD: "DELETE"
+    TF_IN_AUTOMATION: "true"
+    # Use project-local plugin cache for faster init
+    TF_PLUGIN_CACHE_DIR: "${CI_PROJECT_DIR}/.terraform-plugin-cache"
+  cache:
+    key:
+      files:
+        - ${TF_DIR:-terraform}/.terraform.lock.hcl
+    paths:
+      - .terraform-plugin-cache/
+    policy: pull-push
+  before_script:
+    - mkdir -p ${TF_PLUGIN_CACHE_DIR}
+  interruptible: true
+
+.terraform:validate:
+  extends: .terraform:base
+  stage: validate
+  timeout: 10 minutes
+  image: harbor.example.com/dockerhub-proxy/hashicorp/terraform:1.14.5@sha256:96d2bc440714bf2b2f2998ac730fd4612f30746df43fca6f0892b2e2035b11bc
+  # Retry on network failures — terraform downloads providers/modules from internet
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+  script:
+    - cd ${TF_DIR:-terraform}
+    # Validate without backend to check syntax only
+    - terraform init -backend=false
+    - terraform validate
+    - terraform fmt -check -diff
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - ${TF_DIR:-terraform}/**/*.tf
+    - if: $CI_COMMIT_BRANCH
+      changes:
+        - ${TF_DIR:-terraform}/**/*.tf
+
+.terraform:plan:
+  extends: .terraform:base
+  stage: plan
+  timeout: 15 minutes
+  image: harbor.example.com/dockerhub-proxy/hashicorp/terraform:1.14.5@sha256:96d2bc440714bf2b2f2998ac730fd4612f30746df43fca6f0892b2e2035b11bc
+  # Retry on network failures — plan fetches provider APIs
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+  script:
+    - cd ${TF_DIR:-terraform}
+    - terraform init -input=false
+    - terraform plan -input=false -out=tfplan
+  artifacts:
+    paths:
+      - ${TF_DIR:-terraform}/tfplan
+      - ${TF_DIR:-terraform}/.terraform.lock.hcl
+    # 7 days: plan files should be applied promptly; 30 days accumulates stale artifacts
+    expire_in: 7 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - ${TF_DIR:-terraform}/**/*.tf
+    - if: $CI_COMMIT_BRANCH
+      changes:
+        - ${TF_DIR:-terraform}/**/*.tf
+
+.terraform:apply:
+  extends: .terraform:base
+  stage: deploy
+  timeout: 30 minutes
+  image: harbor.example.com/dockerhub-proxy/hashicorp/terraform:1.14.5@sha256:96d2bc440714bf2b2f2998ac730fd4612f30746df43fca6f0892b2e2035b11bc
+  # Use plan artifact from plan stage - don't regenerate
+  dependencies:
+    - terraform:plan
+  script:
+    - cd ${TF_DIR:-terraform}
+    - terraform init -input=false
+    # Apply the saved plan (not regenerating)
+    - terraform apply -input=false tfplan
+  resource_group: terraform-${TF_STATE_NAME}
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "pipeline"
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - ${TF_DIR:-terraform}/**/*.tf
+      when: manual
+  interruptible: false

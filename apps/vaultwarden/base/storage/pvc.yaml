@@ -1,0 +1,30 @@
+---
+# Dedicated PV for Vaultwarden storage
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: vaultwarden-data-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-client
+  nfs:
+    server: ${NFS_SERVER}
+    path: /mnt/tank/kubernetes/vaultwarden-vaultwarden-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vaultwarden-data
+  namespace: vaultwarden
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-client
+  volumeName: vaultwarden-data-pv
+  resources:
+    requests:
+      storage: 5Gi

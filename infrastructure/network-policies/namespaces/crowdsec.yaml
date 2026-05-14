@@ -1,0 +1,77 @@
+---
+# CrowdSec IPS — needs access to K8s API, traefik logs, and CrowdSec community API
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-crowdsec
+  namespace: crowdsec
+spec:
+  description: CrowdSec IPS network policy
+  endpointSelector: {}
+  ingress:
+    # Internal communication (agent -> LAPI, same namespace)
+    - fromEndpoints:
+        - {}
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "6060"
+              protocol: TCP
+    # Allow MCP server read-only API access (LAPI)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp-server
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow Traefik bouncer to reach LAPI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow Prometheus to scrape metrics
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "6060"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s-app: kube-dns
+            k8s:io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # K8s API for log collection
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # CrowdSec community API (app.crowdsec.net)
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Internal communication (agent <-> LAPI, same namespace)
+    - toEndpoints:
+        - {}
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

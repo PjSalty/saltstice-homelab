@@ -1,0 +1,188 @@
+---
+# ProxmoxUnmanagedTemplate - references pre-existing Debian 13 VM template in Proxmox
+# Prerequisites:
+# 1. Proxmox VM template (ID 9000) with Debian 13 cloud-init, VLAN 30, SSH keys
+# 2. Template must have QEMU guest agent, cloud-init drive
+apiVersion: karpenter.proxmox.sinextra.dev/v1alpha1
+kind: ProxmoxUnmanagedTemplate
+metadata:
+  name: debian-worker
+spec:
+  templateName: karpenter-k8s-worker-template
+---
+# ProxmoxNodeClass - defines how Karpenter provisions VMs on Proxmox
+apiVersion: karpenter.proxmox.sinextra.dev/v1alpha1
+kind: ProxmoxNodeClass
+metadata:
+  name: debian-worker
+spec:
+  region: homelab
+
+  instanceTemplateRef:
+    kind: ProxmoxUnmanagedTemplate
+    name: debian-worker
+
+  placementStrategy:
+    zoneBalance: Balanced
+
+  bootDevice:
+    size: 50Gi
+    storage: local-zfs
+
+  # Cloud-init template for package upgrades and RKE2 bootstrap
+  metadataOptions:
+    type: cdrom
+    templatesRef:
+      name: karpenter-cloud-init
+      namespace: karpenter
+    valuesRef:
+      name: karpenter-cloud-init-values
+      namespace: karpenter
+
+  tags:
+    - kubernetes
+    - karpenter
+    - worker
+---
+# NodePool: Standard workers (1:4 vCPU:memory ratio)
+# Used for general workloads — web apps, APIs, background jobs
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: standard-pool
+spec:
+  # Conservative limits — single Proxmox host with ~10 vCPU / 84GB headroom
+  limits:
+    cpu: "16"
+    memory: 64Gi
+
+  weight: 50  # Default priority
+
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 10m
+
+  template:
+    metadata:
+      labels:
+        homelab.example.com/node-role: worker
+        homelab.example.com/instance-family: standard
+    spec:
+      nodeClassRef:
+        group: karpenter.proxmox.sinextra.dev
+        kind: ProxmoxNodeClass
+        name: debian-worker
+
+      expireAfter: 720h  # 30 days — force rotation for patching
+
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.proxmox.sinextra.dev/instance-family
+          operator: In
+          values: ["s1"]  # Standard: 2c/8G or 4c/16G
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+
+      # Prefer smaller instances first (bin-pack efficiently)
+      # Karpenter will scale up instance size if small ones can't fit the workload
+
+      # Taints to identify Karpenter-managed nodes
+      taints:
+        - key: homelab.example.com/karpenter
+          value: "true"
+          effect: NoSchedule
+---
+# NodePool: Memory-optimized (1:8 vCPU:memory ratio)
+# Used for databases, caches, memory-intensive workloads
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: memory-pool
+spec:
+  limits:
+    cpu: "8"
+    memory: 64Gi
+
+  weight: 30  # Lower priority than standard
+
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 15m
+
+  template:
+    metadata:
+      labels:
+        homelab.example.com/node-role: worker
+        homelab.example.com/instance-family: memory
+    spec:
+      nodeClassRef:
+        group: karpenter.proxmox.sinextra.dev
+        kind: ProxmoxNodeClass
+        name: debian-worker
+
+      expireAfter: 720h
+
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.proxmox.sinextra.dev/instance-family
+          operator: In
+          values: ["m1"]  # Memory: 2c/16G or 4c/32G
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+
+      taints:
+        - key: homelab.example.com/karpenter
+          value: "true"
+          effect: NoSchedule
+---
+# NodePool: Compute-optimized (1:2 vCPU:memory ratio)
+# Used for CI runners, build jobs, CPU-intensive processing
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: compute-pool
+spec:
+  limits:
+    cpu: "16"
+    memory: 32Gi
+
+  weight: 20  # Lowest priority
+
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 5m  # Aggressive — compute nodes are ephemeral
+
+  template:
+    metadata:
+      labels:
+        homelab.example.com/node-role: worker
+        homelab.example.com/instance-family: compute
+    spec:
+      nodeClassRef:
+        group: karpenter.proxmox.sinextra.dev
+        kind: ProxmoxNodeClass
+        name: debian-worker
+
+      expireAfter: 168h  # 7 days — compute nodes rotate faster
+
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.proxmox.sinextra.dev/instance-family
+          operator: In
+          values: ["c1"]  # Compute: 4c/8G or 8c/16G
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+
+      taints:
+        - key: homelab.example.com/karpenter
+          value: "true"
+          effect: NoSchedule

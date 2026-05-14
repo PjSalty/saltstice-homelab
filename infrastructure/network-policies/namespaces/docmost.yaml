@@ -1,0 +1,82 @@
+---
+# Docmost wiki — internal app with PostgreSQL and Redis
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-docmost
+  namespace: docmost
+spec:
+  description: "Allow Docmost documentation wiki"
+  endpointSelector: {}
+  ingress:
+    # Allow Traefik for web UI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # Allow monitoring scrape (Prometheus → postgres-exporter, redis-exporter)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9187"
+              protocol: TCP
+            - port: "9121"
+              protocol: TCP
+    # Allow GitLab CI runner for Docmost docs sync
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: gitlab-runner
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # Allow intra-namespace (docmost ↔ postgresql ↔ redis)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: docmost
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "5432"
+              protocol: TCP
+            - port: "6379"
+              protocol: TCP
+  egress:
+    # Allow internal PostgreSQL/Redis within namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: docmost
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "5432"
+              protocol: TCP
+            - port: "6379"
+              protocol: TCP
+    # Allow Authentik SSO
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: authentik
+      toPorts:
+        - ports:
+            - port: "9443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

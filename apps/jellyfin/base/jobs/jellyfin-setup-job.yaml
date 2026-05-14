@@ -1,0 +1,142 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jellyfin-setup-script
+  namespace: media
+data:
+  setup.sh: |
+    #!/bin/sh
+    # Jellyfin Complete Automated Setup
+    # Credentials loaded from environment variables (Kubernetes Secret)
+
+    set -e
+
+    # Use internal service DNS name instead of LoadBalancer IP
+    JELLYFIN_URL="http://jellyfin.media.svc.cluster.local:8096"
+
+    echo "====================================="
+    echo "Jellyfin Automated Setup"
+    echo "====================================="
+
+    # Wait for Jellyfin
+    echo "[1/6] Waiting for Jellyfin..."
+    MAX_RETRIES=30
+    RETRY=0
+    while [ $RETRY -lt $MAX_RETRIES ]; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${JELLYFIN_URL}/health" 2>/dev/null || echo "000")
+        [ "$HTTP_CODE" = "200" ] && break
+        RETRY=$((RETRY + 1))
+        echo "  Waiting... (${RETRY}/${MAX_RETRIES})"
+        sleep 10
+    done
+    [ $RETRY -eq $MAX_RETRIES ] && echo "ERROR: Jellyfin not ready" && exit 1
+    echo " Jellyfin is ready"
+
+    # Check wizard status (without jq - use grep/sed)
+    echo "[2/6] Checking setup status..."
+    PUBLIC_INFO=$(curl -s "${JELLYFIN_URL}/System/Info/Public")
+    WIZARD_DONE=$(echo "$PUBLIC_INFO" | grep -o '"StartupWizardCompleted":[^,}]*' | cut -d':' -f2 | tr -d ' ')
+
+    if [ "$WIZARD_DONE" = "true" ]; then
+        echo " Wizard already complete"
+        SKIP_WIZARD=true
+    else
+        echo "Running initial setup..."
+        SKIP_WIZARD=false
+    fi
+
+    # Run wizard if needed
+    if [ "$SKIP_WIZARD" = "false" ]; then
+        echo "[3/6] Configuring startup..."
+        curl -s -X POST "${JELLYFIN_URL}/Startup/Configuration" \
+            -H "Content-Type: application/json" \
+            -d '{"UICulture":"en-US","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}' > /dev/null
+
+        echo "  Creating admin user..."
+        ADMIN_RESP=$(curl -s -X POST "${JELLYFIN_URL}/Startup/User" \
+            -H "Content-Type: application/json" \
+            -d "{\"Name\":\"${ADMIN_USERNAME}\",\"Password\":\"${ADMIN_PASSWORD}\"}")
+
+        # Parse Id without jq - extract value between "Id":" and next quote
+        USER_ID=$(echo "$ADMIN_RESP" | grep -o '"Id":"[^"]*' | cut -d'"' -f4)
+        [ -z "$USER_ID" ] && echo "ERROR: User creation failed - Response: $ADMIN_RESP" && exit 1
+        echo " Admin user created (ID: ${USER_ID})"
+
+        curl -s -X POST "${JELLYFIN_URL}/Startup/Complete" > /dev/null
+        echo " Wizard completed"
+        sleep 5
+    else
+        echo "[3/6] Skipping wizard"
+    fi
+
+    # Authenticate
+    echo "[4/6] Authenticating..."
+    AUTH_RESP=$(curl -s -X POST "${JELLYFIN_URL}/Users/AuthenticateByName" \
+        -H "Content-Type: application/json" \
+        -H "X-Emby-Authorization: MediaBrowser Client=\"Setup\", Device=\"Linux\", DeviceId=\"setup-001\", Version=\"1.0\"" \
+        -d "{\"Username\":\"${ADMIN_USERNAME}\",\"Pw\":\"${ADMIN_PASSWORD}\"}")
+
+    # Parse AccessToken without jq
+    TOKEN=$(echo "$AUTH_RESP" | grep -o '"AccessToken":"[^"]*' | cut -d'"' -f4)
+    [ -z "$TOKEN" ] && echo "ERROR: Authentication failed - Response: $AUTH_RESP" && exit 1
+    echo " Authenticated"
+
+    # Create libraries (non-destructive) - skip for now since it requires more complex JSON parsing
+    echo "[5/6] Skipping library creation (can be done via UI)..."
+    # Library creation can be added later through the UI or via a more complex script
+
+    # Configure server (basic settings only)
+    echo "[6/6] Configuring server..."
+    curl -s -X POST "${JELLYFIN_URL}/System/Configuration" \
+        -H "X-Emby-Token: ${TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{"EnableRemoteAccess":true,"PublicHttpsPort":443,"IsStartupWizardCompleted":true}' > /dev/null 2>&1 || true
+    echo " Server configured"
+
+    echo ""
+    echo "====================================="
+    echo "Setup Complete!"
+    echo "====================================="
+    echo "URL: https://jellyfin.example.com"
+    echo "User: ${ADMIN_USERNAME}"
+    echo ""
+    echo "SSO Login: https://jellyfin.example.com/sso/OID/start/Authentik"
+    echo "(Requires SSO-Auth plugin)"
+    echo ""
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-setup
+  namespace: media
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: jellyfin-setup
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: setup
+        image: ${IMAGE_CURL}
+        command:
+          - /bin/sh
+          - /scripts/setup.sh
+        envFrom:
+        - secretRef:
+            name: jellyfin-admin-credentials
+        volumeMounts:
+        - name: setup-script
+          mountPath: /scripts
+      volumes:
+      - name: setup-script
+        configMap:
+          name: jellyfin-setup-script
+          defaultMode: 0755

@@ -1,0 +1,31 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jellyfin-sso-config
+  namespace: media
+data:
+  SSO-Auth.xml: |
+    <?xml version="1.0" encoding="utf-8"?>
+    <PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+      <PluginVersion>1</PluginVersion>
+      <OidProviders>
+        <OidConfig>
+          <Name>Authentik</Name>
+          <Enabled>true</Enabled>
+          <OidEndpoint>https://auth.example.com/application/o/jellyfin/</OidEndpoint>
+          <OidClientId>jellyfin-sso</OidClientId>
+          <!-- Secret is injected by SSO install job from sso-client-secrets -->
+          <OidSecret>PLACEHOLDER_REPLACED_BY_SSO_JOB</OidSecret>
+          <EnableAuthorization>true</EnableAuthorization>
+          <EnableAllFolders>true</EnableAllFolders>
+          <EnabledFolders />
+          <AdminRoles />
+          <Roles />
+          <RoleClaim>groups</RoleClaim>
+          <DefaultProvider>true</DefaultProvider>
+          <CanonicalName>Authentik</CanonicalName>
+        </OidConfig>
+      </OidProviders>
+      <SamlConfigs />
+    </PluginConfiguration>

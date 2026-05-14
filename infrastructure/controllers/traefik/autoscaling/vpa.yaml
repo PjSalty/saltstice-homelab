@@ -1,0 +1,25 @@
+---
+# VPA for Traefik (internal ingress controller)
+# Off mode: Auto evictions cause ingress outages because Traefik's CRD
+# cache sync takes 20-30s and default liveness probes kill pods before
+# they're ready. Recommendations still visible via Goldilocks.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: traefik
+  namespace: traefik
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: traefik
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: traefik
+        controlledResources: ["memory"]
+        minAllowed:
+          memory: 64Mi
+        maxAllowed:
+          memory: 512Mi

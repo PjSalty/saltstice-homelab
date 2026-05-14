@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Proxmox Hypervisor Maintenance (pre-reboot)
+Documentation=https://gitlab.example.com/infrastructure/homelab-ansible
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/proxmox-maintenance.sh
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal

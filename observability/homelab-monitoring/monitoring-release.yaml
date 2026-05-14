@@ -1,0 +1,491 @@
+# kube-prometheus-stack HelmRelease
+# Researched: 2025-12-02
+# Source: https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack
+# Version: 79.10.0 (latest stable as of research)
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+    name: kube-prometheus-stack
+    namespace: flux-system
+spec:
+    interval: 30m
+    chart:
+        spec:
+            chart: kube-prometheus-stack
+            version: 79.10.0
+            sourceRef:
+                kind: HelmRepository
+                name: prometheus-community
+                namespace: flux-system
+            interval: 12h
+    targetNamespace: monitoring
+    install:
+        createNamespace: true
+        remediation:
+            retries: 3
+    upgrade:
+        remediation:
+            retries: 3
+    values:
+        # Global settings
+        fullnameOverride: ""
+        # Prometheus Configuration
+        prometheus:
+            enabled: true
+            ingress:
+                enabled: true
+                ingressClassName: traefik
+                annotations:
+                    traefik.ingress.kubernetes.io/router.tls: "true"
+                hosts:
+                    - prometheus.example.com
+                tls:
+                    - secretName: prometheus-tls-cert
+                      hosts:
+                        - prometheus.example.com
+            prometheusSpec:
+                # Probe tolerances - increase to handle slow responses under load
+                containers:
+                  - name: prometheus
+                    startupProbe:
+                      failureThreshold: 60
+                      periodSeconds: 15
+                      timeoutSeconds: 60
+                    livenessProbe:
+                      failureThreshold: 10
+                      periodSeconds: 60
+                      timeoutSeconds: 60
+                    readinessProbe:
+                      failureThreshold: 10
+                      periodSeconds: 60
+                      timeoutSeconds: 60
+                retention: 30d
+                retentionSize: 45GB
+                # Enable ServiceMonitor/PodMonitor auto-discovery from all namespaces
+                serviceMonitorSelectorNilUsesHelmValues: false
+                podMonitorSelectorNilUsesHelmValues: false
+                ruleSelectorNilUsesHelmValues: false
+                probeSelectorNilUsesHelmValues: false
+                storageSpec:
+                    volumeClaimTemplate:
+                        spec:
+                            storageClassName: nfs-client
+                            accessModes:
+                                - ReadWriteOnce
+                            resources:
+                                requests:
+                                    storage: 50Gi
+                resources:
+                    requests:
+                        cpu: 500m
+                        memory: 2Gi
+                    limits:
+                        cpu: 2000m
+                        memory: 4Gi
+                # External labels for cluster identification
+                externalLabels:
+                    cluster: homelab
+                    environment: production
+                # Additional scrape configs for infrastructure VMs (external targets)
+                additionalScrapeConfigs:
+                    # Infrastructure VMs - node_exporter
+                    - job_name: infrastructure-vms
+                      static_configs:
+                        - targets:
+                            # GitLab
+                            - <internal-ip>:9100
+                            # Harbor
+                            - <internal-ip>:9100
+                            # NetBox
+                            - <internal-ip>:9100
+                          labels:
+                            group: infrastructure
+                            vlan: "20"
+                        - targets:
+                            # AdGuard
+                            - <internal-ip>:9100
+                          labels:
+                            group: dns
+                            vlan: "20"
+                        - targets:
+                            # HAProxy-1
+                            - <internal-ip>:9100
+                            # HAProxy-2
+                            - <internal-ip>:9100
+                          labels:
+                            group: load_balancers
+                            vlan: "20"
+                        - targets:
+                            # TrueNAS
+                            - <internal-ip>:9100
+                          labels:
+                            group: storage
+                            vlan: "40"
+                        - targets:
+                            # Proxmox (K8s VLAN interface)
+                            - 10.x0.100:9100
+                          labels:
+                            group: hypervisor
+                            vlan: "30"
+                      relabel_configs:
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: gitlab
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: harbor
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: netbox
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: adguard
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-1
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-2
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: truenas
+                        - source_labels:
+                            - __address__
+                          regex: 10.x0.100:.*
+                          target_label: instance
+                          replacement: proxmox
+                    # HAProxy exporter - scrape haproxy_exporter on port 9101
+                    - job_name: haproxy
+                      static_configs:
+                        - targets:
+                            - <internal-ip>:9101
+                            - <internal-ip>:9101
+                          labels:
+                            group: load_balancers
+                            vlan: "20"
+                      relabel_configs:
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-1
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-2
+                      scrape_interval: 30s
+                      scrape_timeout: 15s
+                    # Keepalived exporter - scrape keepalived_exporter on port 9650
+                    - job_name: keepalived
+                      static_configs:
+                        - targets:
+                            - <internal-ip>:9650
+                            - <internal-ip>:9650
+                          labels:
+                            group: load_balancers
+                            vlan: "20"
+                      relabel_configs:
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-1
+                        - source_labels:
+                            - __address__
+                          regex: <internal-ip>:.*
+                          target_label: instance
+                          replacement: haproxy-2
+                      scrape_interval: 30s
+                      scrape_timeout: 15s
+                    # MKTXP - MikroTik metrics (ServiceMonitor handles this, but adding static for reliability)
+                    - job_name: mktxp
+                      static_configs:
+                        - targets:
+                            - mktxp.monitoring.svc.cluster.local:49090
+                          labels:
+                            service: mktxp
+                            component: mikrotik-exporter
+                      scrape_interval: 30s
+                      scrape_timeout: 25s
+        # Grafana Configuration
+        grafana:
+            enabled: true
+            # Disable secret leak validation - secrets are SOPS encrypted in git
+            assertNoLeakedSecrets: false
+            # Probe tolerances - increase to handle slow responses under load
+            livenessProbe:
+              failureThreshold: 10
+              periodSeconds: 60
+              timeoutSeconds: 60
+            readinessProbe:
+              failureThreshold: 10
+              periodSeconds: 60
+              timeoutSeconds: 60
+            # Admin credentials from SOPS-encrypted secret (grafana-admin-secret)
+            admin:
+                existingSecret: grafana-admin-secret
+                userKey: username
+                passwordKey: password
+            persistence:
+                enabled: true
+                storageClassName: nfs-client
+                size: 10Gi
+            resources:
+                requests:
+                    cpu: 100m
+                    memory: 256Mi
+                limits:
+                    cpu: 500m
+                    memory: 512Mi
+            sidecar:
+                dashboards:
+                    enabled: true
+                    searchNamespace: ALL
+                    label: grafana_dashboard
+                    resources:
+                        requests:
+                            cpu: 50m
+                            memory: 64Mi
+                        limits:
+                            cpu: 100m
+                            memory: 128Mi
+                datasources:
+                    enabled: true
+                    searchNamespace: ALL
+                    resources:
+                        requests:
+                            cpu: 50m
+                            memory: 64Mi
+                        limits:
+                            cpu: 100m
+                            memory: 128Mi
+            ingress:
+                enabled: true
+                ingressClassName: traefik
+                annotations:
+                    traefik.ingress.kubernetes.io/router.tls: "true"
+                hosts:
+                    - grafana.example.com
+                tls:
+                    - secretName: grafana-tls-cert
+                      hosts:
+                        - grafana.example.com
+            # Default dashboards
+            defaultDashboardsEnabled: true
+            defaultDashboardsTimezone: America/Chicago
+            # SSO Configuration with Authentik
+            # OIDC client_secret loaded from SOPS-encrypted secret via envFromSecret
+            envFromSecret: grafana-admin-secret
+            grafana.ini:
+                server:
+                    root_url: https://grafana.example.com
+                auth.generic_oauth:
+                    enabled: true
+                    name: Authentik
+                    allow_sign_up: true
+                    client_id: grafana-sso
+                    client_secret: $__env{oidc_secret}
+                    scopes: openid email profile groups
+                    # auth_url must be external (browser redirect)
+                    auth_url: https://auth.example.com/application/o/authorize/
+                    # token_url and api_url use internal service (server-to-server)
+                    token_url: http://authentik-server.authentik.svc.cluster.local/application/o/token/
+                    api_url: http://authentik-server.authentik.svc.cluster.local/application/o/userinfo/
+                    role_attribute_path: contains(groups[*], 'admins') && 'Admin' || 'Viewer'
+                    use_pkce: true
+                    email_attribute_path: email
+                    login_attribute_path: preferred_username
+                    name_attribute_path: name
+        # AlertManager Configuration
+        alertmanager:
+            enabled: true
+            ingress:
+                enabled: true
+                ingressClassName: traefik
+                annotations:
+                    traefik.ingress.kubernetes.io/router.tls: "true"
+                hosts:
+                    - alerts.example.com
+                tls:
+                    - secretName: alertmanager-tls-cert
+                      hosts:
+                        - alerts.example.com
+            alertmanagerSpec:
+                # Inject Pushover credentials as environment variables
+                # so AlertManager config can reference ${PUSHOVER_USER_KEY} and ${PUSHOVER_TOKEN}
+                containers:
+                  - name: alertmanager
+                    envFrom:
+                      - secretRef:
+                          name: alertmanager-pushover
+                resources:
+                    requests:
+                        cpu: 50m
+                        memory: 64Mi
+                    limits:
+                        cpu: 200m
+                        memory: 128Mi
+                storage:
+                    volumeClaimTemplate:
+                        spec:
+                            storageClassName: nfs-client
+                            accessModes:
+                                - ReadWriteOnce
+                            resources:
+                                requests:
+                                    storage: 10Gi
+            # AlertManager routing and receivers — Pushover
+            config:
+                global:
+                    resolve_timeout: 5m
+                route:
+                    group_by: ['namespace', 'alertname']
+                    group_wait: 30s
+                    group_interval: 5m
+                    repeat_interval: 12h
+                    receiver: 'pushover-warning'
+                    routes:
+                        # Suppress noisy/internal alerts
+                        - matchers:
+                            - alertname =~ "Watchdog|InfoInhibitor"
+                          receiver: 'null'
+                        # Critical alerts -> Pushover highest priority (requires acknowledgment)
+                        - matchers:
+                            - severity = critical
+                          receiver: 'pushover-critical'
+                          group_wait: 10s
+                          repeat_interval: 1h
+                        # Warning alerts -> Pushover high priority
+                        - matchers:
+                            - severity = warning
+                          receiver: 'pushover-warning'
+                          repeat_interval: 6h
+                        # Info alerts -> Pushover normal priority
+                        - matchers:
+                            - severity = info
+                          receiver: 'pushover-info'
+                          repeat_interval: 24h
+                receivers:
+                    - name: 'null'
+                    - name: 'pushover-critical'
+                      pushover_configs:
+                        - user_key: ${PUSHOVER_USER_KEY}
+                          token: ${PUSHOVER_TOKEN}
+                          priority: 1
+                          # retry/expire required for priority=2 (emergency); priority=1 is high
+                          title: '[CRITICAL] {{ .GroupLabels.alertname }}'
+                          message: |
+                            {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}
+                          send_resolved: true
+                          sound: siren
+                    - name: 'pushover-warning'
+                      pushover_configs:
+                        - user_key: ${PUSHOVER_USER_KEY}
+                          token: ${PUSHOVER_TOKEN}
+                          priority: 0
+                          title: '[WARNING] {{ .GroupLabels.alertname }}'
+                          message: |
+                            {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}
+                          send_resolved: true
+                    - name: 'pushover-info'
+                      pushover_configs:
+                        - user_key: ${PUSHOVER_USER_KEY}
+                          token: ${PUSHOVER_TOKEN}
+                          priority: -1
+                          title: '[INFO] {{ .GroupLabels.alertname }}'
+                          message: |
+                            {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}
+                          send_resolved: false
+                inhibit_rules:
+                    # Critical silences warning/info for same alert
+                    - source_matchers:
+                        - severity = critical
+                      target_matchers:
+                        - severity =~ warning|info
+                      equal: ['namespace', 'alertname']
+                    # Warning silences info for same alert
+                    - source_matchers:
+                        - severity = warning
+                      target_matchers:
+                        - severity = info
+                      equal: ['namespace', 'alertname']
+                    # Pod alerts silenced when node is down
+                    - source_matchers:
+                        - alertname = KubeNodeNotReady
+                      target_matchers:
+                        - alertname =~ "KubePod.*"
+                      equal: ['node']
+        # Node Exporter - DaemonSet for node metrics
+        nodeExporter:
+            enabled: true
+        # prometheus-node-exporter subchart resources (path: prometheus-node-exporter.resources)
+        prometheus-node-exporter:
+            resources:
+                requests:
+                    cpu: 50m
+                    memory: 32Mi
+                limits:
+                    cpu: 200m
+                    memory: 64Mi
+        # kube-state-metrics - Kubernetes object metrics
+        kubeStateMetrics:
+            enabled: true
+        kube-state-metrics:
+            resources:
+                requests:
+                    cpu: 50m
+                    memory: 64Mi
+                limits:
+                    cpu: 200m
+                    memory: 128Mi
+        # Prometheus Operator
+        prometheusOperator:
+            enabled: true
+            resources:
+                requests:
+                    cpu: 100m
+                    memory: 128Mi
+                limits:
+                    cpu: 500m
+                    memory: 256Mi
+            prometheusConfigReloader:
+                resources:
+                    requests:
+                        cpu: 50m
+                        memory: 32Mi
+                    limits:
+                        cpu: 100m
+                        memory: 64Mi
+        # Component Monitoring
+        kubeApiServer:
+            enabled: true
+        # Disabled: RKE2 controller-manager/scheduler bind to 127.0.0.1 and use different labels
+        kubeControllerManager:
+            enabled: false
+        kubeScheduler:
+            enabled: false
+        # Disabled: RKE2 kube-proxy uses different labels (component: kube-proxy vs k8s-app: kube-proxy)
+        kubeProxy:
+            enabled: false
+        # Disabled: RKE2 etcd requires mTLS for metrics and doesn't expose on standard port
+        kubeEtcd:
+            enabled: false
+        kubelet:
+            enabled: true
+        coreDns:
+            enabled: true

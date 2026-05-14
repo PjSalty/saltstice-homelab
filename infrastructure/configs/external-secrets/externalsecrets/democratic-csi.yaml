@@ -1,0 +1,77 @@
+# truenas-api-key: TrueNAS API key for democratic-csi
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: truenas-api-key
+  namespace: democratic-csi
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-storage
+    kind: SecretStore
+  target:
+    name: truenas-api-key
+    creationPolicy: Owner
+  data:
+  - secretKey: api-key
+    remoteRef:
+      key: cred-ssot-storage
+      property: CRED_DEMOCRATIC_CSI_TRUENAS_API_KEY
+---
+# truenas-credentials: democratic-csi driver configuration with TrueNAS API key
+# Contains embedded YAML config — only apiKey is a credential,
+# rest is static iSCSI/ZFS configuration.
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: truenas-credentials
+  namespace: democratic-csi
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-storage
+    kind: SecretStore
+  target:
+    name: truenas-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/managed-by: "external-secrets"
+      data:
+        driver-config-file.yaml: |
+          driver: freenas-api-iscsi
+          httpConnection:
+            host: <internal-ip>
+            apiTimeout: 30000
+            protocol: http
+            allowInsecure: true
+            apiKey: {{ .api_key | quote }}
+          iscsi:
+            extentAvailThreshold: 0
+            extentBlocksize: 512
+            extentDisablePhysicalBlocksize: true
+            extentInsecureTpc: true
+            extentRpm: SSD
+            extentXenCompat: false
+            namePrefix: csi-
+            nameSuffix: ''
+            targetGroups:
+            - targetGroupAuthType: None
+              targetGroupInitiatorGroup: 1
+              targetGroupPortalGroup: 1
+            targetPortal: <internal-ip>:3260
+            targetPortals: []
+          zfs:
+            datasetParentName: tank/iscsi/volumes
+            detachedSnapshotsDatasetParentName: tank/iscsi/snapshots
+            zvolBlocksize: 16K
+            zvolCompression: lz4
+            zvolDedup: ''
+            zvolEnableReservation: false
+  data:
+  - secretKey: api_key
+    remoteRef:
+      key: cred-ssot-storage
+      property: CRED_DEMOCRATIC_CSI_TRUENAS_API_KEY

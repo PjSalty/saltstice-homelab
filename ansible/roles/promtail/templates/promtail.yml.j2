@@ -1,0 +1,55 @@
+---
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: {{ promtail_positions_path }}
+
+clients:
+  - url: {{ promtail_loki_url }}
+
+scrape_configs:
+{% if promtail_scrape_journald %}
+  # Systemd journal — captures all service logs
+  - job_name: journal
+    journal:
+      max_age: 12h
+      labels:
+        job: systemd-journal
+        hostname: {{ promtail_hostname }}
+        vlan: "{{ promtail_vlan }}"
+    relabel_configs:
+      - source_labels: ['__journal__systemd_unit']
+        target_label: unit
+      - source_labels: ['__journal_priority_keyword']
+        target_label: level
+{% endif %}
+
+{% if promtail_scrape_varlog %}
+  # /var/log files — syslog, auth, kern, etc.
+  - job_name: varlog
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: varlog
+          hostname: {{ promtail_hostname }}
+          vlan: "{{ promtail_vlan }}"
+          __path__: /var/log/*.log
+{% endif %}
+
+{% if promtail_scrape_docker %}
+  # Docker container logs
+  - job_name: docker
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          hostname: {{ promtail_hostname }}
+          vlan: "{{ promtail_vlan }}"
+          __path__: /var/lib/docker/containers/*/*-json.log
+    pipeline_stages:
+      - docker: {}
+{% endif %}

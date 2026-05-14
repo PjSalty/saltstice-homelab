@@ -1,0 +1,62 @@
+---
+# Critical security service — restrict to necessary traffic only.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: authentik
+  namespace: authentik
+spec:
+  endpointSelector: {}
+  ingress:
+    # SSO login pages, OIDC endpoints from Traefik
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - { port: "9000", protocol: TCP }
+            - { port: "9443", protocol: TCP }
+    # OIDC/OAuth2 callbacks from any cluster service
+    - fromEntities: [cluster]
+      toPorts:
+        - ports:
+            - { port: "9000", protocol: TCP }
+            - { port: "9443", protocol: TCP }
+    # Intra-namespace: server <-> worker <-> redis <-> postgres
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: authentik
+      toPorts:
+        - ports:
+            - { port: "9000", protocol: TCP }
+            - { port: "9443", protocol: TCP }
+            - { port: "6379", protocol: TCP }
+            - { port: "5432", protocol: TCP }
+    # Prometheus metrics scraping
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - { port: "9000", protocol: TCP }
+            - { port: "9121", protocol: TCP } # redis-exporter
+            - { port: "9187", protocol: TCP } # postgres-exporter
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: authentik
+    # SMTP (587/465) for email flows + outbound HTTPS for federation
+    - toCIDR: ["0.0.0.0/0"]
+      toPorts:
+        - ports:
+            - { port: "587", protocol: TCP }
+            - { port: "465", protocol: TCP }
+            - { port: "443", protocol: TCP }

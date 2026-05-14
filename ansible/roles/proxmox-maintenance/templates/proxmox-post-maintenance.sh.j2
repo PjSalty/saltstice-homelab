@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# proxmox-post-maintenance.sh — Post-reboot verification and recovery
+# Runs as a systemd oneshot after Proxmox boots, or called directly
+# by proxmox-maintenance.sh if no reboot was needed.
+#
+# Waits for VMs, verifies every service tier, uncordons K8s, resumes Flux,
+# and sends a full status report via ntfy.
+#
+
+set -uo pipefail
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+readonly LOG="/var/log/proxmox-maintenance.log"
+readonly STATE_DIR="/var/lib/proxmox-maintenance"
+readonly SSH_KEY="{{ proxmox_maintenance_ssh_key }}"
+readonly SSH_USER="{{ proxmox_maintenance_ssh_user }}"
+readonly K8S_MASTER="{{ proxmox_maintenance_k8s_master }}"
+readonly KUBECTL="{{ proxmox_maintenance_kubectl }}"
+readonly KUBECONFIG="{{ proxmox_maintenance_kubeconfig }}"
+readonly NTFY_URL="{{ proxmox_maintenance_ntfy_url }}"
+readonly TRUENAS_IP="{{ proxmox_maintenance_truenas_ip }}"
+readonly TRUENAS_NFS_PORT="{{ proxmox_maintenance_truenas_nfs_port }}"
+readonly TRUENAS_ISCSI_PORT="{{ proxmox_maintenance_truenas_iscsi_port }}"
+readonly HAPROXY_VIP="{{ proxmox_maintenance_haproxy_vip }}"
+readonly K8S_API_PORT="{{ proxmox_maintenance_k8s_api_port }}"
+readonly DNS_IP="{{ proxmox_maintenance_dns_ip }}"
+readonly GITLAB_IP="{{ proxmox_maintenance_gitlab_ip }}"
+readonly GITLAB_SSH_PORT="{{ proxmox_maintenance_gitlab_ssh_port }}"
+readonly HARBOR_IP="{{ proxmox_maintenance_harbor_ip }}"
+readonly VM_STARTUP_TIMEOUT="{{ proxmox_maintenance_vm_startup_timeout }}"
+readonly HEALTH_TIMEOUT="{{ proxmox_maintenance_health_check_timeout }}"
+readonly POST_BOOT_SETTLE="{{ proxmox_maintenance_post_boot_settle }}"
+
+# =============================================================================
+# LOGGING + HELPERS
+# =============================================================================
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+log_section() { log ""; log "========== $* =========="; }
+
+k8s_ssh() {
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+        -i "$SSH_KEY" "${SSH_USER}@${K8S_MASTER}" \
+        "sudo $KUBECTL --kubeconfig=$KUBECONFIG $*" 2>&1
+}
+
+vm_ssh() {
+    local host="$1"; shift
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+        -i "$SSH_KEY" "${SSH_USER}@${host}" "$@" 2>&1
+}
+
+# Wait for a TCP port to respond. Returns 0 on success, 1 on timeout.
+wait_for_port() {
+    local host="$1" port="$2" label="$3" timeout="${4:-$HEALTH_TIMEOUT}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if timeout 5 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null; then
+            log "  ✓ $label ($host:$port) responding"
+            return 0
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    log "  ✗ $label ($host:$port) NOT responding after ${timeout}s"
+    return 1
+}
+
+notify() {
+    local title="$1" message="$2" priority="${3:-high}"
+    curl -sf -o /dev/null \
+        -H "Title: $title" \
+        -H "Priority: $priority" \
+        -H "Tags: wrench,homelab" \
+        -d "$message" \
+        "$NTFY_URL" 2>/dev/null || true
+}
+
+# =============================================================================
+# PHASE 4: WAIT FOR VMS TO START
+# =============================================================================
+
+log_section "PHASE 4: WAITING FOR VMS TO START"
+
+# Proxmox native startup ordering handles VM boot sequence.
+# We just wait for all VMs to reach "running" state.
+
+VM_WAIT=0
+while [ "$VM_WAIT" -lt "$VM_STARTUP_TIMEOUT" ]; do
+    RUNNING=$(qm list 2>/dev/null | awk 'NR>1 && $3=="running" {count++} END {print count+0}')
+    EXPECTED=$(qm list 2>/dev/null | awk 'NR>1 && $1!=9000 {count++} END {print count+0}')
+    log "  VMs running: $RUNNING/$EXPECTED (${VM_WAIT}s elapsed)"
+    [ "$RUNNING" -ge "$EXPECTED" ] && break
+    sleep 15
+    VM_WAIT=$((VM_WAIT + 15))
+done
+
+if [ "$RUNNING" -lt "$EXPECTED" ]; then
+    MISSING=$(qm list 2>/dev/null | awk 'NR>1 && $3!="running" && $1!=9000 {print $1, $2}')
+    log "WARNING: Not all VMs started: $MISSING"
+fi
+
+# Extra settle time for services inside VMs to initialize
+log "Waiting ${POST_BOOT_SETTLE}s for services to settle..."
+sleep "$POST_BOOT_SETTLE"
+
+# =============================================================================
+# PHASE 5: TIERED HEALTH VERIFICATION
+# =============================================================================
+
+log_section "PHASE 5: TIERED HEALTH VERIFICATION"
+HEALTH_FAILURES=0
+
+# --- Tier 1: Storage (TrueNAS) ---
+log "Tier 1: Storage (TrueNAS $TRUENAS_IP)"
+wait_for_port "$TRUENAS_IP" "$TRUENAS_NFS_PORT" "NFS" 300 || HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+wait_for_port "$TRUENAS_IP" "$TRUENAS_ISCSI_PORT" "iSCSI" 300 || HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+
+# Verify NFS exports are available
+NFS_EXPORTS=$(showmount -e "$TRUENAS_IP" 2>/dev/null | grep -c "/mnt/tank" || true)
+if [ "$NFS_EXPORTS" -gt 0 ]; then
+    log "  ✓ NFS exports available: $NFS_EXPORTS paths"
+else
+    log "  ✗ NFS exports not available"
+    HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+fi
+
+# --- Tier 2: Load Balancer (HAProxy VIP) ---
+log "Tier 2: Load Balancer (HAProxy VIP $HAPROXY_VIP)"
+wait_for_port "$HAPROXY_VIP" "$K8S_API_PORT" "K8s API VIP" 180 || HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+
+# --- Tier 3: DNS (AdGuard) ---
+log "Tier 3: DNS (AdGuard $DNS_IP)"
+wait_for_port "$DNS_IP" 53 "DNS" 120 || HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+
+# --- Tier 4: GitOps Pipeline ---
+log "Tier 4: GitOps Pipeline"
+wait_for_port "$GITLAB_IP" "$GITLAB_SSH_PORT" "GitLab SSH" 180 || HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+wait_for_port "$HARBOR_IP" 443 "Harbor HTTPS" 180 || HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+
+# --- Tier 5: K8s Cluster Health ---
+log "Tier 5: K8s Cluster Health"
+
+# Wait for K8s API to respond
+K8S_WAIT=0
+K8S_OK=false
+while [ "$K8S_WAIT" -lt "$HEALTH_TIMEOUT" ]; do
+    if k8s_ssh "get nodes --no-headers" >/dev/null 2>&1; then
+        K8S_OK=true
+        break
+    fi
+    sleep 15
+    K8S_WAIT=$((K8S_WAIT + 15))
+done
+
+if $K8S_OK; then
+    log "  ✓ K8s API responding"
+
+    # Wait for all nodes Ready
+    NODE_WAIT=0
+    while [ "$NODE_WAIT" -lt "$HEALTH_TIMEOUT" ]; do
+        NODES=$(k8s_ssh "get nodes --no-headers" 2>/dev/null)
+        READY=$(echo "$NODES" | grep -c " Ready " || true)
+        TOTAL=$(echo "$NODES" | grep -c "" || true)
+        [ "$READY" -ge "$TOTAL" ] && [ "$TOTAL" -ge 6 ] && break
+        log "  Nodes: $READY/$TOTAL Ready (${NODE_WAIT}s)"
+        sleep 15
+        NODE_WAIT=$((NODE_WAIT + 15))
+    done
+
+    if [ "$READY" -ge "$TOTAL" ] && [ "$TOTAL" -ge 6 ]; then
+        log "  ✓ All K8s nodes Ready ($READY/$TOTAL)"
+    else
+        log "  ✗ Not all K8s nodes Ready: $READY/$TOTAL"
+        HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+    fi
+
+    # Check etcd quorum
+    ETCD_MEMBERS=$(k8s_ssh "get endpoints -n kube-system etcd -o jsonpath='{.subsets[0].addresses[*].ip}'" 2>/dev/null | wc -w)
+    if [ "${ETCD_MEMBERS:-0}" -ge 3 ]; then
+        log "  ✓ etcd quorum: $ETCD_MEMBERS/3 members"
+    else
+        log "  ✗ etcd quorum degraded: ${ETCD_MEMBERS:-0}/3 members"
+        HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+    fi
+else
+    log "  ✗ K8s API not responding after ${HEALTH_TIMEOUT}s"
+    HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+fi
+
+# =============================================================================
+# PHASE 6: K8S RECOVERY
+# =============================================================================
+
+log_section "PHASE 6: K8S RECOVERY"
+
+if $K8S_OK; then
+    # Uncordon all nodes
+    log "Uncordoning all K8s nodes..."
+    for node in k8s-master-1 k8s-master-2 k8s-master-3 k8s-worker-1 k8s-worker-2 k8s-worker-3; do
+        k8s_ssh "uncordon $node" >/dev/null 2>&1 && \
+            log "  ✓ Uncordoned $node" || \
+            log "  ✗ Failed to uncordon $node"
+    done
+
+    # Resume Flux
+    log "Resuming Flux reconciliation..."
+    k8s_ssh "get kustomization -A --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name" 2>/dev/null | \
+    while read -r ns name; do
+        k8s_ssh "-n $ns patch kustomization $name --type=merge -p '{\"spec\":{\"suspend\":false}}'" >/dev/null 2>&1
+    done
+    log "Flux resumed."
+
+    # Wait for iSCSI sessions to re-establish
+    log "Checking iSCSI session recovery..."
+    sleep 30
+{% for worker_ip in proxmox_maintenance_iscsi_workers %}
+    SESSIONS=$(vm_ssh "{{ worker_ip }}" "sudo iscsiadm -m session 2>/dev/null | wc -l" || echo "0")
+    log "  {{ worker_ip }}: $SESSIONS iSCSI sessions"
+{% endfor %}
+
+    # Wait for pods to recover
+    log "Waiting for pod count to recover..."
+    BASELINE_PODS=$(cat "$STATE_DIR/baseline-pods" 2>/dev/null || echo "0")
+    POD_WAIT=0
+    while [ "$POD_WAIT" -lt 300 ]; do
+        CURRENT_PODS=$(k8s_ssh "get pods -A --no-headers --field-selector=status.phase=Running" 2>/dev/null | wc -l)
+        PCT=0
+        [ "$BASELINE_PODS" -gt 0 ] && PCT=$(( CURRENT_PODS * 100 / BASELINE_PODS ))
+        log "  Pods: $CURRENT_PODS/$BASELINE_PODS (${PCT}%)"
+        [ "$PCT" -ge 80 ] && break
+        sleep 30
+        POD_WAIT=$((POD_WAIT + 30))
+    done
+
+    if [ "$PCT" -ge 80 ]; then
+        log "  ✓ Pod count recovered: $CURRENT_PODS/$BASELINE_PODS (${PCT}%)"
+    else
+        log "  ✗ Pod count low: $CURRENT_PODS/$BASELINE_PODS (${PCT}%)"
+        HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+    fi
+else
+    log "Skipping K8s recovery — API not responding."
+    HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+fi
+
+# =============================================================================
+# PHASE 7: FINAL STATUS REPORT
+# =============================================================================
+
+log_section "PHASE 7: FINAL STATUS REPORT"
+
+REBOOT_TS=$(cat "$STATE_DIR/reboot-timestamp" 2>/dev/null || echo "0")
+UPDATES_APPLIED=$(cat "$STATE_DIR/updates-applied" 2>/dev/null || echo "0")
+END_TIME=$(date +%s)
+DURATION=$(( END_TIME - REBOOT_TS ))
+DURATION_MIN=$(( DURATION / 60 ))
+
+log "Maintenance complete."
+log "  Duration: ${DURATION_MIN} minutes"
+log "  Updates applied: $UPDATES_APPLIED"
+log "  Health failures: $HEALTH_FAILURES"
+log "  Kernel: $(uname -r)"
+
+# Build notification message
+if [ "$HEALTH_FAILURES" -eq 0 ]; then
+    STATUS="SUCCESS"
+    PRIORITY="default"
+    TAGS="white_check_mark"
+else
+    STATUS="PARTIAL (${HEALTH_FAILURES} failures)"
+    PRIORITY="high"
+    TAGS="warning"
+fi
+
+REPORT="Duration: ${DURATION_MIN}m
+Updates: ${UPDATES_APPLIED}
+VMs: ${RUNNING:-?}/${EXPECTED:-?} running
+K8s: ${READY:-?}/${TOTAL:-?} nodes Ready
+etcd: ${ETCD_MEMBERS:-?}/3 members
+Pods: ${CURRENT_PODS:-?}/${BASELINE_PODS:-?}
+Kernel: $(uname -r)
+Failures: ${HEALTH_FAILURES}"
+
+curl -sf -o /dev/null \
+    -H "Title: Maintenance $STATUS" \
+    -H "Priority: $PRIORITY" \
+    -H "Tags: $TAGS,homelab" \
+    -d "$REPORT" \
+    "$NTFY_URL" 2>/dev/null || true
+
+log "Notification sent."
+
+# Disable oneshot service until next maintenance triggers it
+systemctl disable proxmox-post-boot.service 2>/dev/null || true
+
+# Clean up state files
+rm -f "$STATE_DIR/reboot-timestamp" "$STATE_DIR/updates-applied"
+
+exit "$HEALTH_FAILURES"

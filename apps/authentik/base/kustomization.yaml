@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+
+resources:
+  - configmaps/sso-credentials.yaml
+  - configmaps/authentik-users.yaml
+  - deployments/postgresql.yaml
+  - deployments/redis.yaml
+  - deployments/server.yaml
+  - deployments/worker.yaml
+  - ingress/ingress.yaml
+  - namespace.yaml
+  - pdb/pdb.yaml
+  # Note: authentik-secret comes from infrastructure/secrets repo (SSOT)
+  # secrets/authentik-admin-secret.yaml also comes from secrets repo
+  # secrets/sso-client-secrets.yaml also comes from secrets repo
+  - jobs/sso-complete-setup.yaml
+  - backup/pvc.yaml
+  - backup/cronjob.yaml
+  - autoscaling
+  - networkpolicy
+  - rbac

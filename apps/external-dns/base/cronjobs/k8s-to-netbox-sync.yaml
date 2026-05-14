@@ -1,0 +1,225 @@
+# Kubernetes to NetBox DNS Sync CronJob
+# Syncs DNS names from K8s Ingress/IngressRoute resources to NetBox IP objects
+# This ensures NetBox (Source of Truth) knows about all K8s application DNS records
+#
+# Per automation.md Guardian Principle 3: Bidirectional Synchronization
+# - K8s apps inform NetBox what DNS records exist
+# - NetBox remains the authoritative source for all DNS records
+#
+# Flow: K8s Ingress/IngressRoute -> This CronJob -> NetBox IP objects (dns_name)
+#
+# Researched: 2025-12-03
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: k8s-to-netbox-sync
+  namespace: external-dns
+  labels:
+    app.kubernetes.io/name: k8s-to-netbox-sync
+    app.kubernetes.io/component: sync
+    app.kubernetes.io/part-of: external-dns
+spec:
+  schedule: "*/10 * * * *"  # Every 10 minutes (faster than NetBox->AdGuard for quick inventory)
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 120
+      ttlSecondsAfterFinished: 600
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: k8s-to-netbox-sync
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: external-dns  # Reuse existing SA with cluster read permissions
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sync
+              # python3, requests, and kubectl are baked into homelab-tooling.
+              image: ${IMAGE_HOMELAB_TOOLING}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+
+                  echo "=============================================="
+                  echo "K8s -> NetBox DNS Sync"
+                  echo "Guardian Principle 3: Bidirectional Sync"
+                  echo "=============================================="
+
+                  python3 << 'PYTHON_SCRIPT'
+                  #!/usr/bin/env python3
+                  """
+                  Kubernetes to NetBox DNS Sync
+                  Syncs Ingress/IngressRoute hostnames to NetBox IP objects
+                  """
+                  import os
+                  import json
+                  import subprocess
+                  import re
+                  import requests
+
+                  NETBOX_URL = os.environ.get('NETBOX_URL', 'http://<internal-ip>')
+                  NETBOX_TOKEN = os.environ.get('NETBOX_TOKEN', '')
+                  TRAEFIK_VIP = os.environ.get('TRAEFIK_VIP', '<internal-ip>')
+                  DNS_ZONE = 'example.com'
+
+                  def run_kubectl(args):
+                      """Run kubectl command and return JSON output."""
+                      try:
+                          result = subprocess.run(
+                              ['kubectl'] + args + ['-o', 'json'],
+                              capture_output=True, text=True, timeout=30
+                          )
+                          if result.returncode == 0:
+                              return json.loads(result.stdout)
+                      except Exception as e:
+                          print(f"kubectl error: {e}")
+                      return {'items': []}
+
+                  def get_ingress_hosts():
+                      """Get hostnames from Ingress resources."""
+                      hosts = set()
+                      data = run_kubectl(['get', 'ingress', '-A'])
+                      for item in data.get('items', []):
+                          spec = item.get('spec', {})
+                          for rule in spec.get('rules', []):
+                              host = rule.get('host', '')
+                              if host and DNS_ZONE in host:
+                                  hosts.add(host)
+                          for tls in spec.get('tls', []):
+                              for host in tls.get('hosts', []):
+                                  if host and DNS_ZONE in host:
+                                      hosts.add(host)
+                      return hosts
+
+                  def get_ingressroute_hosts():
+                      """Get hostnames from IngressRoute CRDs."""
+                      hosts = set()
+                      data = run_kubectl(['get', 'ingressroute.traefik.io', '-A'])
+                      for item in data.get('items', []):
+                          for route in item.get('spec', {}).get('routes', []):
+                              match = route.get('match', '')
+                              found = re.findall(r"Host\(`([^`]+)`\)", match)
+                              for host in found:
+                                  if DNS_ZONE in host:
+                                      hosts.add(host)
+                      return hosts
+
+                  def get_netbox_records():
+                      """Get existing DNS records from NetBox."""
+                      records = {}
+                      try:
+                          resp = requests.get(
+                              f"{NETBOX_URL}/api/ipam/ip-addresses/",
+                              headers={"Authorization": f"Token {NETBOX_TOKEN}"},
+                              params={"limit": 500},
+                              timeout=30
+                          )
+                          if resp.status_code == 200:
+                              for ip in resp.json().get('results', []):
+                                  dns_name = ip.get('dns_name', '')
+                                  if dns_name:
+                                      records[dns_name] = ip.get('address', '').split('/')[0]
+                      except Exception as e:
+                          print(f"NetBox error: {e}")
+                      return records
+
+                  def create_netbox_record(dns_name, ip):
+                      """Create IP address with dns_name in NetBox."""
+                      try:
+                          resp = requests.post(
+                              f"{NETBOX_URL}/api/ipam/ip-addresses/",
+                              headers={
+                                  "Authorization": f"Token {NETBOX_TOKEN}",
+                                  "Content-Type": "application/json"
+                              },
+                              json={
+                                  "address": f"{ip}/32",
+                                  "dns_name": dns_name,
+                                  "description": "K8s Application (via Traefik)",
+                                  "status": "active"
+                              },
+                              timeout=30
+                          )
+                          return resp.status_code in [200, 201]
+                      except:
+                          return False
+
+                  def main():
+                      if not NETBOX_TOKEN:
+                          print("ERROR: NETBOX_TOKEN required")
+                          return
+
+                      # Collect K8s hosts
+                      print("\n1. Scanning Kubernetes resources...")
+                      ingress_hosts = get_ingress_hosts()
+                      print(f"   Ingress hosts: {len(ingress_hosts)}")
+
+                      ingressroute_hosts = get_ingressroute_hosts()
+                      print(f"   IngressRoute hosts: {len(ingressroute_hosts)}")
+
+                      all_hosts = ingress_hosts | ingressroute_hosts
+                      print(f"   Total unique hosts: {len(all_hosts)}")
+
+                      # Get NetBox records
+                      print("\n2. Checking NetBox...")
+                      netbox_records = get_netbox_records()
+                      print(f"   Existing records: {len(netbox_records)}")
+
+                      # Sync
+                      print("\n3. Syncing to NetBox...")
+                      created = 0
+                      exists = 0
+
+                      for host in sorted(all_hosts):
+                          if host in netbox_records:
+                              exists += 1
+                          else:
+                              if create_netbox_record(host, TRAEFIK_VIP):
+                                  print(f"   + Created: {host} -> {TRAEFIK_VIP}")
+                                  created += 1
+                              else:
+                                  print(f"   ! Failed: {host}")
+
+                      print(f"\nSummary: {created} created, {exists} already exist")
+                      print("NetBox is now Source of Truth for K8s DNS records")
+
+                  if __name__ == "__main__":
+                      main()
+                  PYTHON_SCRIPT
+              env:
+                - name: NETBOX_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: netbox-credentials
+                      key: NETBOX_URL
+                - name: NETBOX_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: netbox-credentials
+                      key: NETBOX_TOKEN
+                - name: TRAEFIK_VIP
+                  value: "${TRAEFIK_LB_IP}"
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "256Mi"
+                  cpu: "200m"

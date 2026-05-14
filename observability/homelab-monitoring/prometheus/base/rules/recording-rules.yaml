@@ -1,0 +1,172 @@
+---
+# Recording Rules for Common Expensive Queries
+# Pre-computes frequently-used metrics to reduce query load on Prometheus
+# and improve dashboard responsiveness.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: recording-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # Node Resource Usage Recording Rules
+    # These pre-compute expensive multi-step queries used in dashboards
+    # =========================================================================
+    - name: node-resource-recording
+      interval: 1m
+      rules:
+        # CPU usage per node (0-1 scale, 1m rate)
+        - record: instance:node_cpu_utilisation:rate1m
+          expr: |
+            1 - avg without (cpu, mode) (
+              rate(node_cpu_seconds_total{mode="idle"}[1m])
+            )
+
+        # CPU saturation - time spent waiting for CPU (load avg vs core count)
+        - record: instance:node_cpu_saturation_cpu_avg:rate1m
+          expr: |
+            sum without (cpu) (
+              node_load1
+            ) / count without (cpu, mode) (
+              node_cpu_seconds_total{mode="idle"}
+            )
+
+        # Memory utilisation per node (0-1 scale)
+        - record: instance:node_memory_utilisation:ratio
+          expr: |
+            1 - (
+              node_memory_MemAvailable_bytes /
+              node_memory_MemTotal_bytes
+            )
+
+        # Network receive throughput per node (bytes/s, 5m rate)
+        - record: instance:node_network_receive_bytes_excluding_lo:rate5m
+          expr: |
+            sum without (device) (
+              rate(node_network_receive_bytes_total{device!="lo"}[5m])
+            )
+
+        # Network transmit throughput per node (bytes/s, 5m rate)
+        - record: instance:node_network_transmit_bytes_excluding_lo:rate5m
+          expr: |
+            sum without (device) (
+              rate(node_network_transmit_bytes_total{device!="lo"}[5m])
+            )
+
+        # Disk read throughput per node (bytes/s, 5m rate)
+        - record: instance:node_disk_read_bytes:rate5m
+          expr: |
+            sum without (device) (
+              rate(node_disk_read_bytes_total[5m])
+            )
+
+        # Disk write throughput per node (bytes/s, 5m rate)
+        - record: instance:node_disk_written_bytes:rate5m
+          expr: |
+            sum without (device) (
+              rate(node_disk_written_bytes_total[5m])
+            )
+
+        # Disk IO utilisation (fraction of time disk was busy)
+        - record: instance:node_disk_io_utilisation:rate1m
+          expr: |
+            max without (device) (
+              rate(node_disk_io_time_seconds_total[1m])
+            )
+
+        # Filesystem usage per mountpoint (0-1 scale)
+        - record: instance:node_filesystem_usage:ratio
+          expr: |
+            1 - (
+              node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs"}
+              / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs"}
+            )
+
+    # =========================================================================
+    # Kubernetes Workload Recording Rules
+    # =========================================================================
+    - name: kubernetes-workload-recording
+      interval: 1m
+      rules:
+        # CPU requests utilisation per namespace
+        - record: namespace:kube_pod_container_resource_requests_cpu_cores:sum
+          expr: |
+            sum by (namespace) (
+              kube_pod_container_resource_requests{resource="cpu", unit="core"}
+            )
+
+        # Memory requests per namespace
+        - record: namespace:kube_pod_container_resource_requests_memory_bytes:sum
+          expr: |
+            sum by (namespace) (
+              kube_pod_container_resource_requests{resource="memory", unit="byte"}
+            )
+
+        # CPU limits per namespace
+        - record: namespace:kube_pod_container_resource_limits_cpu_cores:sum
+          expr: |
+            sum by (namespace) (
+              kube_pod_container_resource_limits{resource="cpu", unit="core"}
+            )
+
+        # Memory limits per namespace
+        - record: namespace:kube_pod_container_resource_limits_memory_bytes:sum
+          expr: |
+            sum by (namespace) (
+              kube_pod_container_resource_limits{resource="memory", unit="byte"}
+            )
+
+        # Pod count per namespace
+        - record: namespace:kube_pod_info:count
+          expr: |
+            count by (namespace) (kube_pod_info)
+
+        # Container restart rate (per hour) per namespace
+        - record: namespace:container_restarts:rate1h
+          expr: |
+            sum by (namespace) (
+              increase(kube_pod_container_status_restarts_total[1h])
+            )
+
+    # =========================================================================
+    # Traefik Recording Rules
+    # =========================================================================
+    - name: traefik-recording
+      interval: 1m
+      rules:
+        # Per-service request rate (5m window)
+        - record: service:traefik_requests:rate5m
+          expr: |
+            sum by (service) (
+              rate(traefik_service_requests_total[5m])
+            )
+
+        # Per-service error rate (5xx responses, 5m window)
+        - record: service:traefik_5xx_errors:rate5m
+          expr: |
+            sum by (service) (
+              rate(traefik_service_requests_total{code=~"5.."}[5m])
+            )
+
+        # Per-service p95 latency
+        - record: service:traefik_request_duration_p95:5m
+          expr: |
+            histogram_quantile(0.95,
+              sum by (service, le) (
+                rate(traefik_service_request_duration_seconds_bucket[5m])
+              )
+            )
+
+        # Per-service p99 latency
+        - record: service:traefik_request_duration_p99:5m
+          expr: |
+            histogram_quantile(0.99,
+              sum by (service, le) (
+                rate(traefik_service_request_duration_seconds_bucket[5m])
+              )
+            )

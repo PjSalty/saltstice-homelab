@@ -1,0 +1,327 @@
+---
+# Infrastructure Self-Sustaining Alerts
+# Monitors certificates, backups, disk space, and critical services
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: infrastructure-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    prometheus: monitoring
+    release: monitoring-kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # Certificate Expiration Alerts
+    # =========================================================================
+    - name: certificates
+      interval: 1h
+      rules:
+        # cert-manager certificates expiring soon
+        - alert: CertificateExpiringSoon
+          expr: |
+            certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
+          for: 1h
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Certificate {{ $labels.name }} expires in less than 7 days"
+            description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} expires soon."
+            runbook_url: "https://grafana.example.com/d/cert-manager"
+            action: "Check cert-manager logs and certificate renewal status"
+
+        - alert: CertificateExpiryCritical
+          expr: |
+            certmanager_certificate_expiration_timestamp_seconds - time() < 24 * 3600
+          for: 10m
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "Certificate {{ $labels.name }} expires in less than 24 hours"
+            description: "CRITICAL: Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} expires within 24 hours. Immediate action required!"
+            action: "Manually renew certificate: kubectl cert-manager renew {{ $labels.name }} -n {{ $labels.namespace }}"
+
+        - alert: CertificateNotReady
+          expr: |
+            certmanager_certificate_ready_status{condition="False"} == 1
+          for: 30m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "Certificate {{ $labels.name }} is not ready"
+            description: |
+              Certificate {{ $labels.name }} in namespace {{ $labels.namespace }}
+              has been in a not-ready state for more than 30 minutes.
+            action: "kubectl describe certificate {{ $labels.name }} -n {{ $labels.namespace }}"
+
+    # =========================================================================
+    # Disk Space Alerts
+    # =========================================================================
+    - name: disk-space
+      interval: 5m
+      rules:
+        - alert: NodeDiskSpaceLow
+          expr: |
+            (node_filesystem_avail_bytes{fstype=~"ext4|xfs|nfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs|nfs"}) * 100 < 20
+          for: 15m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "Low disk space on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+            description: |
+              Node {{ $labels.instance }} has only {{ printf "%.1f" $value }}% disk space
+              remaining on {{ $labels.mountpoint }}.
+            action: "Clean up old logs, images, or expand storage"
+
+        - alert: NodeDiskSpaceCritical
+          expr: |
+            (node_filesystem_avail_bytes{fstype=~"ext4|xfs|nfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs|nfs"}) * 100 < 10
+          for: 5m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "Critical disk space on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+            description: |
+              CRITICAL: Node {{ $labels.instance }} has only {{ printf "%.1f" $value }}%
+              disk space remaining on {{ $labels.mountpoint }}.
+            action: "Immediate cleanup required or services will fail"
+
+        - alert: PVCSpaceLow
+          expr: |
+            (kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes) * 100 < 15
+          for: 15m
+          labels:
+            severity: warning
+            category: storage
+          annotations:
+            summary: "PVC {{ $labels.persistentvolumeclaim }} is running low on space"
+            description: |
+              PVC {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }}
+              has only {{ printf "%.1f" $value }}% space remaining.
+            action: "Expand PVC or clean up data"
+
+    # =========================================================================
+    # Backup Verification Alerts
+    # =========================================================================
+    - name: backups
+      interval: 30m
+      rules:
+        # Velero backup failures
+        - alert: VeleroBackupFailed
+          expr: |
+            increase(velero_backup_failure_total[24h]) > 0
+          for: 1h
+          labels:
+            severity: warning
+            category: backup
+          annotations:
+            summary: "Velero backup failed in the last 24 hours"
+            description: |
+              {{ $value }} Velero backup(s) have failed in the last 24 hours.
+              Check Velero logs for details.
+            action: "velero backup logs <backup-name>"
+
+        - alert: VeleroBackupNotRunning
+          expr: |
+            time() - velero_backup_last_successful_timestamp > 86400
+          for: 1h
+          labels:
+            severity: warning
+            category: backup
+          annotations:
+            summary: "No successful Velero backup in 24 hours"
+            description: |
+              Schedule {{ $labels.schedule }} has not had a successful backup
+              in over 24 hours.
+            action: "Check Velero schedule: velero schedule describe {{ $labels.schedule }}"
+
+        # NFS storage health
+        - alert: NFSExportUnavailable
+          expr: |
+            probe_success{job="blackbox-nfs"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            category: storage
+          annotations:
+            summary: "NFS export unavailable"
+            description: |
+              NFS export {{ $labels.instance }} is not responding.
+              This may affect all Kubernetes persistent volumes.
+            action: "Check TrueNAS NFS service and network connectivity"
+
+    # =========================================================================
+    # Critical Service Alerts
+    # =========================================================================
+    - name: critical-services
+      interval: 1m
+      rules:
+        - alert: FluxReconciliationFailing
+          expr: |
+            gotk_reconcile_condition{type="Ready", status="False"} == 1
+          for: 30m
+          labels:
+            severity: warning
+            category: gitops
+          annotations:
+            summary: "Flux {{ $labels.kind }} {{ $labels.name }} reconciliation failing"
+            description: |
+              Flux {{ $labels.kind }} {{ $labels.name }} in namespace {{ $labels.namespace }}
+              has been failing to reconcile for more than 30 minutes.
+            action: "Check Flux status: flux get all -n {{ $labels.namespace }}"
+
+        - alert: FluxSuspended
+          expr: |
+            gotk_suspend_status == 1
+          for: 4h
+          labels:
+            severity: info
+            category: gitops
+          annotations:
+            summary: "Flux {{ $labels.kind }} {{ $labels.name }} is suspended"
+            description: |
+              Flux {{ $labels.kind }} {{ $labels.name }} has been suspended
+              for more than 4 hours. GitOps is not active for this resource.
+            action: "Resume resource: flux resume kustomization {{ $labels.name }} -n {{ $labels.namespace }}"
+
+        - alert: HelmReleaseNotReady
+          expr: |
+            helm_release_info{status!="deployed"} == 1
+          for: 30m
+          labels:
+            severity: warning
+            category: gitops
+          annotations:
+            summary: "Helm release {{ $labels.name }} is not deployed"
+            description: |
+              Helm release {{ $labels.name }} in namespace {{ $labels.namespace }}
+              has status {{ $labels.status }} instead of deployed.
+            action: "helm history {{ $labels.name }} -n {{ $labels.namespace }}"
+
+    # =========================================================================
+    # Automation Health Alerts
+    # =========================================================================
+    - name: automation-health
+      interval: 5m
+      rules:
+        - alert: CronJobFailed
+          expr: |
+            kube_job_status_failed{job_name=~".*-(trivy|license|version|vm-update).*"} > 0
+          for: 10m
+          labels:
+            severity: warning
+            category: automation
+          annotations:
+            summary: "Automation CronJob {{ $labels.job_name }} failed"
+            description: |
+              CronJob {{ $labels.job_name }} in namespace {{ $labels.namespace }}
+              has failed. Automated task did not complete successfully.
+            action: "kubectl logs job/{{ $labels.job_name }} -n {{ $labels.namespace }}"
+
+        - alert: CronJobNotScheduled
+          expr: |
+            time() - kube_cronjob_status_last_schedule_time{cronjob=~".*(trivy|license|version).*"} > 172800
+          for: 1h
+          labels:
+            severity: warning
+            category: automation
+          annotations:
+            summary: "CronJob {{ $labels.cronjob }} hasn't run in 48 hours"
+            description: |
+              CronJob {{ $labels.cronjob }} in namespace {{ $labels.namespace }}
+              has not been scheduled in over 48 hours.
+            action: "kubectl get cronjob {{ $labels.cronjob }} -n {{ $labels.namespace }}"
+
+    # =========================================================================
+    # Network Infrastructure (MikroTik + HAProxy)
+    # =========================================================================
+    - name: network-infrastructure
+      interval: 1m
+      rules:
+        # MikroTik alerts removed — MKTXP exporter decommissioned.
+        # MikroTik monitoring now via MCP server REST API tools.
+
+        - alert: HAProxyBackendDown
+          expr: |
+            haproxy_backend_up == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: network
+          annotations:
+            summary: "HAProxy backend {{ $labels.proxy }} is down on {{ $labels.instance }}"
+            description: |
+              HAProxy backend {{ $labels.proxy }} on {{ $labels.instance }}
+              has no healthy servers.
+            action: "Check backend server health and connectivity"
+
+        - alert: HAProxyHighErrorRate
+          expr: |
+            rate(haproxy_backend_http_responses_total{code="5xx"}[5m]) > 1
+          for: 5m
+          labels:
+            severity: warning
+            category: network
+          annotations:
+            summary: "HAProxy backend {{ $labels.proxy }} has high 5xx error rate"
+            description: |
+              HAProxy backend {{ $labels.proxy }} on {{ $labels.instance }} is returning
+              more than 1 req/s of 5xx errors.
+            action: "Check upstream Kubernetes API servers and backend health"
+
+    # =========================================================================
+    # External Service Health (via node-exporter or service checks)
+    # =========================================================================
+    - name: external-services
+      interval: 1m
+      rules:
+        # Detect if NFS provisioner is failing to create PVs
+        - alert: NFSProvisionerFailing
+          expr: |
+            increase(nfs_provisioner_errors_total[1h]) > 5
+          for: 15m
+          labels:
+            severity: warning
+            category: storage
+          annotations:
+            summary: "NFS provisioner encountering errors"
+            description: |
+              NFS provisioner has encountered {{ $value }} errors in the last hour.
+              New PVC creation may be failing.
+            action: "Check nfs-provisioner logs in kube-system namespace"
+
+        # Kubernetes API server health
+        - alert: KubeAPIServerDown
+          expr: |
+            up{job="kubernetes-apiservers"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "Kubernetes API server is down"
+            description: |
+              Kubernetes API server is not responding.
+              Cluster operations will fail.
+            action: "Check kube-apiserver pods on control plane nodes"
+
+        # etcd health
+        - alert: EtcdClusterUnhealthy
+          expr: |
+            etcd_server_has_leader == 0
+          for: 5m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "etcd cluster has no leader"
+            description: |
+              etcd cluster has lost its leader. This is a critical issue
+              that will affect all Kubernetes operations.
+            action: "Check etcd pods and logs on control plane nodes"

@@ -1,0 +1,29 @@
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: karpenter-proxmox-config
+  namespace: karpenter
+spec:
+  data:
+  - remoteRef:
+      key: cred-ssot-core
+      property: CRED_KARPENTER_PROXMOX_API_TOKEN
+    secretKey: token_secret
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: SecretStore
+    name: credential-core
+  target:
+    creationPolicy: Owner
+    name: karpenter-proxmox-config
+    template:
+      engineVersion: v2
+      data:
+        config.yaml: |
+          clusters:
+          - url: https://proxmox.example.com:8006/api2/json
+            insecure: false
+            token_id: "automation@pam!karpenter"
+            token_secret: "{{ trimPrefix "automation@pam!karpenter=" .token_secret }}"
+            region: "homelab"
+      type: Opaque

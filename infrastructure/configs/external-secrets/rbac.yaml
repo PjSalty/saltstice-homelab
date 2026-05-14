@@ -1,0 +1,636 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eso-read-core
+  namespace: flux-system
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - cred-ssot-core
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: authentik
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-authentik
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: authentik
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: automation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-automation
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: automation
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-cert-manager
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: cert-manager
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: cloudflared
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-cloudflared
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: cloudflared
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: gitlab-runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-gitlab-runner
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: gitlab-runner
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: headlamp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-headlamp
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: headlamp
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: karpenter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-karpenter
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: karpenter
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: semaphore
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-semaphore
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: semaphore
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: vaultwarden
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-vaultwarden
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: vaultwarden
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: velero
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-velero
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: velero
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: vm-certificates
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-vm-certificates
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: vm-certificates
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: netbox
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-netbox
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: netbox
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: core
+  name: eso-store
+  namespace: mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-core-mcp-server
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-core
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-media-mcp-server
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-media
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-monitoring-mcp-server
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-monitoring
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-network-mcp-server
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-network
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-storage-mcp-server
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-storage
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eso-read-media
+  namespace: flux-system
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - cred-ssot-media
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: media
+  name: eso-store
+  namespace: media
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-media-media
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-media
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: media
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: media
+  name: eso-store
+  namespace: docmost
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-media-docmost
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-media
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: docmost
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: media
+  name: eso-store
+  namespace: matrix
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-media-matrix
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-media
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: matrix
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eso-read-monitoring
+  namespace: flux-system
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - cred-ssot-monitoring
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: monitoring
+  name: eso-store
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-monitoring-monitoring
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-monitoring
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eso-read-storage
+  namespace: flux-system
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - cred-ssot-storage
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: storage
+  name: eso-store
+  namespace: democratic-csi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-storage-democratic-csi
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-storage
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: democratic-csi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: storage
+  name: eso-store
+  namespace: storage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-storage-storage
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-storage
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: storage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eso-read-network
+  namespace: flux-system
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - cred-ssot-network
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: network
+  name: eso-store
+  namespace: external-dns
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-network-external-dns
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-network
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: external-dns
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: network
+  name: eso-store
+  namespace: vpn
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-network-vpn
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-network
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: vpn
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: external-secrets
+    credential-ssot.example.com/domain: network
+  name: eso-store
+  namespace: unifi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-read-network-unifi
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-read-network
+subjects:
+- kind: ServiceAccount
+  name: eso-store
+  namespace: unifi

@@ -1,0 +1,117 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Salty Homelab shared Renovate configuration",
+  "extends": [
+    "config:best-practices",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":separateMajorMinorPatch",
+    ":disableRateLimiting",
+    "docker:enableMajor",
+    "docker:pinDigests"
+  ],
+  "prConcurrentLimit": 5,
+  "timezone": "America/New_York",
+  "schedule": ["at any time"],
+  "labels": ["dependencies", "renovate"],
+  "platformAutomerge": true,
+  "gitLabIgnoreApprovals": true,
+  "automergeType": "pr",
+  "automerge": true,
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/.git/**",
+    "**/vendor/**",
+    "**/.backups/**"
+  ],
+  "packageRules": [
+    {
+      "description": "Auto-merge all CI template image updates (patch/minor)",
+      "matchFileNames": ["*.yml"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "Group all non-major Helm chart updates",
+      "matchDatasources": ["helm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "helm chart updates",
+      "groupSlug": "helm-charts",
+      "automerge": true
+    },
+    {
+      "description": "Group pip dependencies",
+      "matchManagers": ["pip_requirements", "pep621"],
+      "groupName": "pip dependencies",
+      "automerge": true
+    },
+    {
+      "description": "Harbor proxy images - use upstream versioning",
+      "matchPackagePatterns": ["^harbor\\.salt\\.saltstice\\.com/"],
+      "registryUrls": [],
+      "enabled": true
+    },
+    {
+      "description": "Major versions require manual review",
+      "matchUpdateTypes": ["major"],
+      "labels": ["major-update", "needs-review"],
+      "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "CI template images via Harbor dockerhub-proxy",
+      "fileMatch": ["\\.yml$"],
+      "matchStrings": [
+        "(?:image|name):\\s*(?:name:\\s*)?harbor\\.salt\\.saltstice\\.com/dockerhub-proxy/(?<depName>[^:]+):(?<currentValue>[^@\\s]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?"
+      ],
+      "datasourceTemplate": "docker",
+      "registryUrlTemplate": "https://docker.io"
+    },
+    {
+      "customType": "regex",
+      "description": "CI template images via Harbor ghcr-proxy",
+      "fileMatch": ["\\.yml$"],
+      "matchStrings": [
+        "(?:image|name):\\s*(?:name:\\s*)?harbor\\.salt\\.saltstice\\.com/ghcr-proxy/(?<depName>[^:]+):(?<currentValue>[^@\\s]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?"
+      ],
+      "datasourceTemplate": "docker",
+      "registryUrlTemplate": "https://ghcr.io"
+    },
+    {
+      "customType": "regex",
+      "description": "CI template images via Harbor k8s-proxy",
+      "fileMatch": ["\\.yml$"],
+      "matchStrings": [
+        "(?:image|name):\\s*(?:name:\\s*)?harbor\\.salt\\.saltstice\\.com/k8s-proxy/(?<depName>[^:]+):(?<currentValue>[^@\\s]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?"
+      ],
+      "datasourceTemplate": "docker",
+      "registryUrlTemplate": "https://registry.k8s.io"
+    }
+  ],
+  "hostRules": [
+    {
+      "description": "Harbor registry authentication",
+      "matchHost": "harbor.example.com",
+      "hostType": "docker"
+    }
+  ],
+  "registryAliases": {
+    "harbor.example.com/dockerhub-proxy": "docker.io",
+    "harbor.example.com/ghcr-proxy": "ghcr.io",
+    "harbor.example.com/k8s-proxy": "registry.k8s.io"
+  },
+  "dockerfile": {
+    "managerFilePatterns": [
+      "/(^|/)Dockerfile$/",
+      "/(^|/)Dockerfile\\.[^/]*$/"
+    ]
+  },
+  "pip_requirements": {
+    "managerFilePatterns": [
+      "/(^|/)requirements\\.txt$/",
+      "/(^|/)requirements.*\\.txt$/"
+    ]
+  }
+}

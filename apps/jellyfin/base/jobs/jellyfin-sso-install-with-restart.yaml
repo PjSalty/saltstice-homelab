@@ -1,0 +1,241 @@
+---
+# ServiceAccount for SSO installer job with pod delete permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jellyfin-sso-installer
+  namespace: media
+---
+# Role to allow pod deletion (for Jellyfin restart)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jellyfin-pod-restarter
+  namespace: media
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+---
+# RoleBinding to grant permissions to ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jellyfin-sso-installer-binding
+  namespace: media
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jellyfin-pod-restarter
+subjects:
+  - kind: ServiceAccount
+    name: jellyfin-sso-installer
+    namespace: media
+---
+# Job to install SSO plugin and automatically restart Jellyfin
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-sso-install-with-restart
+  namespace: media
+  labels:
+    app: jellyfin
+    component: sso-installer-auto
+spec:
+  ttlSecondsAfterFinished: 86400  # Keep for 24 hours
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: jellyfin
+        component: sso-installer-auto
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: jellyfin-sso-installer
+      initContainers:
+        # Download SSO plugin
+        - name: download-sso-plugin
+          image: ${IMAGE_CURL}
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "Downloading Jellyfin SSO plugin..."
+              cd /plugin-download
+
+              PLUGIN_URL="https://github.com/9p4/jellyfin-plugin-sso/releases/latest/download/sso-authentication.zip"
+
+              echo "Downloading from: $PLUGIN_URL"
+              curl -L -o sso-authentication.zip "$PLUGIN_URL"
+
+              echo " Plugin downloaded successfully"
+              ls -lh /plugin-download/
+          volumeMounts:
+            - name: plugin-download
+              mountPath: /plugin-download
+
+      containers:
+        - name: install-and-restart
+          # Using kubectl image that has both unzip and kubectl
+          image: ${IMAGE_KUBECTL}
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+
+              echo "========================================================================"
+              echo "JELLYFIN SSO PLUGIN INSTALLATION WITH AUTO-RESTART"
+              echo "========================================================================"
+              echo ""
+
+              # Install unzip (kubectl image is debian-based)
+              echo "[1/7] Installing dependencies..."
+              apt-get update -qq > /dev/null 2>&1
+              apt-get install -y -qq unzip curl > /dev/null 2>&1
+              echo " Dependencies installed"
+
+              # Wait for Jellyfin to be ready
+              echo ""
+              echo "[2/7] Waiting for Jellyfin to be ready..."
+              for i in $(seq 1 30); do
+                if curl -sf http://jellyfin-service:8096/health > /dev/null 2>&1; then
+                  echo " Jellyfin is ready"
+                  break
+                fi
+                echo "  Attempt $i/30..."
+                sleep 5
+              done
+
+              # Create plugin directory
+              echo ""
+              echo "[3/7] Creating plugin directory..."
+              mkdir -p "/config/plugins/SSO Authentication"
+              echo " Plugin directory created"
+
+              # Extract plugin
+              echo ""
+              echo "[4/7] Installing SSO plugin..."
+              cd "/config/plugins/SSO Authentication"
+
+              cp /plugin-download/sso-authentication.zip .
+              unzip -o sso-authentication.zip
+              rm sso-authentication.zip
+
+              echo " Plugin files extracted:"
+              ls -la
+
+              # Create SSO configuration for Authentik OIDC
+              echo ""
+              echo "[5/7] Creating SSO configuration for Authentik OIDC..."
+
+              cat > config.xml << 'EOFCONFIG'
+<?xml version="1.0" encoding="utf-8"?>
+<PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <SamlConfigs />
+  <oidcConfigs>
+    <OidConfig>
+      <OidEndpoint>https://auth.example.com/application/o/jellyfin/</OidEndpoint>
+      <OidClientId>jellyfin</OidClientId>
+      <OidSecret>Jellyfin!SSO2025#SecureOIDC</OidSecret>
+      <Enabled>true</Enabled>
+      <EnableAuthorization>false</EnableAuthorization>
+      <EnableAllFolders>true</EnableAllFolders>
+      <EnabledFolders />
+      <AdminRoles />
+      <Roles />
+      <EnableFolderRoles>false</EnableFolderRoles>
+      <FolderRoleMapping />
+      <OidButtonText>Sign in with Authentik</OidButtonText>
+    </OidConfig>
+  </oidcConfigs>
+  <pluginVersion>3</pluginVersion>
+</PluginConfiguration>
+EOFCONFIG
+
+              echo " SSO OIDC configuration created"
+
+              # Verify installation
+              echo ""
+              echo "[6/7] Verifying installation..."
+              if [ -f "SSO-Authentication.dll" ]; then
+                echo " Plugin DLL found: $(ls -lh SSO-Authentication.dll | awk '{print $5}')"
+              else
+                echo " Plugin DLL not found!"
+                ls -la
+                exit 1
+              fi
+
+              if [ -f "config.xml" ]; then
+                echo " Configuration file created"
+              fi
+
+              # RESTART JELLYFIN POD AUTOMATICALLY
+              echo ""
+              echo "[7/7] Restarting Jellyfin pod to load plugin..."
+
+              # Get Jellyfin pod name
+              POD_NAME=$(kubectl get pod -n media -l app=jellyfin -o jsonpath='{.items[0].metadata.name}')
+              echo "  Current pod: $POD_NAME"
+
+              # Delete pod (Deployment will recreate it)
+              kubectl delete pod -n media "$POD_NAME"
+              echo "  Pod deleted, waiting for recreation..."
+
+              # Wait for new pod to be ready
+              sleep 10
+              for i in $(seq 1 60); do
+                if kubectl get pod -n media -l app=jellyfin -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' | grep -q True; then
+                  NEW_POD=$(kubectl get pod -n media -l app=jellyfin -o jsonpath='{.items[0].metadata.name}')
+                  echo " New pod ready: $NEW_POD"
+                  break
+                fi
+                echo "  Waiting for pod... ($i/60)"
+                sleep 5
+              done
+
+              echo ""
+              echo "========================================================================"
+              echo " SSO PLUGIN INSTALLATION AND RESTART COMPLETE!"
+              echo "========================================================================"
+              echo ""
+              echo "Plugin Details:"
+              echo "  - Location: /config/plugins/SSO Authentication"
+              echo "  - Type: OIDC (OpenID Connect)"
+              echo "  - Provider: Authentik"
+              echo "  - Issuer: https://auth.example.com/application/o/jellyfin/"
+              echo "  - Client ID: jellyfin"
+              echo "  - Button Text: Sign in with Authentik"
+              echo ""
+              echo "Jellyfin Status:"
+              kubectl get pod -n media -l app=jellyfin
+              echo ""
+              echo "Next Steps:"
+              echo "  1. Navigate to: https://jellyfin.example.com"
+              echo "  2. Login page should show 'Sign in with Authentik' button"
+              echo "  3. Click it to test SSO (may require Authentik provider setup)"
+              echo "  4. Check Jellyfin Dashboard > Plugins > SSO-Authentication"
+              echo ""
+              echo "Note: If SSO doesn't work, ensure Authentik provider is configured:"
+              echo "  - Run: /root/homelab-complete/scripts/setup-homarr-sso-automated.sh"
+              echo "  - Or configure manually in Authentik UI"
+              echo ""
+              echo "========================================================================"
+
+          volumeMounts:
+            - name: jellyfin-config
+              mountPath: /config
+            - name: plugin-download
+              mountPath: /plugin-download
+
+      volumes:
+        # FIXED: Use correct PVC name (jellyfin-config, not jellyfin-config-pvc)
+        - name: jellyfin-config
+          persistentVolumeClaim:
+            claimName: jellyfin-config
+        - name: plugin-download
+          emptyDir: {}

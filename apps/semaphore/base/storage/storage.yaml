@@ -1,0 +1,86 @@
+---
+# Dedicated PVs for Semaphore storage.
+#
+# Postgres lives on iSCSI (postgres-iscsi-pvc, dynamic-provisioned by
+# democratic-csi). NFS lacks the fsync/rename durability that
+# Postgres recovery assumes — after one NFS-backed pod restart the WAL
+# checkpoint record came back short and startup PANIC'd. iSCSI is a
+# block device, so Postgres gets the guarantees its recovery path
+# expects.
+#
+# The previous nfs-client postgres-pvc + semaphore-postgres-pv have
+# been removed from the manifest. The PV used Retain policy, so the
+# underlying NFS data at /mnt/tank/kubernetes/semaphore-postgres-pvc
+# is preserved on TrueNAS in case forensics are ever needed; clean it
+# up out-of-band when comfortable.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: semaphore-ansible-repo-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-client
+  nfs:
+    server: ${NFS_SERVER}
+    path: /mnt/tank/kubernetes/semaphore-ansible-repo-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-iscsi-pvc
+  namespace: semaphore
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iscsi-csi
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ansible-repo-pvc
+  namespace: semaphore
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-client
+  volumeName: semaphore-ansible-repo-pv
+  resources:
+    requests:
+      storage: 5Gi
+---
+# PV for Semaphore tmp/working directory (task execution)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: semaphore-tmp-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-client
+  nfs:
+    server: ${NFS_SERVER}
+    path: /mnt/tank/kubernetes/semaphore-tmp-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: semaphore-tmp-pvc
+  namespace: semaphore
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-client
+  volumeName: semaphore-tmp-pv
+  resources:
+    requests:
+      storage: 5Gi

@@ -1,0 +1,13 @@
+---
+# Deploy TLS certificates from cert-manager to VMs
+#
+# Usage:
+#   ansible-playbook playbooks/operations/deploy-certificates.yml
+#   ansible-playbook playbooks/operations/deploy-certificates.yml --limit gitlab
+
+- name: Deploy TLS certificates
+  hosts: infrastructure:dns:load_balancers:storage:proxmox
+  roles:
+    - certificates
+  tags:
+    - certificates

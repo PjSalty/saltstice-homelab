@@ -1,0 +1,42 @@
+---
+# idrac-cert role defaults
+#
+# Pushes the cluster wildcard cert from cert-manager onto the iDRAC web
+# interface via Redfish. The role is idempotent — it inspects the iDRAC's
+# current SSL cert and only uploads when the existing cert is within
+# `idrac_cert_renewal_threshold_days` of expiry, so it is safe to run
+# weekly on a schedule.
+#
+# Operator must set `idrac_url`, `idrac_username`, `idrac_password` either
+# in inventory group_vars or via -e at runtime. Username + password come
+# from cred-ssot-monitoring (CRED_MONITORING_IDRAC_USERNAME /
+# CRED_MONITORING_IDRAC_PASSWORD).
+
+# Where to reach the iDRAC Redfish API. Override per-host if multiple iDRACs.
+idrac_url: "https://<mgmt-ip>"
+
+# How early to renew. cert-manager rotates wildcard-tls every ~60 days, so
+# 30 days here means iDRAC follows wildcard renewals one cycle behind without
+# manual intervention.
+idrac_cert_renewal_threshold_days: 30
+
+# Source of the wildcard cert (cert-manager managed Secret).
+idrac_cert_source_namespace: "cert-manager"
+idrac_cert_source_secret: "wildcard-tls"
+
+# iDRAC SSL key length / type. Server cert lives at slot type 1 in
+# Dell's Oem certificate API; do not change unless the iDRAC firmware
+# numbering shifts (LC log will surface a "certificate type not
+# supported" error if it ever does).
+idrac_cert_type: "Server"
+
+# Skip certificate verification when talking to the iDRAC. The iDRAC
+# self-signed cert is exactly what this role replaces, so chicken-and-
+# egg dictates we cannot validate it. Once the wildcard cert is in
+# place subsequent runs still need this true because validation goes
+# against the iDRAC's IP, not its CN.
+idrac_validate_certs: false
+
+# How many seconds to wait for the iDRAC to come back after the SSL
+# service restart. iDRAC9 typically takes 20-40s to reload.
+idrac_post_restart_wait: 60

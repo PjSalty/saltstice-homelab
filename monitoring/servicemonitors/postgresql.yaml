@@ -1,0 +1,29 @@
+---
+# Cross-namespace PostgreSQL exporter ServiceMonitor
+# Matches postgres-exporter sidecars across all app namespaces
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgresql
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - docmost
+      # - matrix  # ARCHIVED 2026-03-22
+      - authentik
+      - semaphore
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - docmost-postgresql
+          # - synapse-postgresql  # ARCHIVED 2026-03-22
+          - authentik-postgresql
+          - postgres
+  endpoints:
+    - port: pg-metrics
+      interval: 30s

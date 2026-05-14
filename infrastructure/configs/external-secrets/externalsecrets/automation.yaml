@@ -1,0 +1,84 @@
+# harbor-credentials: Harbor robot account for automation
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: harbor-credentials
+  namespace: automation
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: harbor-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/managed-by: "external-secrets"
+          ssot.example.com/source: "credential-ssot"
+      data:
+        password: "{{ .harbor_password }}"
+        username: "robot$ci-pipeline"
+  data:
+  - secretKey: harbor_password
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTOMATION_HARBOR_PASSWORD
+---
+# renovate-credentials: GitLab token for Renovate bot
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: renovate-credentials
+  namespace: automation
+  labels:
+    app.kubernetes.io/component: bot
+    app.kubernetes.io/name: renovate
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: renovate-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/component: "bot"
+          app.kubernetes.io/name: "renovate"
+  data:
+  - secretKey: gitlab-token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTOMATION_RENOVATE_GITLAB_TOKEN
+---
+# version-researcher-credentials: GitLab token for version researcher
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: version-researcher-credentials
+  namespace: automation
+  labels:
+    app.kubernetes.io/name: version-researcher
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: credential-core
+    kind: SecretStore
+  target:
+    name: version-researcher-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          app.kubernetes.io/name: "version-researcher"
+  data:
+  - secretKey: gitlab-token
+    remoteRef:
+      key: cred-ssot-core
+      property: CRED_AUTOMATION_GITLAB_TOKEN

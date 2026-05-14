@@ -1,0 +1,54 @@
+---
+# common role defaults
+# CI/CD verified: 2026-03-19
+
+common_packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - python3
+  - python3-pip
+  - jq
+  - htop
+  - vim
+  - tmux
+  - dnsutils
+  - tree
+  - unzip
+  - rsync
+  - git
+  - acl
+  - chrony
+  - iotop
+  - strace
+
+common_sysctl:
+  net.ipv4.ip_forward: 1
+  # bridge-nf-call-iptables is NOT set here — it differs per role:
+  # k8s-prereqs: 1 (kube-proxy needs iptables on bridged pod traffic)
+  # proxmox: 0 (hypervisor bridge must NOT filter inter-VM traffic)
+  vm.swappiness: 10
+  vm.dirty_ratio: 10
+  vm.dirty_background_ratio: 5
+  vm.dirty_expire_centisecs: 1500
+  vm.dirty_writeback_centisecs: 300
+  fs.inotify.max_user_watches: 524288
+  fs.inotify.max_user_instances: 512
+  kernel.kptr_restrict: 2
+  kernel.dmesg_restrict: 1
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv6.conf.all.accept_redirects: 0
+
+common_disable_swap: true
+
+# OpenSSL: disable post-quantum key exchange (X25519MLKEM768)
+# Debian 13 OpenSSL 3.5.x enables PQ by default, producing ~1560 byte TLS
+# ClientHello that breaks MikroTik RouterOS TLS inspection on inter-VLAN traffic
+common_openssl_disable_pq: true
+common_openssl_groups: "X25519:P-256:P-384"

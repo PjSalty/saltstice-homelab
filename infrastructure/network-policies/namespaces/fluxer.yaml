@@ -1,0 +1,93 @@
+---
+# Fluxer - community discussion platform (DMZ)
+# Accepts traffic from DMZ Traefik only, NOT internal Traefik
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-fluxer
+  namespace: fluxer
+spec:
+  description: "Allow Fluxer — ingress from DMZ Traefik, egress to storage"
+  endpointSelector: {}
+  ingress:
+    # Allow DMZ Traefik for web UI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik-dmz
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # Allow bridge relay to connect
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: matrix-bridge
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow monitoring scrape
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+    # Allow intra-namespace (fluxer ↔ postgresql ↔ redis)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: fluxer
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "5432"
+              protocol: TCP
+            - port: "6379"
+              protocol: TCP
+  egress:
+    # Allow intra-namespace (Fluxer → its own PostgreSQL/Redis)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: fluxer
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+            - port: "6379"
+              protocol: TCP
+    # Allow iSCSI storage access (TrueNAS)
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "3260"
+              protocol: TCP
+    # Allow NFS storage access (TrueNAS)
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "2049"
+              protocol: TCP
+    # Allow bridge communication
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: matrix-bridge
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

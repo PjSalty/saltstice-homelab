@@ -1,0 +1,25 @@
+---
+# Cross-namespace Redis exporter ServiceMonitor
+# Matches redis-exporter sidecars across all app namespaces
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - docmost
+      - authentik
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - docmost-redis
+          - authentik-redis
+  endpoints:
+    - port: redis-metrics
+      interval: 30s

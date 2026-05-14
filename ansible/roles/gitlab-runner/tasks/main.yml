@@ -1,0 +1,105 @@
+---
+# =============================================================================
+# GitLab Runner Installation and Configuration
+# Docker executor with host networking for reliable cross-VLAN access
+# =============================================================================
+
+- name: Download GitLab Runner GPG key
+  ansible.builtin.get_url:
+    url: https://packages.gitlab.com/runner/gitlab-runner/gpgkey
+    dest: /tmp/gitlab-runner-gpg-key.asc
+    mode: "0644"
+  become: true
+  tags:
+    - gitlab-runner
+    - packages
+
+- name: Dearmor GitLab Runner GPG key
+  ansible.builtin.shell:
+    cmd: gpg --dearmor < /tmp/gitlab-runner-gpg-key.asc > /usr/share/keyrings/gitlab-runner.gpg
+    creates: /usr/share/keyrings/gitlab-runner.gpg
+  become: true
+  tags:
+    - gitlab-runner
+    - packages
+
+- name: Set permissions on GPG keyring
+  ansible.builtin.file:
+    path: /usr/share/keyrings/gitlab-runner.gpg
+    mode: "0644"
+  become: true
+  tags:
+    - gitlab-runner
+    - packages
+
+- name: Configure GitLab Runner APT repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/gitlab-runner.list
+    content: "deb [signed-by=/usr/share/keyrings/gitlab-runner.gpg] https://packages.gitlab.com/runner/gitlab-runner/debian/ trixie main\n"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags:
+    - gitlab-runner
+    - packages
+
+- name: Install GitLab Runner
+  ansible.builtin.apt:
+    name: "gitlab-runner={{ gitlab_runner_version }}*"
+    state: present
+    update_cache: true
+  become: true
+  tags:
+    - gitlab-runner
+    - packages
+
+- name: Pin GitLab Runner version
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/gitlab-runner
+    content: |
+      Package: gitlab-runner gitlab-runner-helper-images
+      Pin: version {{ gitlab_runner_version }}*
+      Pin-Priority: 1000
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags:
+    - gitlab-runner
+    - packages
+
+- name: Ensure automation SSH directory exists
+  ansible.builtin.file:
+    path: /home/automation/.ssh
+    state: directory
+    owner: automation
+    group: automation
+    mode: "0700"
+  become: true
+  tags:
+    - gitlab-runner
+    - config
+
+- name: Deploy GitLab Runner configuration
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: /etc/gitlab-runner/config.toml
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart gitlab-runner
+  become: true
+  tags:
+    - gitlab-runner
+    - config
+
+- name: Enable and start GitLab Runner service
+  ansible.builtin.systemd:
+    name: gitlab-runner
+    enabled: true
+    state: started
+  become: true
+  tags:
+    - gitlab-runner
+    - config

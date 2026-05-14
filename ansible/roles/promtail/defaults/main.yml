@@ -1,0 +1,24 @@
+---
+# promtail role defaults
+
+promtail_enabled: true
+promtail_version: "3.4.2"
+
+# Loki push endpoint — requires IngressRoute or NodePort for VM access
+promtail_loki_url: "http://loki.example.com/loki/api/v1/push"
+
+# Log sources
+promtail_scrape_journald: true
+promtail_scrape_varlog: true
+promtail_scrape_docker: "{{ 'docker' in group_names or 'infrastructure' in group_names or 'amp_servers' in group_names or 'vpn_servers' in group_names }}"
+
+# Labels
+promtail_hostname: "{{ inventory_hostname }}"
+promtail_vlan: "{{ vlan_id | default('unknown') }}"
+
+# Positions file (tracks read offsets)
+promtail_positions_path: /var/lib/promtail/positions.yaml
+
+# Grafana APT repo
+promtail_apt_repo: "https://apt.grafana.com"
+promtail_apt_key: "https://apt.grafana.com/gpg.key"

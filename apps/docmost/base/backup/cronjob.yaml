@@ -1,0 +1,77 @@
+---
+# PostgreSQL backup CronJob for Docmost
+# Runs pg_dump daily, retains 7 days of backups on NFS
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgresql-backup
+  namespace: docmost
+spec:
+  schedule: "30 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: pg-backup
+              image: ${IMAGE_POSTGRES_16}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: docmost-secrets
+                      key: postgres-password
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+                  BACKUP_FILE="/backups/docmost-$${TIMESTAMP}.sql.gz"
+
+                  echo "[$(date)] Starting PostgreSQL backup for docmost"
+                  pg_dump -h docmost-postgresql -U docmost -d docmost \
+                    --no-owner --no-privileges | gzip > "$${BACKUP_FILE}"
+                  echo "[$(date)] Backup complete: $(du -h "$${BACKUP_FILE}" | cut -f1)"
+
+                  # Retention: keep last 7 days
+                  find /backups -name "docmost-*.sql.gz" -mtime +7 -delete
+                  echo "[$(date)] Current backups:"
+                  ls -lh /backups/docmost-*.sql.gz 2>/dev/null || echo "  (none)"
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: postgresql-backups
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi

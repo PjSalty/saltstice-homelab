@@ -1,0 +1,137 @@
+# Authentik server — handles HTTP + UI + embedded outpost for forward-auth.
+# Replicas managed by HPA (autoscaling/hpa.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authentik-server
+  namespace: authentik
+  labels:
+    app: authentik-server
+spec:
+  selector:
+    matchLabels:
+      app: authentik-server
+  template:
+    metadata:
+      labels:
+        app: authentik-server
+    spec:
+      serviceAccountName: authentik
+      automountServiceAccountToken: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: authentik
+          image: ${IMAGE_AUTHENTIK}
+          imagePullPolicy: IfNotPresent
+          args: [server]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: AUTHENTIK_REDIS__HOST
+              value: authentik-redis
+            - name: AUTHENTIK_POSTGRESQL__HOST
+              value: authentik-postgresql
+            - name: AUTHENTIK_POSTGRESQL__NAME
+              value: authentik
+            - name: AUTHENTIK_POSTGRESQL__USER
+              value: authentik
+            - name: AUTHENTIK_POSTGRESQL__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: authentik-secret
+                  key: AUTHENTIK_POSTGRESQL__PASSWORD
+            - name: AUTHENTIK_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: authentik-secret
+                  key: AUTHENTIK_SECRET_KEY
+            - name: AUTHENTIK_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: authentik-admin
+                  key: password
+            - name: AUTHENTIK_BOOTSTRAP_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: authentik-admin
+                  key: email
+            - name: AUTHENTIK_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sso-client-secrets
+                  key: AUTHENTIK_API_TOKEN
+            - name: AUTHENTIK_ERROR_REPORTING__ENABLED
+              value: "false"
+            - name: AUTHENTIK_LOG_LEVEL
+              value: info
+            # Cookies share across every subdomain in the homelab so
+            # SSO works seamlessly between integrated apps.
+            - name: AUTHENTIK_COOKIE_DOMAIN
+              value: example.com
+            # Embedded outpost discovery for forward-auth.
+            - name: AUTHENTIK_OUTPOSTS__DISCOVER
+              value: "true"
+            # Default 30s timeout was killing in-flight requests during
+            # outpost reloads. 60s gives outpost reloads room to complete.
+            - name: AUTHENTIK_WEB__TIMEOUT
+              value: "60"
+            # Default 2 workers bottlenecks the SPA's ~30 concurrent
+            # JS chunk loads on first paint.
+            - name: AUTHENTIK_WEB__WORKERS
+              value: "6"
+          ports:
+            - containerPort: 9000
+              name: http
+              protocol: TCP
+            - containerPort: 9443
+              name: https
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /-/health/live/, port: 9000 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /-/health/ready/, port: 9000 }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 30
+            failureThreshold: 5
+          startupProbe:
+            httpGet: { path: /-/health/ready/, port: 9000 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+          resources:
+            requests:
+              cpu: 300m
+              memory: 768Mi
+            limits:
+              cpu: 1500m
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authentik-server
+  namespace: authentik
+  labels:
+    app: authentik-server
+spec:
+  type: ClusterIP
+  ports:
+    - { port: 80, targetPort: 9000, protocol: TCP, name: http }
+    - { port: 443, targetPort: 9443, protocol: TCP, name: https }
+  selector:
+    app: authentik-server

@@ -1,0 +1,29 @@
+---
+# cluster-cleanup CronJob — runs daily to clean up old ReplicaSets, Jobs, Pods
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-cluster-cleanup
+  namespace: cluster-cleanup
+spec:
+  description: "Allow cluster-cleanup CronJob to manage K8s resources"
+  endpointSelector: {}
+  egress:
+    # Allow Kubernetes API for resource cleanup
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

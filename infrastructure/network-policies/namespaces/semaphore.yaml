@@ -1,0 +1,118 @@
+---
+# Semaphore - Ansible automation UI
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-semaphore
+  namespace: semaphore
+spec:
+  description: "Allow Semaphore Ansible UI"
+  endpointSelector: {}
+  ingress:
+    # Allow Traefik for web UI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # Allow MCP server read-only API access
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp-server
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # Allow monitoring scrape (Prometheus → postgres-exporter)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9187"
+              protocol: TCP
+    # Allow intra-namespace (semaphore ↔ postgres)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: semaphore
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "5432"
+              protocol: TCP
+  egress:
+    # Allow internal PostgreSQL
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: semaphore
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "5432"
+              protocol: TCP
+    # Allow Authentik for SSO (direct + via Traefik for OIDC discovery)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: authentik
+      toPorts:
+        - ports:
+            - port: "9443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Allow SSH to managed hosts (all infrastructure VLANs)
+    - toCIDR:
+        - <vlan-cidr>
+        - 10.x0.0/24
+        - <vlan-cidr>
+        - <vlan-cidr>
+        - <mgmt-ip>/24
+      toPorts:
+        - ports:
+            - port: "22"
+              protocol: TCP
+    # Allow SSH to K8s nodes (Cilium requires toEntities for pod→node traffic)
+    - toEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "22"
+              protocol: TCP
+    # Allow GitLab for playbook repos
+    - toCIDR:
+        - <host>/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "2222"
+              protocol: TCP
+    # Allow external HTTPS for init container tool downloads (kubectl, helm, sops)
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

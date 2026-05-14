@@ -1,0 +1,27 @@
+---
+# PolicyException: Semaphore runs as root due to go-git NFS safe.directory bug
+# The go-git library ignores GIT_CONFIG_GLOBAL safe.directory settings as non-root,
+# causing exit status 128 on Git checkouts from NFS PVCs.
+apiVersion: kyverno.io/v2
+kind: PolicyException
+metadata:
+  name: semaphore-root
+  namespace: kyverno
+spec:
+  exceptions:
+    - policyName: require-run-as-non-root
+      ruleNames:
+        - run-as-non-root
+        - autogen-run-as-non-root
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+            - Deployment
+            - ReplicaSet
+            # Job covers setup-gitlab-repo / setup-tasks one-shots that
+            # seed Semaphore and also need root for NFS writes.
+            - Job
+          namespaces:
+            - semaphore

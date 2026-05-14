@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: jellyfin
+  namespace: media
+  labels:
+    app: jellyfin
+spec:
+  type: LoadBalancer
+  loadBalancerIP: ${JELLYFIN_LB_IP}
+  ports:
+    - name: http
+      port: 8096
+      targetPort: http
+      protocol: TCP
+    - name: discovery
+      port: 7359
+      targetPort: discovery
+      protocol: UDP
+  selector:
+    app: jellyfin

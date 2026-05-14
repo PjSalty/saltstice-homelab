@@ -1,0 +1,53 @@
+---
+# Audit mode: warn on PodDisruptionBudgets that use absolute minAvailable.
+#
+# Why: a PDB with `minAvailable: 1` on a 1-replica Deployment is mathematically
+# un-drainable — the eviction API can never satisfy the budget, so kubectl
+# drain blocks every node maintenance forever. The 2026-04-25 RKE2 upgrade
+# session required ~10 manual `kubectl delete pod` interventions across
+# workers because of exactly this pattern (see commit log of MR fixing
+# pdb-drainability).
+#
+# Recommended replacements:
+#   - Single-replica workload: use `maxUnavailable: 1` (allow eviction with
+#     brief restart window).
+#   - HA workload: bump replicas to >= 2 and use a percentage:
+#       `minAvailable: 50%` or `maxUnavailable: 25%`.
+#
+# Audit mode chosen deliberately: this policy does NOT block apply, it only
+# generates PolicyReports. Promote to `validationFailureAction: Enforce`
+# after a clean week of reports cluster-wide.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: avoid-undrainable-pdb
+  annotations:
+    policies.kyverno.io/title: Avoid Undrainable PodDisruptionBudget
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: PodDisruptionBudget
+    policies.kyverno.io/description: >-
+      Flags PodDisruptionBudgets with absolute `minAvailable` integer values.
+      Use `maxUnavailable` for single-replica workloads or percentage
+      `minAvailable` for HA workloads, otherwise drains can block forever.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: pdb-no-absolute-min-available
+      match:
+        any:
+          - resources:
+              kinds:
+                - PodDisruptionBudget
+      validate:
+        message: >-
+          PodDisruptionBudget {{ request.object.metadata.namespace }}/{{ request.object.metadata.name }}
+          uses `minAvailable` as an absolute integer ({{ request.object.spec.minAvailable }}).
+          On a single-replica Deployment this perpetually blocks node drains
+          (kubectl drain cannot satisfy the budget). Use `maxUnavailable: 1`
+          for single-replica workloads, or `minAvailable: 50%` (etc.) for
+          replicas: >= 2 HA workloads.
+        pattern:
+          spec:
+            =(minAvailable): "?*%"

@@ -1,0 +1,56 @@
+---
+# MetalLB needs L2/ARP or BGP access for load balancer IPs
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-metallb
+  namespace: metallb-system
+spec:
+  description: "Allow MetalLB for LoadBalancer service IPs"
+  endpointSelector: {}
+  ingress:
+    # Allow webhook calls from API server (validating webhook)
+    - fromEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "7472"
+              protocol: TCP
+            - port: "9443"
+              protocol: TCP
+    # Allow memberlist communication between speakers
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: metallb-system
+      toPorts:
+        - ports:
+            - port: "7946"
+              protocol: TCP
+            - port: "7946"
+              protocol: UDP
+  egress:
+    # Allow L2 ARP announcements
+    - toEntities:
+        - host
+    # Allow memberlist between speakers
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: metallb-system
+      toPorts:
+        - ports:
+            - port: "7946"
+              protocol: TCP
+            - port: "7946"
+              protocol: UDP
+    # DNS resolution (required per Cilium bug #34390 — CCNP DNS
+    # rules silently overridden when CNP has toEndpoints egress)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

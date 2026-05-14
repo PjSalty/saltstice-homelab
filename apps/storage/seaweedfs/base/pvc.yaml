@@ -1,0 +1,19 @@
+---
+# Persistent Volume Claim for SeaweedFS data
+# Uses NFS storage from TrueNAS via nfs-client provisioner
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: seaweedfs-data
+  namespace: storage
+  labels:
+    app.kubernetes.io/name: seaweedfs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-client
+  resources:
+    requests:
+      # Adjust based on storage requirements
+      # This stores all object data (GitLab cache, backups, etc.)
+      storage: 200Gi

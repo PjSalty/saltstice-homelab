@@ -1,0 +1,133 @@
+---
+# One-shot Postgres restore for the NFS->iSCSI migration. Runs after
+# the postgres Deployment reconciles onto the fresh iSCSI PVC, which
+# initializes an empty `semaphore` DB. This Job then replays the most
+# recent pg_dump from the `postgresql-backups` PVC into it.
+#
+# Idempotent: if the target DB already has tables in the public
+# schema, the Job exits 0 without writing anything, so Flux
+# re-reconciles won't wipe or duplicate data.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-restore-iscsi
+  namespace: semaphore
+  labels:
+    app: postgres-restore
+spec:
+  ttlSecondsAfterFinished: 604800
+  # Each retry is a fresh pod (restartPolicy: Never below), so the wait
+  # loop in the script doesn't waste a backoff slot if postgres is
+  # still attaching its iSCSI volume.
+  backoffLimit: 6
+  # Hard cap at 30 min total — covers iSCSI attach + initdb + restore
+  # of even a much larger dump.
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app: postgres-restore
+    spec:
+      # Never (not OnFailure) so each container exit produces a
+      # discrete pod the Job controller can count and retain logs for.
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: restore
+          image: ${IMAGE_POSTGRES_15}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: semaphore-secrets
+                  key: postgres-password
+            - name: PGHOST
+              value: postgres
+            - name: PGUSER
+              value: semaphore
+            - name: PGDATABASE
+              value: semaphore
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # NOTE: ${VAR} (single $) gets eaten by Flux's postBuild
+              # substituteFrom — it expects ${SSOT_VAR} from the
+              # image-versions ConfigMap and silently expands unknown
+              # tokens to empty. Escape every shell variable as $${VAR}
+              # so Flux emits a literal ${VAR} into the rendered Job.
+              set -euo pipefail
+
+              echo "[$(date)] Waiting for postgres to accept connections (up to 25 min)..."
+              READY=0
+              for i in $(seq 1 750); do
+                if pg_isready -q 2>/dev/null; then
+                  echo "[$(date)] postgres ready after $${i}s"
+                  READY=1
+                  break
+                fi
+                sleep 2
+              done
+              if [ "$${READY}" != "1" ]; then
+                echo "[$(date)] ERROR: postgres did not become ready in time" >&2
+                exit 1
+              fi
+
+              # Postgres can briefly accept TCP before "the database
+              # system is starting up" finishes — wait for an actual
+              # query to succeed before committing to the restore.
+              for i in $(seq 1 30); do
+                if psql -tAc "SELECT 1" >/dev/null 2>&1; then break; fi
+                sleep 2
+              done
+
+              TABLES=$(psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+              if [ "$${TABLES}" -gt 0 ]; then
+                echo "[$(date)] semaphore DB already has $${TABLES} tables in public schema — skipping restore"
+                exit 0
+              fi
+
+              LATEST=$(ls -1t /backups/semaphore-*.sql.gz 2>/dev/null | head -1)
+              if [ -z "$${LATEST}" ]; then
+                echo "[$(date)] ERROR: no backup files under /backups" >&2
+                exit 1
+              fi
+
+              SIZE=$(stat -c%s "$${LATEST}")
+              echo "[$(date)] Restoring from $${LATEST} ($${SIZE} bytes)"
+              zcat "$${LATEST}" | psql -v ON_ERROR_STOP=1 -q
+
+              FINAL=$(psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+              echo "[$(date)] Restore complete — public schema now has $${FINAL} tables"
+          volumeMounts:
+            - name: backups
+              mountPath: /backups
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: backups
+          persistentVolumeClaim:
+            claimName: postgresql-backups
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

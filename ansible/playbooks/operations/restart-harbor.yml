@@ -1,0 +1,48 @@
+---
+# Restart Harbor services on the Harbor VM.
+#
+# Use after unclean shutdown (e.g. power outage) when Harbor's HTTPS
+# endpoint is reachable but auth returns 401 for all credentials —
+# typically PostgreSQL/core state that needs a clean cycle.
+#
+# Usage via Semaphore: select this playbook, inventory, run.
+# Manual: ansible-playbook playbooks/operations/restart-harbor.yml
+
+- name: Restart Harbor stack
+  hosts: harbor
+  become: true
+  gather_facts: false
+  vars:
+    harbor_compose_dir: "{{ harbor_install_dir | default('/opt/harbor/install') }}/harbor"
+  tasks:
+    - name: Verify Harbor compose project exists
+      ansible.builtin.stat:
+        path: "{{ harbor_compose_dir }}/docker-compose.yml"
+      register: harbor_compose_file
+
+    - name: Fail if Harbor is not installed
+      ansible.builtin.fail:
+        msg: "Harbor docker-compose project not found at {{ harbor_compose_dir }}"
+      when: not harbor_compose_file.stat.exists
+
+    - name: Stop Harbor stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ harbor_compose_dir }}"
+        state: stopped
+
+    - name: Start Harbor stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ harbor_compose_dir }}"
+        state: present
+        wait: true
+        wait_timeout: 180
+
+    - name: Wait for Harbor API health endpoint to return 200
+      ansible.builtin.uri:
+        url: "https://{{ inventory_hostname }}.example.com/api/v2.0/health"
+        validate_certs: true
+        status_code: 200
+      register: harbor_health
+      retries: 30
+      delay: 5
+      until: harbor_health.status == 200

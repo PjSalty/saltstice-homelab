@@ -1,0 +1,12 @@
+---
+# VPN Namespace
+# wg-easy runs on external VM (<internal-ip>, DMZ VLAN 60)
+# This namespace provides Traefik ingress for secure HTTPS access
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vpn
+  labels:
+    app.kubernetes.io/name: vpn
+    app.kubernetes.io/component: wireguard
+    tls.example.com/wildcard: "true"

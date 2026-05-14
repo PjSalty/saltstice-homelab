@@ -1,0 +1,8 @@
+---
+# fail2ban role defaults
+
+fail2ban_enabled: true
+fail2ban_maxretry: 5
+fail2ban_bantime: 3600
+fail2ban_findtime: 600
+fail2ban_ignoreip: "127.0.0.1/8 ::1 <vlan-cidr> 10.x0.0/24"

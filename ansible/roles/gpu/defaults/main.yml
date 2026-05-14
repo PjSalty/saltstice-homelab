@@ -1,0 +1,16 @@
+---
+# gpu role defaults
+
+# NVIDIA driver version (open kernel modules)
+gpu_driver_packages:
+  - nvidia-driver
+  - nvidia-kernel-dkms
+  - nvidia-smi
+
+# NVIDIA container toolkit for K8s GPU workloads
+gpu_container_toolkit: true
+gpu_container_toolkit_packages:
+  - nvidia-container-toolkit
+
+# Runtime configuration
+gpu_default_runtime: nvidia

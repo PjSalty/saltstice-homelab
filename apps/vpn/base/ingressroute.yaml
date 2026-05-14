@@ -1,0 +1,50 @@
+---
+# Traefik IngressRoute for wg-easy Web UI
+# Provides HTTPS access with TLS termination at Traefik
+# Backend connects to wg-easy VM via HTTP (internal network)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: wg-easy
+  namespace: vpn
+  labels:
+    app.kubernetes.io/name: wg-easy
+    app.kubernetes.io/component: wireguard
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: vpn.example.com
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`vpn.example.com`)
+      kind: Rule
+      services:
+        - name: wg-easy
+          port: 51821
+          passHostHeader: true
+      middlewares:
+        - name: authentik-forward-auth
+          namespace: traefik
+        - name: security-headers
+          namespace: traefik
+  tls:
+    secretName: wildcard-tls
+---
+# HTTP to HTTPS redirect
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: wg-easy-redirect
+  namespace: vpn
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`vpn.example.com`)
+      kind: Rule
+      middlewares:
+        - name: https-redirect
+          namespace: traefik
+      services:
+        - name: wg-easy
+          port: 51821

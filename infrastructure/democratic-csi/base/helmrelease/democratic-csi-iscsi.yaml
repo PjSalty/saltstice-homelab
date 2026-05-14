@@ -1,0 +1,184 @@
+# Democratic-CSI HelmRelease for TrueNAS SCALE iSCSI
+# Provides block storage with file locking support for MongoDB/databases
+# Chart version: 0.15.1 (latest as of 2026-02)
+# Source: https://github.com/democratic-csi/charts
+# NOTE: Chart 0.15.0+ changed image values from flat strings to registry+tag maps
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: democratic-csi-iscsi
+  namespace: democratic-csi
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: democratic-csi
+      version: "0.15.1"
+      sourceRef:
+        kind: HelmRepository
+        name: democratic-csi
+        namespace: flux-system
+  upgrade:
+    # CSIDriver has immutable spec fields (attachRequired, podInfoOnMount).
+    # Chart version bumps may change these, so force delete+recreate on upgrade.
+    force: true
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  # Patch liveness probe on rendered controller deployment
+  # The chart's built-in probe runs: bin/liveness-probe -> gRPC Probe -> TrueNAS API
+  # TrueNAS API has a HARDCODED 5000ms axios timeout in driver source (api.js:221)
+  # When TrueNAS is briefly slow (>5s), the probe fails and generates Warning events
+  # Replace with process check: container restartPolicy handles actual crashes
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: democratic-csi-iscsi-controller
+            patch: |
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: democratic-csi-iscsi-controller
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: csi-driver
+                        livenessProbe:
+                          exec:
+                            command:
+                              - test
+                              - -e
+                              - /csi-data/csi.sock.internal
+                          initialDelaySeconds: 10
+                          periodSeconds: 60
+                          timeoutSeconds: 5
+                          failureThreshold: 5
+  values:
+    csiDriver:
+      name: org.democratic-csi.iscsi
+
+    # StorageClass already exists with correct settings (reclaimPolicy: Retain).
+    # Helm cannot update immutable StorageClass fields, so skip creation.
+    storageClasses: []
+
+    volumeSnapshotClasses:
+      - name: iscsi-csi-snapclass
+        deletionPolicy: Delete
+        parameters:
+
+    driver:
+      # Full driver configuration is in SOPS-encrypted secret
+      # See: kubernetes/infrastructure/democratic-csi/base/secrets/truenas-credentials.yaml
+      existingConfigSecret: truenas-credentials
+      # Chart template needs driver type for mount configuration
+      config:
+        driver: freenas-api-iscsi
+
+    controller:
+      enabled: true
+      driver:
+        # Chart 0.15+ requires split registry/tag format
+        # Variables managed by image-versions ConfigMap via Flux substituteFrom
+        image:
+          registry: ${IMAGE_DEMOCRATIC_CSI_REPO}
+          tag: ${IMAGE_DEMOCRATIC_CSI_TAG}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+      externalProvisioner:
+        image:
+          registry: ${IMAGE_CSI_PROVISIONER_REPO}
+          tag: ${IMAGE_CSI_PROVISIONER_TAG}
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+      externalResizer:
+        image:
+          registry: ${IMAGE_CSI_RESIZER_REPO}
+          tag: ${IMAGE_CSI_RESIZER_TAG}
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+      externalSnapshotter:
+        image:
+          registry: ${IMAGE_CSI_SNAPSHOTTER_REPO}
+          tag: ${IMAGE_CSI_SNAPSHOTTER_TAG}
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+      externalHealthMonitorController:
+        enabled: false
+      csiProxy:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+
+    node:
+      enabled: true
+      driver:
+        image:
+          registry: ${IMAGE_DEMOCRATIC_CSI_REPO}
+          tag: ${IMAGE_DEMOCRATIC_CSI_TAG}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+      driverRegistrar:
+        image:
+          registry: ${IMAGE_CSI_NODE_DRIVER_REGISTRAR_REPO}
+          tag: ${IMAGE_CSI_NODE_DRIVER_REGISTRAR_TAG}
+        resources:
+          requests:
+            cpu: 25m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+      cleanup:
+        image:
+          registry: ${IMAGE_BUSYBOX_REPO}
+          tag: ${IMAGE_BUSYBOX_TAG}
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+      csiProxy:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+      # RKE2 containerd socket path
+      kubeletHostPath: /var/lib/kubelet

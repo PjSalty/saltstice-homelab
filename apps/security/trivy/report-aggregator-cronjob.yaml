@@ -1,0 +1,140 @@
+---
+# Trivy Weekly Report Aggregator
+# Generates weekly summary of vulnerability trends
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trivy-weekly-report
+  namespace: security
+spec:
+  schedule: "0 6 * * 1"  # Run Monday 6 AM
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          serviceAccountName: trivy-operator
+          restartPolicy: OnFailure
+          containers:
+            - name: report-aggregator
+              image: ${IMAGE_TRIVY}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+
+                  WEEK_END=$(date +%Y-%m-%d)
+                  WEEK_START=$(date -d @$(($(date +%s) - 604800)) +%Y-%m-%d)
+                  REPORT_FILE="/reports/weekly-summary-${WEEK_END}.json"
+
+                  echo "=== Trivy Weekly Vulnerability Report ==="
+                  echo "Period: ${WEEK_START} to ${WEEK_END}"
+                  echo ""
+
+                  # Initialize arrays for trend data
+                  DAILY_CRITICAL=""
+                  DAILY_HIGH=""
+                  DAILY_MEDIUM=""
+                  TOTAL_CRITICAL=0
+                  TOTAL_HIGH=0
+                  TOTAL_MEDIUM=0
+                  DAYS_WITH_DATA=0
+
+                  # Aggregate daily summaries
+                  for day in $(seq 0 6); do
+                    DATE=$(date -d @$(($(date +%s) - day * 86400)) +%Y-%m-%d)
+                    SUMMARY="/reports/${DATE}/summary.json"
+
+                    if [ -f "${SUMMARY}" ]; then
+                      CRITICAL=$(jq -r '.vulnerabilities.critical // 0' "${SUMMARY}" 2>/dev/null || echo "0")
+                      HIGH=$(jq -r '.vulnerabilities.high // 0' "${SUMMARY}" 2>/dev/null || echo "0")
+                      MEDIUM=$(jq -r '.vulnerabilities.medium // 0' "${SUMMARY}" 2>/dev/null || echo "0")
+
+                      DAILY_CRITICAL="${DAILY_CRITICAL}{\"date\":\"${DATE}\",\"count\":${CRITICAL}},"
+                      DAILY_HIGH="${DAILY_HIGH}{\"date\":\"${DATE}\",\"count\":${HIGH}},"
+                      DAILY_MEDIUM="${DAILY_MEDIUM}{\"date\":\"${DATE}\",\"count\":${MEDIUM}},"
+
+                      TOTAL_CRITICAL=$((TOTAL_CRITICAL + CRITICAL))
+                      TOTAL_HIGH=$((TOTAL_HIGH + HIGH))
+                      TOTAL_MEDIUM=$((TOTAL_MEDIUM + MEDIUM))
+                      DAYS_WITH_DATA=$((DAYS_WITH_DATA + 1))
+
+                      echo "${DATE}: CRITICAL=${CRITICAL} HIGH=${HIGH} MEDIUM=${MEDIUM}"
+                    else
+                      echo "${DATE}: No data"
+                    fi
+                  done
+
+                  # Remove trailing commas
+                  DAILY_CRITICAL=$(echo "${DAILY_CRITICAL}" | sed 's/,$//')
+                  DAILY_HIGH=$(echo "${DAILY_HIGH}" | sed 's/,$//')
+                  DAILY_MEDIUM=$(echo "${DAILY_MEDIUM}" | sed 's/,$//')
+
+                  # Calculate averages
+                  if [ ${DAYS_WITH_DATA} -gt 0 ]; then
+                    AVG_CRITICAL=$((TOTAL_CRITICAL / DAYS_WITH_DATA))
+                    AVG_HIGH=$((TOTAL_HIGH / DAYS_WITH_DATA))
+                    AVG_MEDIUM=$((TOTAL_MEDIUM / DAYS_WITH_DATA))
+                  else
+                    AVG_CRITICAL=0
+                    AVG_HIGH=0
+                    AVG_MEDIUM=0
+                  fi
+
+                  # Generate weekly summary JSON
+                  cat > "${REPORT_FILE}" << EOF
+                  {
+                    "report_type": "weekly_summary",
+                    "period": {
+                      "start": "${WEEK_START}",
+                      "end": "${WEEK_END}"
+                    },
+                    "days_with_data": ${DAYS_WITH_DATA},
+                    "totals": {
+                      "critical": ${TOTAL_CRITICAL},
+                      "high": ${TOTAL_HIGH},
+                      "medium": ${TOTAL_MEDIUM}
+                    },
+                    "averages": {
+                      "critical": ${AVG_CRITICAL},
+                      "high": ${AVG_HIGH},
+                      "medium": ${AVG_MEDIUM}
+                    },
+                    "trend": {
+                      "critical": [${DAILY_CRITICAL}],
+                      "high": [${DAILY_HIGH}],
+                      "medium": [${DAILY_MEDIUM}]
+                    }
+                  }
+                  EOF
+
+                  echo ""
+                  echo "=== Weekly Summary ==="
+                  echo "Days with data: ${DAYS_WITH_DATA}"
+                  echo "Total CRITICAL: ${TOTAL_CRITICAL} (avg: ${AVG_CRITICAL}/day)"
+                  echo "Total HIGH: ${TOTAL_HIGH} (avg: ${AVG_HIGH}/day)"
+                  echo "Total MEDIUM: ${TOTAL_MEDIUM} (avg: ${AVG_MEDIUM}/day)"
+                  echo ""
+                  echo "Report saved to: ${REPORT_FILE}"
+
+                  # List all weekly summaries
+                  echo ""
+                  echo "Available weekly summaries:"
+                  ls -la /reports/weekly-summary-*.json 2>/dev/null || echo "None found"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              volumeMounts:
+                - name: reports
+                  mountPath: /reports
+          volumes:
+            - name: reports
+              persistentVolumeClaim:
+                claimName: trivy-reports

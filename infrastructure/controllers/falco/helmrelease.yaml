@@ -1,0 +1,105 @@
+---
+# Falco Runtime Security - eBPF syscall monitoring
+# Researched: 2026-02-25
+# Chart: 8.0.0, App: 0.43.0
+# Source: https://artifacthub.io/packages/helm/falcosecurity/falco
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: falco
+  namespace: flux-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: falco
+      version: "8.0.2"
+      sourceRef:
+        kind: HelmRepository
+        name: falcosecurity
+        namespace: flux-system
+      interval: 12h
+  targetNamespace: falco
+  install:
+    createNamespace: false
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    # Modern eBPF driver (CO-RE, no kernel module compilation needed)
+    driver:
+      kind: modern_ebpf
+
+    # DaemonSet on all nodes
+    controller:
+      kind: daemonset
+
+    # Resources for eBPF mode
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1024Mi
+
+    # Metrics for Prometheus
+    metrics:
+      enabled: true
+      service:
+        ports:
+          metrics:
+            port: 8765
+
+    # Falcosidekick for event forwarding
+    falcosidekick:
+      enabled: true
+      replicaCount: 1
+      resources:
+        requests:
+          cpu: 25m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+      config:
+        # Forward to AlertManager (routes to ntfy)
+        alertmanager:
+          hostport: "http://monitoring-kube-prometheus-stack-alertmanager.monitoring.svc:9093"
+          minimumpriority: warning
+        # Forward to Loki for log aggregation
+        loki:
+          hostport: "http://loki.loki.svc:3100"
+          minimumpriority: notice
+      webui:
+        enabled: false
+
+    # Custom rules for homelab
+    customRules:
+      homelab-rules.yaml: |-
+        # Suppress noisy rules for known-good patterns
+        - rule: Terminal shell in container
+          desc: Detect shell in container (reduced priority for debugging)
+          condition: >
+            spawned_process and container
+            and shell_procs and proc.tty != 0
+            and container_entrypoint
+            and not user_expected_terminal_shell_in_container_conditions
+          output: >
+            Shell spawned in container
+            (container=%container.name image=%container.image.repository
+            shell=%proc.name parent=%proc.pname user=%user.name)
+          priority: NOTICE
+          tags: [container, shell, mitre_execution]
+
+    # Run on worker nodes only — reduces endpoint churn on control-plane
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+    tolerations: []

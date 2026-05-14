@@ -1,0 +1,27 @@
+---
+# certificates role defaults
+
+certificates_source_secret: wildcard-tls
+certificates_source_namespace: cert-manager
+
+# Per-host cert_name set in inventory
+# certificates_deploy_paths defined per service type
+certificates_deploy_paths:
+  gitlab:
+    cert: "/data/gitlab/config/ssl/gitlab.{{ domain }}.crt"
+    key: "/data/gitlab/config/ssl/gitlab.{{ domain }}.key"
+  harbor:
+    cert: /data/harbor/secret/cert/server.crt
+    key: /data/harbor/secret/cert/server.key
+  proxmox:
+    cert: /etc/pve/local/pveproxy-ssl.pem
+    key: /etc/pve/local/pveproxy-ssl.key
+  netbox:
+    cert: "/etc/ssl/certs/netbox.{{ domain }}.crt"
+    key: "/etc/ssl/private/netbox.{{ domain }}.key"
+  adguard:
+    cert: "/etc/ssl/certs/adguard.{{ domain }}.crt"
+    key: "/etc/ssl/private/adguard.{{ domain }}.key"
+  truenas:
+    cert: "/etc/ssl/certs/truenas.{{ domain }}.crt"
+    key: "/etc/ssl/private/truenas.{{ domain }}.key"

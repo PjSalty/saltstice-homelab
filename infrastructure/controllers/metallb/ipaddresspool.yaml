@@ -1,0 +1,23 @@
+# MetalLB IPAddressPool for LoadBalancer services
+# Updated: 2025-11-28 - Migrated to VLAN 50 Applications Network
+# Uses L2 mode to advertise IPs on the local network
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: default-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    # VLAN 50 (<vlan-cidr>) - Applications Network
+    # Reserved: <internal-ip> = Traefik Ingress
+    # Available: <internal-ip>-149 for LoadBalancer services
+    - <internal-ip>-<internal-ip>
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: default-advertisement
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - default-pool

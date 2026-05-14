@@ -1,0 +1,20 @@
+---
+# ServiceMonitor for MKTXP - MikroTik Prometheus Exporter
+# Enables Prometheus Operator auto-discovery
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mktxp
+  namespace: monitoring
+  labels:
+    app: mktxp
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: mktxp
+  endpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 25s
+      path: /metrics

@@ -1,0 +1,1241 @@
+---
+# Complete SSO Setup Job for Authentik
+# Creates user Salty, OIDC providers, and applications for all apps
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sso-complete-setup-script
+  namespace: authentik
+data:
+  setup.py: |
+    #!/usr/bin/env python3
+    """
+    Complete SSO Setup for Authentik
+    Creates user, OAuth2 providers, and applications for all homelab apps
+    """
+    import os
+    import sys
+    import json
+    import time
+    import urllib.request
+    import urllib.error
+    import urllib.parse
+    import ssl
+
+    # Configuration - ALL credentials from environment variables (SOPS-encrypted secrets)
+    AUTHENTIK_URL = "http://authentik-server"
+    API_TOKEN = os.environ.get("AUTHENTIK_API_TOKEN")
+    if not API_TOKEN:
+        print("ERROR: AUTHENTIK_API_TOKEN environment variable is required")
+        sys.exit(1)
+    DOMAIN = "example.com"
+
+    # User to create - credentials from environment variables
+    USER_CONFIG = {
+        "username": os.environ.get("SSO_ADMIN_USERNAME", "Salty"),
+        "password": os.environ.get("SSO_ADMIN_PASSWORD"),
+        "name": os.environ.get("SSO_ADMIN_NAME", "Salty User"),
+        "email": os.environ.get("SSO_ADMIN_EMAIL", "admin@example.com"),
+        "is_superuser": True,
+        "email_verified": True
+    }
+    if not USER_CONFIG["password"]:
+        print("ERROR: SSO_ADMIN_PASSWORD environment variable is required")
+        sys.exit(1)
+
+    # AdGuard credentials for Basic Auth injection (auto-login)
+    ADGUARD_ADMIN_USER = os.environ.get("ADGUARD_ADMIN_USER", "admin")
+    ADGUARD_ADMIN_PASSWORD = os.environ.get("ADGUARD_ADMIN_PASSWORD", "")
+
+    # SSO client secrets from environment variables (SOPS-encrypted K8s Secret)
+    # These are loaded from the sso-client-secrets Secret
+    # Environment variable format: {APP_NAME}_CLIENT_SECRET (e.g., JELLYFIN_CLIENT_SECRET)
+    def get_sso_secret(app_name):
+        """Get SSO client secret from environment variable"""
+        env_var = f"{app_name.upper()}_CLIENT_SECRET"
+        return os.environ.get(env_var, "")
+
+    # Icon CDN base URLs
+    ICON_CDN = "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg"
+    ICON_CDN_PNG = "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png"
+
+    # Apps to configure with OIDC - credentials from SOPS-encrypted secrets
+    APPS = {
+        # === Applications ===
+        "jellyfin": {
+            "name": "Jellyfin",
+            "slug": "jellyfin",
+            "url": f"https://jellyfin.{DOMAIN}",
+            "redirect_uris": f"https://jellyfin.{DOMAIN}/sso/OID/redirect/authentik\nhttps://jellyfin.{DOMAIN}:<external-port>/sso/OID/redirect/authentik",
+            "icon": f"{ICON_CDN}/jellyfin.svg",
+            "description": "Media Server",
+            "group": "Applications",
+            "fixed_client_id": "jellyfin-sso",
+            "fixed_client_secret": get_sso_secret("jellyfin")
+        },
+        "homarr": {
+            "name": "Homepage",
+            "slug": "homarr",
+            "url": f"https://home.{DOMAIN}",
+            "redirect_uris": f"https://home.{DOMAIN}/api/auth/callback/oidc",
+            "icon": f"{ICON_CDN}/homarr.svg",
+            "description": "Dashboard",
+            "group": "Applications",
+            "fixed_client_id": "homarr-sso",
+            "fixed_client_secret": get_sso_secret("homarr")
+        },
+        "vaultwarden": {
+            "name": "Vaultwarden",
+            "slug": "vaultwarden",
+            "url": f"https://vault.{DOMAIN}",
+            "redirect_uris": f"https://vault.{DOMAIN}/identity/connect/oidc-signin",
+            "icon": f"{ICON_CDN}/vaultwarden.svg",
+            "description": "Password Manager",
+            "group": "Applications",
+            "fixed_client_id": "vaultwarden-sso",
+            "fixed_client_secret": get_sso_secret("vaultwarden")
+        },
+        "docmost": {
+            "name": "Docmost",
+            "slug": "docmost",
+            "url": f"https://docs.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/bookstack.svg",
+            "description": "Documentation Wiki",
+            "group": "Applications",
+            "forward_auth": True
+        },
+        "amp": {
+            "name": "AMP",
+            "slug": "amp",
+            "url": f"https://amp.{DOMAIN}",
+            "redirect_uris": f"https://amp.{DOMAIN}/",
+            "icon": f"{ICON_CDN_PNG}/amp.png",
+            "description": "Game Server Management",
+            "group": "Applications",
+            "fixed_client_id": "amp-sso",
+            "fixed_client_secret": get_sso_secret("amp")
+        },
+        # === Platform ===
+        "proxmox": {
+            "name": "Proxmox VE",
+            "slug": "proxmox",
+            "url": f"https://proxmox.{DOMAIN}",
+            "redirect_uris": f"https://proxmox.{DOMAIN}",
+            "icon": f"{ICON_CDN}/proxmox.svg",
+            "description": "Hypervisor",
+            "group": "Platform",
+            "fixed_client_id": "proxmox-sso",
+            "fixed_client_secret": get_sso_secret("proxmox")
+        },
+        "truenas": {
+            "name": "TrueNAS",
+            "slug": "truenas",
+            "url": f"https://truenas.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/truenas.svg",
+            "description": "Network Attached Storage",
+            "group": "Platform",
+            "forward_auth": True
+        },
+        "netbox": {
+            "name": "NetBox",
+            "slug": "netbox",
+            "url": f"https://netbox.{DOMAIN}",
+            "redirect_uris": f"https://netbox.{DOMAIN}/oauth/complete/oidc/",
+            "icon": f"{ICON_CDN}/netbox.svg",
+            "description": "DCIM/IPAM",
+            "group": "Platform",
+            "fixed_client_id": "netbox-sso",
+            "fixed_client_secret": get_sso_secret("netbox")
+        },
+        "kubernetes": {
+            "name": "Headlamp",
+            "slug": "kubernetes",
+            "url": f"https://k8s.{DOMAIN}",
+            "redirect_uris": f"https://k8s.{DOMAIN}/oidc-callback",
+            "icon": f"{ICON_CDN}/headlamp.svg",
+            "description": "Kubernetes Dashboard",
+            "group": "Platform",
+            "fixed_client_id": "kubernetes",
+            "fixed_client_secret": get_sso_secret("headlamp")
+        },
+        "seaweedfs": {
+            "name": "SeaweedFS",
+            "slug": "seaweedfs",
+            "url": f"https://seaweedfs.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/minio.svg",
+            "description": "S3-Compatible Object Storage",
+            "group": "Platform",
+            "forward_auth": True
+        },
+        # === Networking ===
+        "adguard": {
+            "name": "AdGuard Home",
+            "slug": "adguard",
+            "url": f"https://adguard.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/adguard-home.svg",
+            "description": "DNS Server",
+            "group": "Networking",
+            "forward_auth": True,
+            "basic_auth": True,
+            "basic_auth_user_attribute": "adguard_username",
+            "basic_auth_password_attribute": "adguard_password"
+        },
+        "unifi": {
+            "name": "UniFi",
+            "slug": "unifi",
+            "url": f"https://unifi.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/unifi.svg",
+            "description": "Network Controller",
+            "group": "Networking",
+            "forward_auth": True
+        },
+        "traefik-dashboard": {
+            "name": "Traefik Dashboard",
+            "slug": "traefik-dashboard",
+            "url": f"https://traefik.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/traefik.svg",
+            "description": "Ingress Controller",
+            "group": "Networking",
+            "forward_auth": True
+        },
+        "haproxy-stats": {
+            "name": "HAProxy Stats",
+            "slug": "haproxy-stats",
+            "url": f"https://haproxy.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/haproxy.svg",
+            "description": "Load Balancer Statistics",
+            "group": "Networking",
+            "forward_auth": True
+        },
+        "vpn": {
+            "name": "WireGuard VPN",
+            "slug": "vpn",
+            "url": f"https://vpn.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/wireguard.svg",
+            "description": "VPN Management",
+            "group": "Networking",
+            "forward_auth": True
+        },
+        # === DevOps ===
+        "gitlab": {
+            "name": "GitLab",
+            "slug": "gitlab",
+            "url": f"https://gitlab.{DOMAIN}",
+            "redirect_uris": f"https://gitlab.{DOMAIN}/users/auth/openid_connect/callback",
+            "icon": f"{ICON_CDN}/gitlab.svg",
+            "description": "Git Server & CI/CD",
+            "group": "DevOps",
+            "fixed_client_id": "gitlab-sso",
+            "fixed_client_secret": get_sso_secret("gitlab")
+        },
+        "harbor": {
+            "name": "Harbor",
+            "slug": "harbor",
+            "url": f"https://harbor.{DOMAIN}",
+            "redirect_uris": f"https://harbor.{DOMAIN}/c/oidc/callback",
+            "icon": f"{ICON_CDN}/harbor.svg",
+            "description": "Container Registry",
+            "group": "DevOps",
+            "fixed_client_id": "harbor-sso",
+            "fixed_client_secret": get_sso_secret("harbor")
+        },
+        "semaphore": {
+            "name": "Semaphore",
+            "slug": "semaphore",
+            "url": f"https://semaphore.{DOMAIN}",
+            "redirect_uris": f"https://semaphore.{DOMAIN}/api/auth/oidc/authentik/redirect",
+            "icon": f"{ICON_CDN}/semaphore.svg",
+            "description": "Ansible Automation UI",
+            "group": "DevOps",
+            "fixed_client_id": "semaphore-sso",
+            "fixed_client_secret": get_sso_secret("semaphore")
+        },
+        # === Monitoring ===
+        "grafana": {
+            "name": "Grafana",
+            "slug": "grafana",
+            "url": f"https://grafana.{DOMAIN}",
+            "redirect_uris": f"https://grafana.{DOMAIN}/login/generic_oauth",
+            "icon": f"{ICON_CDN}/grafana.svg",
+            "description": "Monitoring Dashboards",
+            "group": "Monitoring",
+            "fixed_client_id": "grafana-sso",
+            "fixed_client_secret": get_sso_secret("grafana")
+        },
+        "prometheus": {
+            "name": "Prometheus",
+            "slug": "prometheus",
+            "url": f"https://prometheus.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/prometheus.svg",
+            "description": "Metrics Collection",
+            "group": "Monitoring",
+            "forward_auth": True
+        },
+        "alertmanager": {
+            "name": "AlertManager",
+            "slug": "alertmanager",
+            "url": f"https://alerts.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": f"{ICON_CDN}/alertmanager.svg",
+            "description": "Alert Routing",
+            "group": "Monitoring",
+            "forward_auth": True
+        },
+        # === Infrastructure ===
+        "goldilocks": {
+            "name": "Goldilocks",
+            "slug": "goldilocks",
+            "url": f"https://goldilocks.{DOMAIN}",
+            "redirect_uris": "",
+            "icon": "https://avatars.githubusercontent.com/u/33967083",
+            "description": "VPA Resource Recommendations",
+            "group": "Platform",
+            "forward_auth": True
+        }
+    }
+
+    # SSL context for HTTPS requests
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    def api_request(method, endpoint, data=None):
+        """Make API request to Authentik"""
+        url = f"{AUTHENTIK_URL}/api/v3/{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {API_TOKEN}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+        body = json.dumps(data).encode() if data else None
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return json.loads(response.read().decode())
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else ""
+            print(f"API Error {e.code}: {error_body}")
+            return None
+        except Exception as e:
+            print(f"Request error: {e}")
+            return None
+
+    def wait_for_authentik():
+        """Wait for Authentik to be ready"""
+        print("Waiting for Authentik to be ready...")
+        for i in range(60):
+            try:
+                req = urllib.request.Request(
+                    f"{AUTHENTIK_URL}/-/health/ready/",
+                    headers={"Accept": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    if response.status == 200:
+                        print("Authentik is ready!")
+                        return True
+            except Exception as e:
+                pass
+            time.sleep(5)
+        print("Timeout waiting for Authentik")
+        return False
+
+    def get_or_create_user():
+        """Create user Salty or verify it exists"""
+        print(f"\n=== Creating user: {USER_CONFIG['username']} ===")
+
+        # Check if user exists
+        result = api_request("GET", f"core/users/?username={USER_CONFIG['username']}")
+        if result and result.get("results"):
+            user = result["results"][0]
+            print(f"User already exists: {user['username']} (pk={user['pk']})")
+            # Update email, email_verified, and AdGuard credentials for Basic Auth
+            user_attributes = {
+                "email_verified": USER_CONFIG.get("email_verified", False)
+            }
+            # Add AdGuard credentials if configured (for Basic Auth auto-login)
+            if ADGUARD_ADMIN_PASSWORD:
+                user_attributes["adguard_username"] = ADGUARD_ADMIN_USER
+                user_attributes["adguard_password"] = ADGUARD_ADMIN_PASSWORD
+            update_data = {
+                "email": USER_CONFIG["email"],
+                "attributes": user_attributes
+            }
+            api_request("PATCH", f"core/users/{user['pk']}/", update_data)
+            print(f"  Updated email to: {USER_CONFIG['email']}")
+            print(f"  Set email_verified: {USER_CONFIG.get('email_verified', False)}")
+            if ADGUARD_ADMIN_PASSWORD:
+                print(f"  Set AdGuard credentials for Basic Auth auto-login")
+            return user["pk"]
+
+        # Create user with email_verified and AdGuard credentials for Basic Auth
+        user_attributes = {
+            "email_verified": USER_CONFIG.get("email_verified", False)
+        }
+        # Add AdGuard credentials if configured (for Basic Auth auto-login)
+        if ADGUARD_ADMIN_PASSWORD:
+            user_attributes["adguard_username"] = ADGUARD_ADMIN_USER
+            user_attributes["adguard_password"] = ADGUARD_ADMIN_PASSWORD
+        user_data = {
+            "username": USER_CONFIG["username"],
+            "name": USER_CONFIG["name"],
+            "email": USER_CONFIG["email"],
+            "is_active": True,
+            "groups": [],
+            "type": "internal",
+            "attributes": user_attributes
+        }
+        result = api_request("POST", "core/users/", user_data)
+        if result:
+            user_pk = result["pk"]
+            print(f"Created user: {USER_CONFIG['username']} (pk={user_pk})")
+
+            # Set password
+            pwd_result = api_request("POST", f"core/users/{user_pk}/set_password/", {
+                "password": USER_CONFIG["password"]
+            })
+            if pwd_result is not None:
+                print(f"Password set for user {USER_CONFIG['username']}")
+
+            # Make superuser if specified
+            if USER_CONFIG.get("is_superuser"):
+                # Get admins group
+                admins = api_request("GET", "core/groups/?name=authentik%20Admins")
+                if admins and admins.get("results"):
+                    admin_group_pk = admins["results"][0]["pk"]
+                    api_request("POST", f"core/users/{user_pk}/", {
+                        "groups": [admin_group_pk]
+                    })
+                    print(f"Added user to admins group")
+
+            return user_pk
+        return None
+
+    def get_or_create_provider(app_key, app_config):
+        """Create or update OAuth2 provider for an app"""
+        print(f"\n=== Creating OAuth2 provider: {app_config['name']} ===")
+
+        # Build redirect_uris early so we can update existing providers
+        raw_uris = app_config["redirect_uris"]
+        if isinstance(raw_uris, str):
+            uri_list = [u.strip() for u in raw_uris.split("\n") if u.strip()]
+        else:
+            uri_list = raw_uris if raw_uris else []
+        redirect_uris = [{"matching_mode": "strict", "url": uri} for uri in uri_list]
+
+        # Check if provider exists by name (URL-encode for names with spaces)
+        provider = None
+        encoded_name = urllib.parse.quote(app_config['name'], safe='')
+        result = api_request("GET", f"providers/oauth2/?name={encoded_name}")
+        if result and result.get("results"):
+            provider = result["results"][0]
+
+        # Fallback: search by client_id if name lookup missed
+        if not provider and app_config.get("fixed_client_id"):
+            result = api_request("GET", f"providers/oauth2/?client_id={app_config['fixed_client_id']}")
+            if result and result.get("results"):
+                provider = result["results"][0]
+
+        if provider:
+            provider_pk = provider["pk"]
+            print(f"Provider already exists: {provider['name']} (pk={provider_pk})")
+            print(f"  Client ID: {provider.get('client_id', 'N/A')}")
+            # Update redirect_uris and scope mappings on existing provider
+            if redirect_uris:
+                api_request("PATCH", f"providers/oauth2/{provider_pk}/", {
+                    "redirect_uris": redirect_uris
+                })
+                print(f"  Updated redirect_uris: {[u['url'] for u in redirect_uris]}")
+            add_scope_mappings_to_provider(provider_pk)
+            return provider_pk, provider.get("client_id"), provider.get("client_secret")
+
+        # Get default certificate
+        certs = api_request("GET", "crypto/certificatekeypairs/")
+        cert_pk = None
+        if certs and certs.get("results"):
+            cert_pk = certs["results"][0]["pk"]
+
+        # Get default authorization flow
+        flows = api_request("GET", "flows/instances/?slug=default-provider-authorization-implicit-consent")
+        auth_flow_pk = None
+        if flows and flows.get("results"):
+            auth_flow_pk = flows["results"][0]["pk"]
+
+        # Create provider - use fixed credentials if provided, otherwise generate
+        import secrets
+        if app_config.get("fixed_client_id"):
+            client_id = app_config["fixed_client_id"]
+            client_secret = app_config["fixed_client_secret"]
+        else:
+            client_id = f"{app_key}-{secrets.token_hex(8)}"
+            client_secret = secrets.token_urlsafe(32)
+
+        # Get invalidation flow
+        inv_flows = api_request("GET", "flows/instances/?slug=default-provider-invalidation-flow")
+        inv_flow_pk = None
+        if inv_flows and inv_flows.get("results"):
+            inv_flow_pk = inv_flows["results"][0]["pk"]
+
+        provider_data = {
+            "name": app_config["name"],
+            "authorization_flow": auth_flow_pk,
+            "invalidation_flow": inv_flow_pk,
+            "client_type": "confidential",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uris": redirect_uris,
+            "signing_key": cert_pk,
+            "access_code_validity": "minutes=1",
+            "access_token_validity": "hours=1",
+            "refresh_token_validity": "days=30",
+            "property_mappings": [],
+            "sub_mode": "user_username",
+            "include_claims_in_id_token": True,
+            "issuer_mode": "per_provider"
+        }
+
+        result = api_request("POST", "providers/oauth2/", provider_data)
+        if result:
+            provider_pk = result["pk"]
+            print(f"Created provider: {app_config['name']} (pk={provider_pk})")
+            print(f"  Client ID: {client_id}")
+            print(f"  Client Secret: {client_secret[:8]}...")
+            # Add scope mappings to the provider
+            add_scope_mappings_to_provider(provider_pk)
+            print(f"  Added scope mappings (openid, email, profile, groups)")
+            return provider_pk, client_id, client_secret
+        return None, None, None
+
+    def get_or_create_application(app_key, app_config, provider_pk):
+        """Create application for an app"""
+        slug = app_config["slug"]
+        print(f"\n=== Creating application: {app_config['name']} ===")
+
+        # Direct slug lookup — avoids pagination issues with list filter
+        app = api_request("GET", f"core/applications/{slug}/")
+        if app and app.get("slug"):
+            print(f"Application already exists: {app['name']} (slug={slug})")
+            # Authentik 2025.12+: meta_icon accepted in PATCH body (set_icon_url removed)
+            update_data = {"policy_engine_mode": "all"}
+            if app_config.get("description"):
+                update_data["meta_description"] = app_config["description"]
+            if app_config.get("url"):
+                update_data["meta_launch_url"] = app_config["url"]
+            if app_config.get("group"):
+                update_data["group"] = app_config["group"]
+            if app_config.get("icon"):
+                update_data["meta_icon"] = app_config["icon"]
+            api_request("PATCH", f"core/applications/{slug}/", update_data)
+            print(f"  Updated app metadata (group={app_config.get('group', '')}, policy=all)")
+            return slug
+
+        # Create application with icon in body (Authentik 2025.12+ accepts meta_icon)
+        app_data = {
+            "name": app_config["name"],
+            "slug": slug,
+            "meta_launch_url": app_config["url"],
+            "meta_description": app_config.get("description", ""),
+            "meta_icon": app_config.get("icon", ""),
+            "group": app_config.get("group", ""),
+            "policy_engine_mode": "all",
+            "open_in_new_tab": True
+        }
+        # Assign provider if given (OAuth2 apps). Forward-auth bookmark tiles
+        # have no provider - the domain proxy handles auth for all subdomains.
+        if provider_pk:
+            app_data["provider"] = provider_pk
+
+        result = api_request("POST", "core/applications/", app_data)
+        if result:
+            print(f"Created application: {app_config['name']} (slug={slug})")
+            return slug
+        return None
+
+    # Global domain proxy provider for forward_domain mode
+    DOMAIN_PROXY_PROVIDER_PK = None
+
+    def get_or_create_domain_proxy_provider():
+        """Create or get the single domain-wide proxy provider for forward-auth"""
+        global DOMAIN_PROXY_PROVIDER_PK
+        if DOMAIN_PROXY_PROVIDER_PK:
+            return DOMAIN_PROXY_PROVIDER_PK
+
+        print(f"\n=== Creating Domain Proxy Provider (forward_domain mode) ===")
+
+        provider_name = "Domain Forward Auth"
+
+        # Check if provider exists
+        import urllib.parse
+        encoded_name = urllib.parse.quote(provider_name)
+        result = api_request("GET", f"providers/proxy/?name={encoded_name}")
+        if result and result.get("results"):
+            provider = result["results"][0]
+            provider_pk = provider["pk"]
+            print(f"Domain proxy provider exists: {provider['name']} (pk={provider_pk})")
+            # Update to ensure correct settings
+            update_data = {
+                "mode": "forward_domain",
+                "external_host": f"https://auth.{DOMAIN}",
+                "cookie_domain": DOMAIN
+            }
+            update_result = api_request("PATCH", f"providers/proxy/{provider_pk}/", update_data)
+            if update_result:
+                print(f"  Updated: mode=forward_domain, cookie_domain={DOMAIN}")
+            DOMAIN_PROXY_PROVIDER_PK = provider_pk
+            return provider_pk
+
+        # Get default authorization flow
+        flows = api_request("GET", "flows/instances/?slug=default-provider-authorization-implicit-consent")
+        auth_flow_pk = None
+        if flows and flows.get("results"):
+            auth_flow_pk = flows["results"][0]["pk"]
+
+        # Get invalidation flow
+        inv_flows = api_request("GET", "flows/instances/?slug=default-provider-invalidation-flow")
+        inv_flow_pk = None
+        if inv_flows and inv_flows.get("results"):
+            inv_flow_pk = inv_flows["results"][0]["pk"]
+
+        # Create single domain-wide proxy provider
+        # forward_domain mode: one auth cookie works for ALL apps on *.example.com
+        provider_data = {
+            "name": provider_name,
+            "authorization_flow": auth_flow_pk,
+            "invalidation_flow": inv_flow_pk,
+            "mode": "forward_domain",
+            "external_host": f"https://auth.{DOMAIN}",
+            "cookie_domain": DOMAIN,
+            "access_token_validity": "hours=24"
+        }
+
+        result = api_request("POST", "providers/proxy/", provider_data)
+        if result:
+            provider_pk = result["pk"]
+            print(f"Created domain proxy provider: {provider_name} (pk={provider_pk})")
+            print(f"  Mode: forward_domain")
+            print(f"  Cookie Domain: {DOMAIN}")
+            print(f"  External Host: https://auth.{DOMAIN}")
+            DOMAIN_PROXY_PROVIDER_PK = provider_pk
+            return provider_pk
+        return None
+
+    def get_or_create_adguard_proxy_provider(app_config):
+        """Create AdGuard-specific proxy provider with Basic Auth for auto-login"""
+        print(f"\n=== Creating AdGuard proxy provider (forward_single + Basic Auth) ===")
+
+        provider_name = "AdGuard Forward Auth"
+        import urllib.parse
+        encoded_name = urllib.parse.quote(provider_name)
+
+        # Get authorization flow (implicit consent for seamless SSO)
+        flows = api_request("GET", "flows/instances/?slug=default-provider-authorization-implicit-consent")
+        auth_flow_pk = None
+        if flows and flows.get("results"):
+            auth_flow_pk = flows["results"][0]["pk"]
+
+        # Get invalidation flow
+        inv_flows = api_request("GET", "flows/instances/?slug=default-provider-invalidation-flow")
+        inv_flow_pk = None
+        if inv_flows and inv_flows.get("results"):
+            inv_flow_pk = inv_flows["results"][0]["pk"]
+
+        # Check if provider exists
+        result = api_request("GET", f"providers/proxy/?name={encoded_name}")
+        if result and result.get("results"):
+            provider = result["results"][0]
+            provider_pk = provider["pk"]
+            print(f"AdGuard proxy provider exists: {provider['name']} (pk={provider_pk})")
+            # Update to ensure correct settings for Basic Auth
+            update_data = {
+                "mode": "forward_single",
+                "external_host": app_config["url"],
+                "internal_host": "http://<internal-ip>",
+                "basic_auth_enabled": True,
+                "basic_auth_user_attribute": app_config.get("basic_auth_user_attribute", "adguard_username"),
+                "basic_auth_password_attribute": app_config.get("basic_auth_password_attribute", "adguard_password"),
+                "authorization_flow": auth_flow_pk
+            }
+            update_result = api_request("PATCH", f"providers/proxy/{provider_pk}/", update_data)
+            if update_result:
+                print(f"  Updated: mode=forward_single, basic_auth_enabled=True")
+            return provider_pk
+
+        # Create new AdGuard proxy provider with Basic Auth
+        provider_data = {
+            "name": provider_name,
+            "authorization_flow": auth_flow_pk,
+            "invalidation_flow": inv_flow_pk,
+            "mode": "forward_single",
+            "external_host": app_config["url"],
+            "internal_host": "http://<internal-ip>",
+            "basic_auth_enabled": True,
+            "basic_auth_user_attribute": app_config.get("basic_auth_user_attribute", "adguard_username"),
+            "basic_auth_password_attribute": app_config.get("basic_auth_password_attribute", "adguard_password"),
+            "access_token_validity": "hours=24"
+        }
+
+        result = api_request("POST", "providers/proxy/", provider_data)
+        if result:
+            provider_pk = result["pk"]
+            print(f"Created AdGuard proxy provider: {provider_name} (pk={provider_pk})")
+            print(f"  Mode: forward_single")
+            print(f"  Basic Auth: enabled (auto-login)")
+            return provider_pk
+        return None
+
+    def get_or_create_proxy_provider(app_key, app_config):
+        """Get the appropriate proxy provider for forward-auth apps"""
+        print(f"\n=== Configuring forward-auth for: {app_config['name']} ===")
+
+        # AdGuard uses special forward_single provider with Basic Auth for auto-login
+        if app_key == "adguard" and app_config.get("basic_auth"):
+            return get_or_create_adguard_proxy_provider(app_config)
+
+        # Create individual proxy provider for each forward-auth app
+        return get_or_create_forward_auth_provider(app_config)
+
+    def get_or_create_forward_auth_provider(app_config):
+        """Create individual forward-auth proxy provider for an app"""
+        provider_name = f"{app_config['name']} Forward Auth"
+        import urllib.parse
+        encoded_name = urllib.parse.quote(provider_name)
+
+        # Get authorization flow
+        flows = api_request("GET", "flows/instances/?slug=default-provider-authorization-implicit-consent")
+        auth_flow_pk = None
+        if flows and flows.get("results"):
+            auth_flow_pk = flows["results"][0]["pk"]
+
+        # Check if provider exists
+        result = api_request("GET", f"providers/proxy/?name={encoded_name}")
+        if result and result.get("results"):
+            provider = result["results"][0]
+            print(f"Forward-auth provider exists: {provider['name']} (pk={provider['pk']})")
+            return provider["pk"]
+
+        # Create new forward-auth proxy provider
+        provider_data = {
+            "name": provider_name,
+            "authorization_flow": auth_flow_pk,
+            "mode": "forward_domain",
+            "external_host": f"https://auth.{DOMAIN}",
+            "cookie_domain": DOMAIN,
+            "access_token_validity": "hours=24"
+        }
+
+        result = api_request("POST", "providers/proxy/", provider_data)
+        if result:
+            provider_pk = result["pk"]
+            print(f"Created forward-auth provider: {provider_name} (pk={provider_pk})")
+            return provider_pk
+        return None
+
+    def get_or_create_embedded_outpost():
+        """Create or update the embedded outpost for forward-auth"""
+        print("\n=== Configuring embedded outpost for forward-auth ===")
+
+        # Check if embedded outpost exists
+        result = api_request("GET", "outposts/instances/?name__icontains=embedded")
+        if result and result.get("results"):
+            outpost = result["results"][0]
+            outpost_pk = outpost["pk"]
+            print(f"Embedded outpost exists: {outpost['name']} (pk={outpost_pk})")
+            # Update outpost config to ensure authentik_host_browser is set correctly
+            update_data = {
+                "config": {
+                    "authentik_host": f"https://auth.{DOMAIN}",
+                    "authentik_host_insecure": False,
+                    "authentik_host_browser": f"https://auth.{DOMAIN}",
+                    "log_level": "info",
+                    "container_image": None,
+                    "kubernetes_replicas": 1,
+                    "kubernetes_namespace": "authentik"
+                }
+            }
+            update_result = api_request("PATCH", f"outposts/instances/{outpost_pk}/", update_data)
+            if update_result:
+                print(f"  Updated outpost config: authentik_host_browser=https://auth.{DOMAIN}")
+            return outpost_pk
+
+        # Create embedded outpost with proper browser-facing URL
+        outpost_data = {
+            "name": "Embedded Outpost",
+            "type": "proxy",
+            "config": {
+                "authentik_host": f"https://auth.{DOMAIN}",
+                "authentik_host_insecure": False,
+                "authentik_host_browser": f"https://auth.{DOMAIN}",
+                "log_level": "info",
+                "container_image": None,
+                "kubernetes_replicas": 1,
+                "kubernetes_namespace": "authentik"
+            },
+            "managed": "goauthentik.io/outposts/embedded",
+            "providers": []
+        }
+
+        result = api_request("POST", "outposts/instances/", outpost_data)
+        if result:
+            print(f"Created embedded outpost: {result['name']} (pk={result['pk']})")
+            return result["pk"]
+        return None
+
+    def add_provider_to_outpost(outpost_pk, provider_pk):
+        """Add a provider to the embedded outpost"""
+        # Get current outpost config
+        result = api_request("GET", f"outposts/instances/{outpost_pk}/")
+        if not result:
+            return False
+
+        current_providers = result.get("providers", [])
+        if provider_pk in current_providers:
+            print(f"  Provider {provider_pk} already in outpost")
+            return True
+
+        # Add provider
+        current_providers.append(provider_pk)
+        update_result = api_request("PATCH", f"outposts/instances/{outpost_pk}/", {
+            "providers": current_providers
+        })
+        if update_result:
+            print(f"  Added provider {provider_pk} to outpost")
+            return True
+        return False
+
+    def generate_password(length=20):
+        """Generate a random password for users without a configured password"""
+        import secrets as _secrets
+        import string
+        chars = string.ascii_letters + string.digits + "!@#%^&*"
+        return ''.join(_secrets.choice(chars) for _ in range(length))
+
+    def get_or_create_group(group_name):
+        """Create an Authentik group or return existing PK"""
+        import urllib.parse
+        encoded = urllib.parse.quote(group_name)
+        result = api_request("GET", f"core/groups/?name={encoded}")
+        if result and result.get("results"):
+            for g in result["results"]:
+                if g["name"] == group_name:
+                    print(f"  Group exists: {group_name} (pk={g['pk']})")
+                    return g["pk"]
+
+        result = api_request("POST", "core/groups/", {
+            "name": group_name,
+            "is_superuser": False
+        })
+        if result:
+            print(f"  Created group: {group_name} (pk={result['pk']})")
+            return result["pk"]
+        return None
+
+    def create_or_update_user(user_config, password, group_pks):
+        """Create or update an Authentik user with group assignments"""
+        username = user_config["username"]
+        result = api_request("GET", f"core/users/?username={username}")
+
+        target_groups = [group_pks[g] for g in user_config.get("groups", []) if g in group_pks]
+
+        if result and result.get("results"):
+            for u in result["results"]:
+                if u["username"] == username:
+                    user_pk = u["pk"]
+                    print(f"  User exists: {username} (pk={user_pk})")
+                    # Update name, email, groups, and email_verified
+                    api_request("PATCH", f"core/users/{user_pk}/", {
+                        "name": user_config.get("name", username),
+                        "email": user_config.get("email", ""),
+                        "groups": target_groups,
+                        "attributes": {"email_verified": True}
+                    })
+                    # Always set password to keep it in sync with SOPS secret
+                    api_request("POST", f"core/users/{user_pk}/set_password/", {
+                        "password": password
+                    })
+                    return user_pk
+
+        # Create new user
+        user_data = {
+            "username": username,
+            "name": user_config.get("name", username),
+            "email": user_config.get("email", ""),
+            "is_active": True,
+            "groups": target_groups,
+            "type": "internal",
+            "attributes": {"email_verified": True}
+        }
+        result = api_request("POST", "core/users/", user_data)
+        if result:
+            user_pk = result["pk"]
+            print(f"  Created user: {username} (pk={user_pk})")
+            api_request("POST", f"core/users/{user_pk}/set_password/", {
+                "password": password
+            })
+            return user_pk
+        return None
+
+    def assign_extra_groups(username, extra_group_names, group_pks):
+        """Add an existing user to additional groups (e.g., admin groups for Salty)"""
+        result = api_request("GET", f"core/users/?username={username}")
+        if not result or not result.get("results"):
+            print(f"  WARNING: User {username} not found for extra group assignment")
+            return
+
+        user = None
+        for u in result["results"]:
+            if u["username"] == username:
+                user = u
+                break
+        if not user:
+            return
+
+        current_groups = set(user.get("groups", []))
+        for gname in extra_group_names:
+            gpk = group_pks.get(gname)
+            if gpk:
+                current_groups.add(gpk)
+
+        api_request("PATCH", f"core/users/{user['pk']}/", {
+            "groups": list(current_groups)
+        })
+        print(f"  Assigned {username} to extra groups: {extra_group_names}")
+
+    def sync_users():
+        """Create groups and users from ConfigMap JSON files"""
+        print("\n" + "=" * 60)
+        print("User & Group Sync from ConfigMap")
+        print("=" * 60)
+
+        # Read groups
+        try:
+            with open("/users/groups.json") as f:
+                groups = json.load(f)
+        except FileNotFoundError:
+            print("WARNING: /users/groups.json not found, skipping user sync")
+            return
+
+        print(f"\n=== Creating {len(groups)} groups ===")
+        group_pks = {}
+        for group_name in groups:
+            pk = get_or_create_group(group_name)
+            if pk:
+                group_pks[group_name] = pk
+
+        # Read users
+        try:
+            with open("/users/users.json") as f:
+                users = json.load(f)
+        except FileNotFoundError:
+            print("WARNING: /users/users.json not found, skipping user creation")
+            users = []
+
+        print(f"\n=== Creating/updating {len(users)} users ===")
+        for user_config in users:
+            password_env = f"{user_config['username'].upper()}_PASSWORD"
+            password = os.environ.get(password_env)
+            if not password:
+                password = generate_password()
+                print(f"  NOTE: No {password_env} env var, using generated password for {user_config['username']}")
+            create_or_update_user(user_config, password, group_pks)
+
+        # Read admin group assignments
+        try:
+            with open("/users/admin-groups.json") as f:
+                admin_groups = json.load(f)
+        except FileNotFoundError:
+            admin_groups = {}
+
+        if admin_groups:
+            print(f"\n=== Assigning admin groups ===")
+            for username, extra_groups in admin_groups.items():
+                assign_extra_groups(username, extra_groups, group_pks)
+
+        print("\nUser & group sync complete")
+
+    def cleanup_old_proxy_providers():
+        """Remove old per-app proxy providers that are no longer needed"""
+        print("\n=== Cleaning up old per-app proxy providers ===")
+
+        # List of old provider name patterns to remove
+        old_provider_patterns = ["TrueNAS Proxy", "UniFi Proxy", "AdGuard Proxy", "WireGuard Proxy",
+                                  "TrueNAS Controller Proxy", "UniFi Controller Proxy", "VPN Proxy"]
+
+        result = api_request("GET", "providers/proxy/")
+        if not result or not result.get("results"):
+            print("  No proxy providers found")
+            return
+
+        for provider in result["results"]:
+            provider_name = provider.get("name", "")
+            if provider_name in old_provider_patterns or "Proxy" in provider_name and provider_name != "Domain Forward Auth":
+                # Check if this is an old per-app provider (not the domain provider)
+                if provider.get("mode") == "forward_single" or (
+                    provider.get("mode") == "forward_domain" and provider_name != "Domain Forward Auth"
+                ):
+                    provider_pk = provider["pk"]
+                    print(f"  Found old provider: {provider_name} (pk={provider_pk})")
+                    # Don't delete, just note - deletion might break things if apps are still linked
+                    # Instead, apps have been updated to use the domain provider
+
+    def fix_email_scope_mapping():
+        """Fix the email scope mapping to return actual email_verified value"""
+        print("\n=== Fixing email scope mapping ===")
+
+        # Get email scope mapping
+        result = api_request("GET", "propertymappings/scope/?scope_name=email")
+        if not result or not result.get("results"):
+            print("Email scope mapping not found")
+            return
+
+        mapping = result["results"][0]
+        mapping_pk = mapping["pk"]
+
+        # Update the expression to read email_verified from user attributes
+        new_expression = 'return {"email": request.user.email, "email_verified": request.user.attributes.get("email_verified", False)}'
+
+        update_result = api_request("PATCH", f"propertymappings/scope/{mapping_pk}/", {
+            "expression": new_expression
+        })
+
+        if update_result:
+            print("  Updated email scope mapping to return actual email_verified value")
+        else:
+            print("  Failed to update email scope mapping")
+
+    def add_scope_mappings_to_provider(provider_pk):
+        """Add required scope mappings to an OAuth2 provider"""
+        # Get all scope mappings
+        result = api_request("GET", "propertymappings/scope/")
+        if not result or not result.get("results"):
+            return
+
+        # Find the mappings we need
+        mapping_pks = []
+        needed_scopes = ["openid", "email", "profile", "offline_access"]
+        for mapping in result["results"]:
+            if mapping.get("scope_name") in needed_scopes:
+                mapping_pks.append(mapping["pk"])
+
+        # Also add groups mapping
+        groups_result = api_request("GET", "propertymappings/scope/?scope_name=groups")
+        if groups_result and groups_result.get("results"):
+            mapping_pks.append(groups_result["results"][0]["pk"])
+
+        if mapping_pks:
+            api_request("PATCH", f"providers/oauth2/{provider_pk}/", {
+                "property_mappings": mapping_pks
+            })
+
+    def main():
+        """Main setup function"""
+        print("=" * 60)
+        print("Authentik Complete SSO Setup")
+        print("=" * 60)
+
+        if not wait_for_authentik():
+            sys.exit(1)
+
+        # Fix email scope mapping first
+        fix_email_scope_mapping()
+
+        # Create admin user (Salty)
+        user_pk = get_or_create_user()
+        if not user_pk:
+            print("Failed to create admin user!")
+            sys.exit(1)
+
+        # Sync groups and users from ConfigMap
+        sync_users()
+
+        # Clean up archived applications (Matrix/Synapse removed 2026-03)
+        ARCHIVED_SLUGS = ["matrix-sso", "synapse-admin"]
+        for slug in ARCHIVED_SLUGS:
+            resp = api_request("GET", f"/api/v3/core/applications/?slug={slug}")
+            if resp and resp.get("results"):
+                app = resp["results"][0]
+                provider_pk = app.get("provider")
+                print(f"  Removing archived app: {app['name']} (slug={slug})")
+                api_request("DELETE", f"/api/v3/core/applications/{app['pk']}/")
+                if provider_pk:
+                    api_request("DELETE", f"/api/v3/providers/all/{provider_pk}/")
+                    print(f"    Removed provider {provider_pk}")
+
+        # Create embedded outpost for forward-auth
+        outpost_pk = get_or_create_embedded_outpost()
+
+        # Create the single domain proxy provider for all forward-auth apps
+        domain_provider_pk = get_or_create_domain_proxy_provider()
+
+        # Create providers and applications for each app
+        credentials = {}
+        for app_key, app_config in APPS.items():
+            if app_config.get("forward_auth"):
+                # Forward-auth apps are bookmark tiles - no provider needed.
+                # The domain proxy provider handles auth for all *.example.com
+                # via the embedded outpost. Only ONE app can hold the provider reference.
+                app_slug = get_or_create_application(app_key, app_config, None)
+                if app_slug:
+                    credentials[app_key] = {
+                        "type": "forward_auth",
+                        "external_host": app_config["url"]
+                    }
+            else:
+                # Standard OAuth2 apps
+                provider_pk, client_id, client_secret = get_or_create_provider(app_key, app_config)
+                if provider_pk:
+                    app_slug = get_or_create_application(app_key, app_config, provider_pk)
+                    if app_slug:
+                        credentials[app_key] = {
+                            "type": "oauth2",
+                            "client_id": client_id,
+                            "client_secret": client_secret,
+                            "auth_url": f"https://auth.{DOMAIN}/application/o/authorize/",
+                            "token_url": f"https://auth.{DOMAIN}/application/o/token/",
+                            "userinfo_url": f"https://auth.{DOMAIN}/application/o/userinfo/",
+                            "logout_url": f"https://auth.{DOMAIN}/application/o/{app_slug}/end-session/"
+                        }
+
+        # Add domain proxy provider to the embedded outpost
+        if outpost_pk and domain_provider_pk:
+            print("\n=== Adding domain proxy provider to embedded outpost ===")
+            add_provider_to_outpost(outpost_pk, domain_provider_pk)
+            print(f"  Domain provider {domain_provider_pk} handles all forward-auth apps")
+
+        # Print summary - NEVER log passwords/secrets
+        print("\n" + "=" * 60)
+        print("SETUP COMPLETE")
+        print("=" * 60)
+        print(f"\nUser Created:")
+        print(f"  Username: {USER_CONFIG['username']}")
+        print(f"  Password: ********** (from SSO_ADMIN_PASSWORD)")
+        print(f"  Email: {USER_CONFIG['email']}")
+
+        print(f"\nApplication Credentials:")
+        for app_key, creds in credentials.items():
+            print(f"\n  {app_key.upper()}:")
+            if creds.get("type") == "forward_auth":
+                print(f"    Type: Forward Auth (proxy)")
+                print(f"    External Host: {creds['external_host']}")
+            else:
+                print(f"    Type: OAuth2")
+                print(f"    Client ID: {creds.get('client_id', 'N/A')}")
+                if creds.get('client_secret'):
+                    print(f"    Client Secret: {creds['client_secret'][:16]}...")
+
+        print("\n" + "=" * 60)
+        print("SSO Login URL: https://auth.example.com")
+        print("=" * 60)
+
+        return 0
+
+    if __name__ == "__main__":
+        sys.exit(main())
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sso-complete-setup
+  namespace: authentik
+  annotations:
+    description: "Complete SSO setup - user Salty + OIDC providers for all apps"
+    job-trigger/timestamp: "2026-02-19T00:00:00Z"
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: setup
+        image: ${IMAGE_HOMELAB_TOOLING}
+        command: ["python", "/scripts/setup.py"]
+        # Script uses urllib (stdlib) only; runs fine as non-root in the
+        # shared tooling image.
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        # All credentials injected from SOPS-encrypted secrets
+        envFrom:
+        - secretRef:
+            name: sso-client-secrets
+        - secretRef:
+            name: authentik-user-passwords
+            optional: true
+        env:
+        # Authentik API token for creating providers/applications
+        - name: AUTHENTIK_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: sso-client-secrets
+              key: AUTHENTIK_API_TOKEN
+        # SSO Admin user credentials from Authentik secret
+        - name: SSO_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: authentik-admin-secret
+              key: admin_password
+        - name: SSO_ADMIN_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: authentik-admin-secret
+              key: admin_username
+              optional: true
+        - name: SSO_ADMIN_EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: authentik-admin-secret
+              key: admin_email
+              optional: true
+        # AdGuard credentials for Basic Auth auto-login
+        - name: ADGUARD_ADMIN_USER
+          valueFrom:
+            secretKeyRef:
+              name: sso-client-secrets
+              key: ADGUARD_ADMIN_USER
+              optional: true
+        - name: ADGUARD_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sso-client-secrets
+              key: ADGUARD_ADMIN_PASSWORD
+              optional: true
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: users
+          mountPath: /users
+          readOnly: true
+      volumes:
+      - name: scripts
+        configMap:
+          name: sso-complete-setup-script
+      - name: users
+        configMap:
+          name: authentik-users
+          optional: true

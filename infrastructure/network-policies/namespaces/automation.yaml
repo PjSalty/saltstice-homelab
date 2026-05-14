@@ -1,0 +1,68 @@
+---
+# Automation namespace - SSOT validator, version checker, etc.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-automation
+  namespace: automation
+spec:
+  description: "Allow automation jobs"
+  endpointSelector: {}
+  ingress:
+    # Allow Traefik for web UI
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Allow infrastructure API checks (HTTP/HTTPS/Proxmox)
+    - toCIDR:
+        - <internal-ip>/16
+        - <mgmt-ip>/24
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+            - port: "8006"
+              protocol: TCP
+    # Allow SSH only to managed VMs (vm-update-checker)
+    - toCIDR:
+        - <host>/32
+        - <host>/32
+        - <host>/32
+        - <host>/32
+        - <host>/32
+        - <host>/32
+        - 10.x0.10/32
+        - 10.x0.11/32
+        - 10.x0.12/32
+        - 10.x0.20/32
+        - 10.x0.21/32
+        - 10.x0.22/32
+      toPorts:
+        - ports:
+            - port: "22"
+              protocol: TCP
+    # Allow external version checks
+    - toCIDR:
+        - 0.0.0.0/0
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # DNS resolution (required per Cilium bug #34390)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

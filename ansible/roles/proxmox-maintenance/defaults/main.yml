@@ -1,0 +1,88 @@
+---
+# Proxmox Hypervisor Maintenance Window Configuration
+# Deploys scripts + systemd units for safe weekly patching and reboot.
+
+# Schedule: systemd timer OnCalendar format
+proxmox_maintenance_schedule: "weekly"
+proxmox_maintenance_timezone: "America/Chicago"
+
+# SSH key for reaching K8s masters from Proxmox host
+proxmox_maintenance_ssh_key: /root/.ssh/automation-key
+proxmox_maintenance_ssh_user: automation
+
+# K8s master to delegate kubectl commands to (first master)
+proxmox_maintenance_k8s_master: 10.x0.10
+
+# RKE2 paths on K8s masters
+proxmox_maintenance_kubectl: /var/lib/rancher/rke2/bin/kubectl
+proxmox_maintenance_kubeconfig: /etc/rancher/rke2/rke2.yaml
+
+# ntfy notification endpoint (cluster-internal)
+proxmox_maintenance_ntfy_url: "https://ntfy.example.com/homelab-saltstice-critical"
+proxmox_maintenance_ntfy_priority: "high"
+
+# TrueNAS health check endpoints
+proxmox_maintenance_truenas_ip: <internal-ip>
+proxmox_maintenance_truenas_api_port: 443
+proxmox_maintenance_truenas_nfs_port: 2049
+proxmox_maintenance_truenas_iscsi_port: 3260
+
+# HAProxy VIP
+proxmox_maintenance_haproxy_vip: <internal-ip>
+proxmox_maintenance_k8s_api_port: 6443
+
+# AdGuard DNS
+proxmox_maintenance_dns_ip: <internal-ip>
+
+# GitLab SSH
+proxmox_maintenance_gitlab_ip: <internal-ip>
+proxmox_maintenance_gitlab_ssh_port: 2222
+
+# Harbor HTTPS
+proxmox_maintenance_harbor_ip: <internal-ip>
+
+# Timeouts (seconds)
+proxmox_maintenance_vm_shutdown_timeout: 180
+proxmox_maintenance_vm_startup_timeout: 600
+proxmox_maintenance_k8s_drain_timeout: 120
+proxmox_maintenance_health_check_timeout: 300
+proxmox_maintenance_post_boot_settle: 30
+
+# Minimum free disk space (GB) on Proxmox before proceeding
+proxmox_maintenance_min_disk_gb: 10
+
+# VM shutdown order (reverse of startup — TrueNAS last)
+# Each group shuts down in order, VMs within a group shut down in parallel
+proxmox_maintenance_shutdown_order:
+  - name: "K8s Workers"
+    vmids: [211, 212, 213]
+  - name: "K8s Masters"
+    vmids: [201, 202, 203]
+  - name: "Low Priority"
+    vmids: [105, 117, 111, 110]
+  - name: "Infrastructure"
+    vmids: [102, 101, 103]
+  - name: "DNS"
+    vmids: [104]
+  - name: "Load Balancers"
+    vmids: [196, 197]
+  - name: "Storage"
+    vmids: [100]
+
+# iSCSI-backed workloads to scale down before drain
+# These must be stopped gracefully to prevent hung iSCSI sessions
+proxmox_maintenance_iscsi_workloads:
+  - namespace: docmost
+    kind: statefulset
+    name: docmost-postgresql
+  - namespace: unifi
+    kind: statefulset
+    name: unifi-db
+  - namespace: media
+    kind: deployment
+    name: jellyfin
+
+# Workers with iSCSI sessions that must be verified clear
+proxmox_maintenance_iscsi_workers:
+  - 10.x0.20   # worker-1
+  - 10.x0.22   # worker-3

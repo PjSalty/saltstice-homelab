@@ -1,0 +1,395 @@
+---
+# Grafana Dashboard - Dell iDRAC Hardware Monitoring
+# Source: idrac_exporter metrics via Redfish API
+# Temperatures in Fahrenheit (US measurements)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: idrac-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/component: grafana-dashboard
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  idrac-dashboard.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "id": 100,
+          "title": "System Overview",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              },
+              "mappings": [
+                { "options": { "0": { "text": "OFF" }, "1": { "text": "ON" } }, "type": "value" }
+              ]
+            }
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+          "id": 1,
+          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "value" },
+          "title": "System Power",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_system_power_on{instance=\"idrac\"}", "legendFormat": "Power" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              },
+              "mappings": [
+                { "options": { "0": { "text": "Healthy" }, "1": { "text": "Unhealthy" } }, "type": "value" }
+              ]
+            }
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+          "id": 2,
+          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "value" },
+          "title": "System Health",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_system_health{instance=\"idrac\"}", "legendFormat": "Health" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "watt" }
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+          "id": 3,
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "value" },
+          "title": "Power Consumption",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_power_control_consumed_watts{instance=\"idrac\"}", "legendFormat": "Current" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "fahrenheit", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 95 }, { "color": "red", "value": 113 }] } }
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+          "id": 4,
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "value" },
+          "title": "Inlet Temperature",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_sensors_temperature{instance=\"idrac\", name=~\".*Inlet.*\"} * 9/5 + 32", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "fahrenheit", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 140 }, { "color": "red", "value": 176 }] } }
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+          "id": 5,
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "value" },
+          "title": "Exhaust Temperature",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_sensors_temperature{instance=\"idrac\", name=~\".*Exhaust.*\"} * 9/5 + 32", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "rpm" }
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+          "id": 6,
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "value" },
+          "title": "Avg Fan Speed",
+          "type": "stat",
+          "targets": [
+            { "expr": "avg(idrac_sensors_fan_speed{instance=\"idrac\"})", "legendFormat": "Average" }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+          "id": 101,
+          "title": "Temperatures",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "fahrenheit", "custom": { "lineWidth": 2, "fillOpacity": 15, "gradientMode": "scheme", "showPoints": "never" } }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "id": 10,
+          "options": { "legend": { "displayMode": "table", "calcs": ["mean", "max"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "All Temperatures",
+          "type": "timeseries",
+          "targets": [
+            { "expr": "idrac_sensors_temperature{instance=\"idrac\"} * 9/5 + 32", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "rpm", "custom": { "lineWidth": 2, "fillOpacity": 15, "gradientMode": "scheme", "showPoints": "never" } }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "id": 11,
+          "options": { "legend": { "displayMode": "table", "calcs": ["mean", "max"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "Fan Speeds",
+          "type": "timeseries",
+          "targets": [
+            { "expr": "idrac_sensors_fan_speed{instance=\"idrac\"}", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+          "id": 102,
+          "title": "Power",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "watt", "custom": { "lineWidth": 2, "fillOpacity": 20, "gradientMode": "scheme", "showPoints": "never" } }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+          "id": 20,
+          "options": { "legend": { "displayMode": "table", "calcs": ["mean", "max"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "Power Consumption",
+          "type": "timeseries",
+          "targets": [
+            { "expr": "idrac_power_control_consumed_watts{instance=\"idrac\"}", "legendFormat": "Total System Power" },
+            { "expr": "idrac_power_supply_input_watts{instance=\"idrac\"}", "legendFormat": "PSU {{ name }} Input" },
+            { "expr": "idrac_power_supply_output_watts{instance=\"idrac\"}", "legendFormat": "PSU {{ name }} Output" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "lineWidth": 2, "fillOpacity": 15, "gradientMode": "scheme", "showPoints": "never" } }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+          "id": 21,
+          "options": { "legend": { "displayMode": "table", "calcs": ["mean", "max"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "PSU Efficiency",
+          "type": "timeseries",
+          "targets": [
+            { "expr": "idrac_power_supply_efficiency_percent{instance=\"idrac\"}", "legendFormat": "PSU {{ name }}" }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+          "id": 103,
+          "title": "Storage",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] },
+              "mappings": [{ "options": { "0": { "text": "Healthy" }, "1": { "text": "Unhealthy" } }, "type": "value" }]
+            }
+          },
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 24 },
+          "id": 30,
+          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "Physical Disk Health",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_storage_drive_health{instance=\"idrac\"}", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "bytes" }
+          },
+          "gridPos": { "h": 6, "w": 8, "x": 8, "y": 24 },
+          "id": 31,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "Physical Disk Capacity",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_storage_drive_capacity_bytes{instance=\"idrac\"}", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 50 }, { "color": "green", "value": 80 }] } }
+          },
+          "gridPos": { "h": 6, "w": 8, "x": 16, "y": 24 },
+          "id": 32,
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "Drive Life Remaining",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_storage_drive_life_left_percent{instance=\"idrac\"}", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+          "id": 104,
+          "title": "Memory",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] },
+              "mappings": [{ "options": { "0": { "text": "Healthy" }, "1": { "text": "Unhealthy" } }, "type": "value" }]
+            }
+          },
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 31 },
+          "id": 40,
+          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "DIMM Health",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_memory_module_health{instance=\"idrac\"}", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "bytes" }
+          },
+          "gridPos": { "h": 6, "w": 8, "x": 8, "y": 31 },
+          "id": 41,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "DIMM Capacity",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_memory_module_capacity_bytes{instance=\"idrac\"}", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "hertz" }
+          },
+          "gridPos": { "h": 6, "w": 8, "x": 16, "y": 31 },
+          "id": 42,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "DIMM Speed",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_memory_module_speed_mhz{instance=\"idrac\"} * 1000000", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 37 },
+          "id": 105,
+          "title": "Power Supply & Controller Health",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] },
+              "mappings": [{ "options": { "0": { "text": "Healthy" }, "1": { "text": "Unhealthy" } }, "type": "value" }]
+            }
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 38 },
+          "id": 50,
+          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "PSU Health",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_power_supply_health{instance=\"idrac\"}", "legendFormat": "PSU {{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "watt" }
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 38 },
+          "id": 51,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "PSU Capacity",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_power_supply_capacity_watts{instance=\"idrac\"}", "legendFormat": "PSU {{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] },
+              "mappings": [{ "options": { "0": { "text": "Healthy" }, "1": { "text": "Unhealthy" } }, "type": "value" }]
+            }
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 38 },
+          "id": 52,
+          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "Storage Controller Health",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_storage_controller_health{instance=\"idrac\"}", "legendFormat": "{{ name }}" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] },
+              "mappings": [{ "options": { "0": { "text": "Healthy" }, "1": { "text": "Unhealthy" } }, "type": "value" }]
+            }
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 38 },
+          "id": 53,
+          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "value_and_name", "orientation": "horizontal" },
+          "title": "Controller Battery Health",
+          "type": "stat",
+          "targets": [
+            { "expr": "idrac_dell_controller_battery_health{instance=\"idrac\"}", "legendFormat": "{{ name }}" }
+          ]
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["idrac", "hardware", "dell", "monitoring"],
+      "templating": { "list": [] },
+      "time": { "from": "now-6h", "to": "now" },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Dell iDRAC Hardware",
+      "uid": "idrac-hardware",
+      "version": 2
+    }

@@ -1,0 +1,112 @@
+---
+# Blackbox HTTP Probes - Service Availability Monitoring
+# Prometheus auto-discovers these via probeSelectorNilUsesHelmValues: false
+#
+# Module: http_availability (accepts 200/301/302/401/403, no redirect follow)
+# This handles both forward-auth services (302 to Authentik) and login pages
+#
+# Job label: blackbox-http (matches SLO alert expressions)
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: blackbox-http
+  namespace: monitoring
+  labels:
+    app: blackbox-exporter
+    release: monitoring-kube-prometheus-stack
+spec:
+  jobName: blackbox-http
+  interval: 60s
+  scrapeTimeout: 15s
+  module: http_availability
+  prober:
+    url: blackbox-exporter:9115
+    scheme: http
+    path: /probe
+  targets:
+    staticConfig:
+      static:
+        # Core infrastructure services
+        - https://auth.example.com
+        - https://gitlab.example.com
+        - https://harbor.example.com
+        - https://grafana.example.com
+        # Application services
+        - https://vault.example.com
+        - https://docs.example.com
+        - https://semaphore.example.com
+        - https://jellyfin.example.com
+        - https://netbox.example.com
+        - https://k8s.example.com
+        # External VM services (HTTPS on :443)
+        # VMs with their own TLS certs — DNS resolves to direct VM IPs
+        - https://truenas.example.com
+        # Admin dashboards (forward-auth protected)
+        - https://traefik.example.com
+        - https://alerts.example.com
+        - https://haproxy.example.com
+        # Other services
+        - https://amp.example.com
+        - https://vpn.example.com
+        # MCP server - Claude Code infrastructure tools (/healthz = full path check)
+        - https://mcp.example.com/healthz
+---
+# NFS TCP Probe - Storage Availability
+# Probes TrueNAS NFS export on port 2049
+#
+# Job label: blackbox-nfs (matches infrastructure-alerts.yaml and slo-alerts.yaml)
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: blackbox-nfs
+  namespace: monitoring
+  labels:
+    app: blackbox-exporter
+    release: monitoring-kube-prometheus-stack
+spec:
+  jobName: blackbox-nfs
+  interval: 30s
+  scrapeTimeout: 10s
+  module: tcp_connect
+  prober:
+    url: blackbox-exporter:9115
+    scheme: http
+    path: /probe
+  targets:
+    staticConfig:
+      static:
+        - <internal-ip>:2049
+      labels:
+        service: truenas-nfs
+---
+# VM-Direct Probes - Services where CoreDNS resolves to direct VM IPs
+# that don't serve HTTPS on port 443 (AdGuard: HTTP only, Proxmox: HTTPS on 8006)
+# Tested with correct protocol/port instead of FQDN probes
+#
+# Job label: blackbox-vm-direct
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: blackbox-vm-direct
+  namespace: monitoring
+  labels:
+    app: blackbox-exporter
+    release: monitoring-kube-prometheus-stack
+spec:
+  jobName: blackbox-vm-direct
+  interval: 60s
+  scrapeTimeout: 15s
+  module: http_availability
+  prober:
+    url: blackbox-exporter:9115
+    scheme: http
+    path: /probe
+  targets:
+    staticConfig:
+      static:
+        # AdGuard Home web UI (HTTP on port 80)
+        - http://<internal-ip>
+        # Proxmox VE web UI (HTTPS on port 8006, self-signed cert)
+        - https://10.x0.100:8006
+      labels:
+        probe_type: vm-direct

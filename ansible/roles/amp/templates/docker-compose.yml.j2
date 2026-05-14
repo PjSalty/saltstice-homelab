@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+services:
+  amp:
+    image: cubecoders/amp:latest
+    container_name: amp
+    restart: unless-stopped
+    hostname: {{ amp_fqdn }}
+    ports:
+      - "{{ amp_web_port }}:8080"
+      - "{{ amp_game_port_start }}-{{ amp_game_port_end }}:{{ amp_game_port_start }}-{{ amp_game_port_end }}/tcp"
+      - "{{ amp_game_port_start }}-{{ amp_game_port_end }}:{{ amp_game_port_start }}-{{ amp_game_port_end }}/udp"
+    volumes:
+      - {{ amp_data_dir }}:/home/amp/.ampdata
+    environment:
+      AMP_LICENCE: "{{ amp_licence_key }}"
+      MODULE: ADS
+      TZ: "{{ timezone }}"

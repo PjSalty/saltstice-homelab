@@ -1,0 +1,6 @@
+---
+# haproxy role defaults
+# haproxy_vip, haproxy_stats_port defined in group_vars
+
+haproxy_stats_password: "{{ creds.infrastructure.haproxy.stats_password | default('changeme') }}"
+haproxy_keepalived_auth_pass: "{{ creds.infrastructure.haproxy.keepalived_auth_pass | default('changeme') }}"

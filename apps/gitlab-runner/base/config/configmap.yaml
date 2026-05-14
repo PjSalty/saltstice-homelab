@@ -1,0 +1,22 @@
+---
+# GitLab Runner Configuration
+# Optimized for Kubernetes executor with autoscaling
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitlab-runner-config
+  namespace: gitlab-runner
+data:
+  config.toml: |
+    # Maximum concurrent jobs across all runners
+    concurrent = 8
+    # Check for new jobs every 3 seconds
+    check_interval = 3
+    log_level = "info"
+    log_format = "json"
+
+    [session_server]
+      session_timeout = 1800
+
+    # Prometheus metrics endpoint
+    listen_address = ":9252"

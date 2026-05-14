@@ -1,0 +1,179 @@
+---
+# LogQL Alerting Rules for Loki Ruler
+# These rules detect security events and application failures in logs
+# Researched: 2025-12-08
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-alerting-rules
+  namespace: loki
+  labels:
+    app: loki
+    loki_rule: "true"
+data:
+  # Security alerting rules - detect auth failures, sudo, etc
+  security-alerts.yaml: |
+    groups:
+      - name: security.authentication
+        interval: 5m
+        rules:
+          # SSH brute force detection - multiple failed password attempts
+          - alert: SSHBruteForceDetected
+            expr: |
+              sum by (host) (
+                count_over_time({job="kubernetes-pods"} |~ "(?i)failed password|authentication failure" [15m])
+              ) > 10
+            for: 5m
+            labels:
+              severity: critical
+              category: security
+            annotations:
+              summary: "Possible SSH brute force attack on {{ $labels.host }}"
+              description: |
+                More than 10 failed authentication attempts detected in the last 15 minutes
+                on host {{ $labels.host }}. This may indicate a brute force attack.
+              action: "Review auth.log, consider blocking source IP with firewall"
+
+          # Elevated privilege usage (sudo)
+          - alert: SudoCommandExecuted
+            expr: |
+              sum by (host, user) (
+                count_over_time({job="kubernetes-pods"} |~ "sudo:.*COMMAND" [5m])
+              ) > 5
+            for: 0m
+            labels:
+              severity: info
+              category: security
+            annotations:
+              summary: "Multiple sudo commands executed on {{ $labels.host }}"
+              description: |
+                User {{ $labels.user }} executed {{ $value }} sudo commands in 5 minutes
+                on {{ $labels.host }}.
+              action: "Review sudo activity if unexpected"
+
+      - name: security.access
+        interval: 5m
+        rules:
+          # Permission denied errors
+          - alert: PermissionDeniedSpike
+            expr: |
+              sum(count_over_time({job="kubernetes-pods"} |~ "(?i)permission denied|access denied" [15m])) > 20
+            for: 5m
+            labels:
+              severity: warning
+              category: security
+            annotations:
+              summary: "High number of permission denied errors"
+              description: |
+                {{ $value }} permission denied errors detected in the last 15 minutes.
+                This may indicate misconfigured permissions or unauthorized access attempts.
+              action: "Review application logs for affected resources"
+
+  # Application health alerting rules
+  application-alerts.yaml: |
+    groups:
+      - name: application.health
+        interval: 2m
+        rules:
+          # OOMKilled container detection
+          - alert: ContainerOOMKilled
+            expr: |
+              count_over_time({job="kubernetes-pods"} |~ "(?i)oomkilled|out of memory|killed process" [10m]) > 0
+            for: 0m
+            labels:
+              severity: warning
+              category: application
+            annotations:
+              summary: "Container OOM killed detected"
+              description: |
+                A container was killed due to out of memory condition.
+                Review resource limits and application memory usage.
+              action: "kubectl describe pod -n {{ $labels.namespace }} {{ $labels.pod }}"
+
+          # Critical/Fatal application errors
+          - alert: ApplicationCriticalError
+            expr: |
+              sum by (namespace, app) (
+                count_over_time({job="kubernetes-pods"} |~ "(?i)\\b(fatal|critical|panic)\\b" [5m])
+              ) > 0
+            for: 0m
+            labels:
+              severity: critical
+              category: application
+            annotations:
+              summary: "Critical error in {{ $labels.app }} ({{ $labels.namespace }})"
+              description: |
+                Critical/fatal error detected in application {{ $labels.app }}
+                in namespace {{ $labels.namespace }}.
+              action: "Review application logs immediately"
+
+          # High error rate in applications
+          - alert: ApplicationHighErrorRate
+            expr: |
+              sum by (namespace, app) (
+                count_over_time({job="kubernetes-pods"} |~ "(?i)\\b(error|exception|failed)\\b" [5m])
+              ) > 50
+            for: 10m
+            labels:
+              severity: warning
+              category: application
+            annotations:
+              summary: "High error rate in {{ $labels.app }}"
+              description: |
+                {{ $value }} errors detected in {{ $labels.app }} ({{ $labels.namespace }})
+                over the last 5 minutes. Application may be degraded.
+              action: "Review application logs and health status"
+
+  # Infrastructure alerting rules
+  infrastructure-alerts.yaml: |
+    groups:
+      - name: infrastructure.kubernetes
+        interval: 2m
+        rules:
+          # Kubernetes scheduling failures
+          - alert: KubernetesSchedulingFailure
+            expr: |
+              count_over_time({job="kubernetes-pods", container="kube-scheduler"} |~ "(?i)failed to schedule|insufficient" [10m]) > 0
+            for: 5m
+            labels:
+              severity: warning
+              category: infrastructure
+            annotations:
+              summary: "Kubernetes scheduling failures detected"
+              description: |
+                The Kubernetes scheduler is failing to schedule pods.
+                This may indicate resource constraints or node issues.
+              action: "kubectl describe nodes and check for resource pressure"
+
+          # etcd errors
+          - alert: EtcdErrorsDetected
+            expr: |
+              count_over_time({job="kubernetes-pods"} |~ "(?i)etcd.*error|etcd.*failed" [10m]) > 5
+            for: 5m
+            labels:
+              severity: warning
+              category: infrastructure
+            annotations:
+              summary: "etcd errors detected"
+              description: |
+                Multiple etcd errors detected in the last 10 minutes.
+                etcd health may be degraded.
+              action: "Check etcd cluster health: etcdctl endpoint health"
+
+      - name: infrastructure.certificates
+        interval: 10m
+        rules:
+          # Certificate expiration warnings in logs
+          - alert: CertificateExpirationWarning
+            expr: |
+              count_over_time({job="kubernetes-pods"} |~ "(?i)certificate.*expir|cert.*expir|x509.*expir" [30m]) > 0
+            for: 0m
+            labels:
+              severity: warning
+              category: security
+            annotations:
+              summary: "Certificate expiration warning detected"
+              description: |
+                Log messages about certificate expiration detected.
+                Review and renew certificates before they expire.
+              action: "kubectl get certificates -A and check expiration dates"

@@ -1,0 +1,70 @@
+---
+# NetBox  DNS Sync CronJob
+# Automatically syncs DNS records from NetBox to AdGuard Home
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: netbox-dns-sync
+  namespace: netbox
+  labels:
+    app: netbox-dns-sync
+spec:
+  schedule: "*/15 * * * *"  # Every 15 minutes
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: netbox-dns-sync
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: sync
+            # python3 + requests baked into homelab-tooling.
+            image: ${IMAGE_HOMELAB_TOOLING}
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              python3 /scripts/netbox-dns-sync.py
+            env:
+            - name: NETBOX_URL
+              value: "http://netbox.netbox.svc.cluster.local"
+            - name: NETBOX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: netbox-automation-token
+                  key: token
+            - name: ADGUARD_URL
+              value: "http://adguard-web.dns.svc.cluster.local:3000"
+            - name: ADGUARD_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: adguard-credentials
+                  key: username
+            - name: ADGUARD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: adguard-credentials
+                  key: password
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          volumes:
+          - name: scripts
+            configMap:
+              name: netbox-scripts

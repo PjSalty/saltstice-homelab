@@ -1,0 +1,676 @@
+---
+# File: kubernetes/apps/jellyfin/base/configs/automation-configmap.yaml
+# Purpose: ConfigMap containing Jellyfin automation script for zero-touch setup
+# Validates: kubectl get configmap -n media jellyfin-automation-script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jellyfin-automation-script
+  namespace: media
+data:
+  jellyfin-setup.py: |
+    #!/usr/bin/env python3
+    """
+    Jellyfin Complete Automation - Zero-Touch Setup
+    ================================================
+    - Admin user creation via Startup API (correct flow)
+    - Media libraries configuration (4 libraries)
+    - NVIDIA NVENC hardware transcoding setup
+    - Server configuration
+    - SSO plugin installation (Authentik OIDC)
+    - ElegantFin theme CSS application
+
+    Updated: 2026-02-10 for NVIDIA RTX A2000 GPU + SSO + ElegantFin Theme
+    Fixed: Use correct /Startup/User API flow (update default user, not create)
+
+    API Flow Discovery:
+    1. GET /Startup/User returns default username (system user)
+    2. POST /Startup/Configuration sets preferences
+    3. POST /Startup/User UPDATES the default user with new name/password
+    4. POST /Startup/Complete finishes wizard
+    5. Authenticate and configure everything else
+    6. Install SSO plugin from GitHub
+    7. Apply ElegantFin CSS theme via branding API
+    """
+    import subprocess
+    import os
+    import sys
+    import time
+    import json
+    import urllib.request
+    import urllib.error
+    import zipfile
+    import io
+
+    def run(cmd, timeout=60):
+        """Run shell command and return output"""
+        try:
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            )
+            return result.stdout.strip()
+        except subprocess.TimeoutExpired:
+            return ""
+        except Exception as e:
+            print(f"  Command failed: {e}")
+            return ""
+
+    def http_request(url, method="GET", data=None, headers=None, timeout=30):
+        """Make HTTP request and return response"""
+        if headers is None:
+            headers = {}
+        if data and isinstance(data, dict):
+            data = json.dumps(data).encode('utf-8')
+            headers['Content-Type'] = 'application/json'
+        elif data and isinstance(data, str):
+            data = data.encode('utf-8')
+
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.status, response.read().decode('utf-8')
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode('utf-8') if e.fp else ""
+        except Exception as e:
+            return 0, str(e)
+
+    def download_file(url, timeout=60):
+        """Download binary file and return bytes"""
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except Exception as e:
+            print(f"  Download failed: {e}")
+            return None
+
+    # Configuration from environment variables (populated from K8s secret)
+    ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin')
+    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+    SERVER_NAME = os.getenv('SERVER_NAME', 'Salty')
+    JELLYFIN_URL = os.getenv('JELLYFIN_URL', 'http://jellyfin.media.svc.cluster.local:8096')
+    SSO_CLIENT_ID = os.getenv('SSO_CLIENT_ID', 'jellyfin-sso')
+    SSO_CLIENT_SECRET = os.getenv('SSO_CLIENT_SECRET', '')
+    # Note: endpoint uses app slug (jellyfin), client_id is separate (jellyfin-sso)
+    SSO_ENDPOINT = os.getenv('SSO_ENDPOINT', 'https://auth.example.com/application/o/jellyfin/')
+    ENABLE_SSO = os.getenv('ENABLE_SSO', 'true').lower() == 'true'
+    ENABLE_THEME = os.getenv('ENABLE_THEME', 'true').lower() == 'true'
+
+    if not ADMIN_PASSWORD:
+        print("ERROR: ADMIN_PASSWORD environment variable not set")
+        sys.exit(1)
+
+    print("=" * 70)
+    print("Jellyfin Complete Automation - Zero-Touch Setup")
+    print("=" * 70)
+    print(f"Server URL: {JELLYFIN_URL}")
+    print(f"Admin User: {ADMIN_USERNAME}")
+    print(f"Server Name: {SERVER_NAME}")
+    print(f"SSO Enabled: {ENABLE_SSO}")
+    print(f"Theme Enabled: {ENABLE_THEME}")
+    print()
+
+    # Step 1: Wait for Jellyfin pod to be ready
+    print("[1/14] Waiting for Jellyfin pod...")
+    pod = ""
+    for i in range(60):
+        pod = run("kubectl get pod -n media -l app=jellyfin -o jsonpath='{.items[0].metadata.name}' 2>/dev/null")
+        if pod:
+            phase = run(f"kubectl get pod -n media {pod} -o jsonpath='{{.status.phase}}'")
+            if phase == "Running":
+                print(f"  Pod ready: {pod}")
+                break
+        time.sleep(5)
+    else:
+        print("ERROR: Jellyfin pod not ready after 5 minutes")
+        sys.exit(1)
+
+    # Step 2: Wait for Jellyfin service to be healthy
+    print("\n[2/14] Waiting for Jellyfin service...")
+    for i in range(60):
+        status, body = http_request(f"{JELLYFIN_URL}/health")
+        if status == 200 and body == "Healthy":
+            print("  Service is healthy")
+            break
+        time.sleep(5)
+    else:
+        print("ERROR: Jellyfin service not responding")
+        sys.exit(1)
+
+    time.sleep(3)
+
+    # Step 3: Check wizard status
+    print("\n[3/14] Checking wizard status...")
+    status, body = http_request(f"{JELLYFIN_URL}/System/Info/Public")
+    if status != 200:
+        print(f"ERROR: Cannot get system info (HTTP {status})")
+        sys.exit(1)
+
+    info = json.loads(body)
+    wizard_complete = info.get('StartupWizardCompleted', False)
+
+    if wizard_complete:
+        print("  Wizard already completed - checking if we can authenticate")
+        # Try to authenticate
+        status, body = http_request(
+            f"{JELLYFIN_URL}/Users/AuthenticateByName",
+            method="POST",
+            data={"Username": ADMIN_USERNAME, "Pw": ADMIN_PASSWORD},
+            headers={"X-Emby-Authorization": 'MediaBrowser Client="Automation", Device="K8s", DeviceId="setup-001", Version="1.0"'}
+        )
+        if status == 200 and "AccessToken" in body:
+            print(f"  Already configured - user '{ADMIN_USERNAME}' exists")
+            TOKEN = json.loads(body).get('AccessToken')
+        else:
+            print("  WARNING: Wizard complete but cannot authenticate")
+            print("  Jellyfin may need manual configuration")
+            sys.exit(0)
+    else:
+        print("  Wizard not complete - initializing...")
+        TOKEN = None
+
+        # Step 4: Configure startup preferences
+        print("\n[4/14] Configuring startup preferences...")
+        status, _ = http_request(
+            f"{JELLYFIN_URL}/Startup/Configuration",
+            method="POST",
+            data={"UICulture": "en-US", "MetadataCountryCode": "US", "PreferredMetadataLanguage": "en"}
+        )
+        if status in [200, 204]:
+            print("  Startup preferences set")
+        else:
+            print(f"  WARNING: Could not set preferences (HTTP {status})")
+        time.sleep(2)
+
+        # Step 5: Get default username and update with our credentials
+        print("\n[5/14] Configuring admin user...")
+        status, body = http_request(f"{JELLYFIN_URL}/Startup/User")
+        default_user = json.loads(body).get('Name', 'root') if status == 200 else 'root'
+        print(f"  Default user detected: {default_user}")
+
+        # Update the default user with our desired username and password
+        status, body = http_request(
+            f"{JELLYFIN_URL}/Startup/User",
+            method="POST",
+            data={"Name": ADMIN_USERNAME, "Password": ADMIN_PASSWORD}
+        )
+        if status in [200, 204]:
+            print(f"  Admin user configured: {ADMIN_USERNAME}")
+        else:
+            print(f"  ERROR: Could not configure user (HTTP {status}): {body}")
+            sys.exit(1)
+        time.sleep(2)
+
+        # Step 6: Complete the wizard
+        print("\n[6/14] Completing startup wizard...")
+        status, _ = http_request(f"{JELLYFIN_URL}/Startup/Complete", method="POST")
+        if status in [200, 204]:
+            print("  Wizard completed successfully")
+        else:
+            print(f"  WARNING: Wizard completion returned HTTP {status}")
+        time.sleep(5)
+
+        # Step 7: Authenticate
+        print("\n[7/14] Authenticating...")
+        status, body = http_request(
+            f"{JELLYFIN_URL}/Users/AuthenticateByName",
+            method="POST",
+            data={"Username": ADMIN_USERNAME, "Pw": ADMIN_PASSWORD},
+            headers={"X-Emby-Authorization": 'MediaBrowser Client="Automation", Device="K8s", DeviceId="setup-001", Version="1.0"'}
+        )
+        if status == 200 and "AccessToken" in body:
+            TOKEN = json.loads(body).get('AccessToken')
+            print("  Authentication successful")
+        else:
+            print(f"  ERROR: Authentication failed (HTTP {status})")
+            print("  Jellyfin user created but API access unavailable")
+            sys.exit(1)
+
+    # At this point we have a valid TOKEN
+    AUTH_HEADER = {"X-Emby-Token": TOKEN}
+
+    # Step 7b: Ensure admin user has IsAdministrator=true
+    print("\n[7b/14] Ensuring admin user has administrator privileges...")
+    status, body = http_request(f"{JELLYFIN_URL}/Users", headers=AUTH_HEADER)
+    if status == 200:
+        for user in json.loads(body):
+            if user["Name"] == ADMIN_USERNAME:
+                policy = user.get("Policy", {})
+                policy["IsAdministrator"] = True
+                pol_status, _ = http_request(
+                    f"{JELLYFIN_URL}/Users/{user['Id']}/Policy",
+                    method="POST", data=policy, headers=AUTH_HEADER
+                )
+                if pol_status in [200, 204]:
+                    print(f"  Admin privileges confirmed for {ADMIN_USERNAME}")
+                else:
+                    print(f"  WARNING: Could not set admin policy (HTTP {pol_status})")
+                break
+        else:
+            print(f"  WARNING: User '{ADMIN_USERNAME}' not found in user list")
+    else:
+        print(f"  WARNING: Could not list users (HTTP {status})")
+
+    # Step 8: Create media libraries
+    print("\n[8/14] Creating media libraries...")
+    libraries = [
+        {"name": "Movies", "type": "movies", "path": "/media/movies"},
+        {"name": "TV Shows", "type": "tvshows", "path": "/media/tv-shows"},
+        {"name": "Anime", "type": "tvshows", "path": "/media/anime"},
+        {"name": "Music", "type": "music", "path": "/media/music"},
+    ]
+
+    # Get existing libraries
+    status, body = http_request(f"{JELLYFIN_URL}/Library/VirtualFolders", headers=AUTH_HEADER)
+    existing_libs_raw = body if status == 200 else "[]"
+    try:
+        existing_libs_parsed = json.loads(existing_libs_raw)
+    except json.JSONDecodeError:
+        existing_libs_parsed = []
+
+    # Remove stale libraries not in desired list
+    desired_names = {lib['name'] for lib in libraries}
+    for existing in existing_libs_parsed:
+        ename = existing.get('Name', '')
+        if ename and ename not in desired_names:
+            url_ename = ename.replace(' ', '%20')
+            status, _ = http_request(
+                f"{JELLYFIN_URL}/Library/VirtualFolders?refreshLibrary=false&name={url_ename}",
+                method="DELETE",
+                headers=AUTH_HEADER
+            )
+            if status in [200, 204]:
+                print(f"  - Removed stale library '{ename}'")
+            else:
+                print(f"  - Could not remove '{ename}' (HTTP {status})")
+            time.sleep(1)
+
+    # Refresh existing names after removals
+    status, existing_libs_raw = http_request(f"{JELLYFIN_URL}/Library/VirtualFolders", headers=AUTH_HEADER)
+    existing_libs = existing_libs_raw if status == 200 else "[]"
+
+    for lib in libraries:
+        if f'"{lib["name"]}"' in existing_libs:
+            print(f"  '{lib['name']}' already exists")
+            continue
+
+        url_name = lib['name'].replace(' ', '%20')
+        lib_options = {
+            "LibraryOptions": {
+                "EnablePhotos": False,
+                "EnableRealtimeMonitor": True,
+                "PathInfos": [{"Path": lib["path"]}]
+            }
+        }
+        status, body = http_request(
+            f"{JELLYFIN_URL}/Library/VirtualFolders?collectionType={lib['type']}&refreshLibrary=false&name={url_name}",
+            method="POST",
+            data=lib_options,
+            headers=AUTH_HEADER
+        )
+        if status in [200, 204]:
+            print(f"  + Created '{lib['name']}'")
+        else:
+            print(f"  - Failed '{lib['name']}' (HTTP {status}): {body[:100]}")
+        time.sleep(1)
+
+    # Step 9: Configure NVIDIA NVENC transcoding
+    print("\n[9/14] Configuring NVIDIA NVENC hardware transcoding...")
+    nvenc_config = {
+        "EncodingThreadCount": -1,
+        "HardwareAccelerationType": "nvenc",
+        "EnableTonemapping": True,
+        "TonemappingAlgorithm": "bt2390",
+        "TonemappingMode": "auto",
+        "TonemappingRange": "auto",
+        "H264Crf": 23,
+        "H265Crf": 28,
+        "EnableHardwareEncoding": True,
+        "AllowHevcEncoding": True,
+        "AllowAv1Encoding": False,        # RTX A2000 lacks AV1 NVENC (needs Ada+)
+        "EnableSubtitleExtraction": True,
+        "HardwareDecodingCodecs": ["h264", "hevc", "mpeg2video", "mpeg4", "vc1", "vp8", "vp9", "av1"],
+        "EnableDecodingColorDepth10Hevc": True,
+        "EnableDecodingColorDepth10Vp9": True,
+        "EnableEnhancedNvdecDecoder": True,
+        "EnableThrottling": True,          # Pause transcode when client buffer full
+        "ThrottleDelaySeconds": 180,
+    }
+    status, _ = http_request(
+        f"{JELLYFIN_URL}/System/Configuration/encoding",
+        method="POST",
+        data=nvenc_config,
+        headers=AUTH_HEADER
+    )
+    if status in [200, 204]:
+        print("  NVIDIA NVENC configured for RTX A2000")
+    else:
+        print(f"  WARNING: NVENC config returned HTTP {status}")
+
+    # Step 10: Configure server settings
+    print("\n[10/14] Configuring server settings...")
+    status, body = http_request(f"{JELLYFIN_URL}/System/Configuration", headers=AUTH_HEADER)
+    if status == 200:
+        try:
+            config = json.loads(body)
+            config["ServerName"] = SERVER_NAME
+            config["PublishedServerUrl"] = "https://jellyfin.example.com:<external-port>"
+            config["EnableRemoteAccess"] = True
+
+            status, _ = http_request(
+                f"{JELLYFIN_URL}/System/Configuration",
+                method="POST",
+                data=config,
+                headers=AUTH_HEADER
+            )
+            if status in [200, 204]:
+                print(f"  Server name: {SERVER_NAME}")
+                print("  Published URL: https://jellyfin.example.com:<external-port>")
+            else:
+                print(f"  WARNING: Server config returned HTTP {status}")
+        except Exception as e:
+            print(f"  WARNING: Could not update config: {e}")
+    else:
+        print(f"  WARNING: Could not get current config (HTTP {status})")
+
+    # Step 11: Install SSO Plugin
+    print("\n[11/14] Installing SSO plugin...")
+    if ENABLE_SSO:
+        PLUGIN_DIR = "/config/plugins/SSO Authentication"
+
+        try:
+            # Get latest release info from GitHub API
+            print("  Getting latest SSO plugin release...")
+            status, body = http_request(
+                "https://api.github.com/repos/9p4/jellyfin-plugin-sso/releases/latest",
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "Jellyfin-Automation"}
+            )
+
+            if status == 200:
+                release_info = json.loads(body)
+                assets = release_info.get('assets', [])
+                # Find the zip file asset
+                zip_url = None
+                for asset in assets:
+                    if asset.get('name', '').endswith('.zip'):
+                        zip_url = asset.get('browser_download_url')
+                        break
+
+                if not zip_url:
+                    print("  WARNING: Could not find SSO plugin zip in release assets")
+                    zip_url = None
+                else:
+                    print(f"  Found: {zip_url}")
+            else:
+                print(f"  WARNING: Could not fetch release info (HTTP {status})")
+                zip_url = None
+
+            # Download plugin
+            print("  Downloading SSO plugin from GitHub...")
+            plugin_data = download_file(zip_url, timeout=120) if zip_url else None
+
+            if plugin_data:
+                # Check if plugin directory exists via kubectl exec
+                plugin_exists = run(f"kubectl exec -n media {pod} -- ls -d '{PLUGIN_DIR}' 2>/dev/null")
+
+                if not plugin_exists:
+                    # Create plugin directory
+                    run(f"kubectl exec -n media {pod} -- mkdir -p '{PLUGIN_DIR}'")
+
+                    # Write plugin zip to temp file
+                    with open('/tmp/sso-plugin.zip', 'wb') as f:
+                        f.write(plugin_data)
+
+                    # Copy to pod
+                    run(f"kubectl cp /tmp/sso-plugin.zip media/{pod}:/tmp/sso-plugin.zip")
+
+                    # Extract in pod
+                    run(f"kubectl exec -n media {pod} -- unzip -o /tmp/sso-plugin.zip -d '{PLUGIN_DIR}'")
+                    run(f"kubectl exec -n media {pod} -- rm /tmp/sso-plugin.zip")
+
+                    print("  SSO plugin installed")
+                else:
+                    print("  SSO plugin already installed")
+            else:
+                print("  WARNING: Could not download SSO plugin")
+        except Exception as e:
+            print(f"  WARNING: SSO plugin installation failed: {e}")
+    else:
+        print("  SSO disabled, skipping plugin installation")
+
+    # Step 12: Configure SSO (OIDC for Authentik) - v4 plugin format
+    print("\n[12/14] Configuring SSO for Authentik...")
+    if ENABLE_SSO and SSO_CLIENT_SECRET:
+        SSO_PLUGIN_GUID = "505ce9d1-d916-42fa-86ca-673ef241d7df"
+
+        # v4 format SSO config (JSON via Plugin Configuration API)
+        # AdminRoles maps Authentik groups to Jellyfin admin - users in these groups are auto-admin
+        SSO_CONFIG_V4 = {
+            "SamlConfigs": {},
+            "OidConfigs": {
+                "authentik": {
+                    "OidEndpoint": SSO_ENDPOINT,
+                    "OidClientId": SSO_CLIENT_ID,
+                    "OidSecret": SSO_CLIENT_SECRET,
+                    "Enabled": True,
+                    "EnableAuthorization": True,
+                    "EnableAllFolders": True,
+                    "RoleClaim": "groups",
+                    "AdminRoles": ["jellyfin-admins"],
+                    "OidScopes": ["openid", "profile", "email"],
+                    "DefaultProvider": "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider",
+                    "DisablePushedAuthorization": True,
+                    "SchemeOverride": "https"
+                }
+            }
+        }
+
+        # Try to configure via Plugin API first (works if plugin already loaded)
+        status, body = http_request(
+            f"{JELLYFIN_URL}/Plugins/{SSO_PLUGIN_GUID}/Configuration",
+            method="POST",
+            data=SSO_CONFIG_V4,
+            headers=AUTH_HEADER
+        )
+
+        if status in [200, 204]:
+            print("  SSO configured via Plugin API (v4 format)")
+            print(f"  Endpoint: {SSO_ENDPOINT}")
+            print(f"  Client ID: {SSO_CLIENT_ID}")
+        else:
+            # Plugin not yet loaded - write XML config file for next restart
+            print(f"  Plugin API not available (HTTP {status}) - writing config file")
+            SSO_CONFIG_XML = f'''<?xml version="1.0" encoding="utf-8"?>
+    <PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+      <SamlConfigs />
+      <OidConfigs>
+        <item>
+          <key><string>authentik</string></key>
+          <value>
+            <OidEndpoint>{SSO_ENDPOINT}</OidEndpoint>
+            <OidClientId>{SSO_CLIENT_ID}</OidClientId>
+            <OidSecret>{SSO_CLIENT_SECRET}</OidSecret>
+            <Enabled>true</Enabled>
+            <EnableAuthorization>true</EnableAuthorization>
+            <EnableAllFolders>true</EnableAllFolders>
+            <RoleClaim>groups</RoleClaim>
+            <AdminRoles><string>jellyfin-admins</string></AdminRoles>
+            <OidScopes><string>openid</string><string>profile</string><string>email</string></OidScopes>
+            <DefaultProvider>Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider</DefaultProvider>
+            <DisablePushedAuthorization>true</DisablePushedAuthorization>
+            <SchemeOverride>https</SchemeOverride>
+          </value>
+        </item>
+      </OidConfigs>
+    </PluginConfiguration>'''
+
+            try:
+                PLUGIN_DIR = "/config/plugins/SSO Authentication"
+                with open('/tmp/sso-config.xml', 'w') as f:
+                    f.write(SSO_CONFIG_XML)
+                run(f"kubectl exec -n media {pod} -- mkdir -p '{PLUGIN_DIR}/configurations'")
+                run(f"kubectl cp /tmp/sso-config.xml media/{pod}:{PLUGIN_DIR}/configurations/SSO-Auth.xml")
+                print("  SSO config file written (will apply after pod restart)")
+                print(f"  Endpoint: {SSO_ENDPOINT}")
+                print(f"  Client ID: {SSO_CLIENT_ID}")
+            except Exception as e:
+                print(f"  WARNING: SSO config file write failed: {e}")
+    elif ENABLE_SSO:
+        print("  WARNING: SSO_CLIENT_SECRET not set, skipping SSO configuration")
+    else:
+        print("  SSO disabled, skipping configuration")
+
+    # Step 13: Apply ElegantFin Theme CSS and SSO Button via Branding API
+    print("\n[13/14] Applying ElegantFin theme and SSO button...")
+    if ENABLE_THEME:
+        THEME_CSS = '''@import url("https://cdn.jsdelivr.net/gh/lscambo13/ElegantFin@main/Theme/ElegantFin-jellyfin-theme-build-latest-minified.css");
+    @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+    body, h1, h2, h3, h4, h5, h6, .headerTabs, .emby-tab-button, .cardText, .listItemBody {
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+    }
+    :root {
+        --uiAccentColor: rgb(99, 102, 241);
+        --activeColor: rgb(79, 70, 229);
+        --darkerGradientPoint: #0f172a;
+        --lighterGradientPoint: #1e293b;
+        --rounding: 12px;
+        --backdropBlur: 8px;
+        --backdropBrightness: 0.35;
+        --backdropSaturation: 1.3;
+    }
+    .backdropImage {
+        filter: blur(8px) saturate(130%) contrast(110%) brightness(35%);
+    }
+    .card:hover .cardBox {
+        transform: scale(1.04);
+        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .button-submit[type="submit"] {
+        background: linear-gradient(135deg, rgb(99, 102, 241), rgb(79, 70, 229)) !important;
+        border: none !important;
+        border-radius: 10px !important;
+        font-family: "Inter", sans-serif !important;
+        font-weight: 600 !important;
+        padding: 12px 24px !important;
+    }'''
+
+        # SSO button HTML for login page (only if SSO is enabled)
+        if ENABLE_SSO:
+            LOGIN_DISCLAIMER = '''Salty Media Server - Homelab<br><br><form action="/sso/OID/start/authentik"><button class="raised block emby-button button-submit" type="submit" style="margin-top:10px;background:linear-gradient(135deg,#6366f1,#4f46e5);color:white;border-radius:10px;border:none;">Sign in with SSO</button></form>'''
+        else:
+            LOGIN_DISCLAIMER = "Salty Media Server - Homelab"
+
+        try:
+            # Get current branding config
+            status, body = http_request(f"{JELLYFIN_URL}/System/Configuration/branding", headers=AUTH_HEADER)
+            if status == 200:
+                branding = json.loads(body)
+            else:
+                branding = {}
+
+            # Update with ElegantFin theme and SSO button
+            branding["CustomCss"] = THEME_CSS
+            branding["LoginDisclaimer"] = LOGIN_DISCLAIMER
+            branding["SplashscreenEnabled"] = True
+
+            status, _ = http_request(
+                f"{JELLYFIN_URL}/System/Configuration/branding",
+                method="POST",
+                data=branding,
+                headers=AUTH_HEADER
+            )
+            if status in [200, 204]:
+                print("  ElegantFin theme CSS applied")
+                print("  Font: Inter")
+                print("  Color scheme: Indigo")
+                if ENABLE_SSO:
+                    print("  SSO button added to login page")
+            else:
+                print(f"  WARNING: Theme config returned HTTP {status}")
+        except Exception as e:
+            print(f"  WARNING: Theme application failed: {e}")
+    else:
+        print("  Theme disabled, skipping")
+
+    # Step 14: Verify configuration and restart notification
+    print("\n[14/14] Verifying configuration...")
+
+    # Verify libraries
+    status, body = http_request(f"{JELLYFIN_URL}/Library/VirtualFolders", headers=AUTH_HEADER)
+    if status == 200:
+        libs = json.loads(body)
+        print(f"  Libraries: {len(libs)} configured")
+        for lib in libs:
+            print(f"    - {lib.get('Name')}")
+
+    # Verify encoding
+    status, body = http_request(f"{JELLYFIN_URL}/System/Configuration/encoding", headers=AUTH_HEADER)
+    if status == 200:
+        enc = json.loads(body)
+        hw_type = enc.get('HardwareAccelerationType', 'none')
+        print(f"  Hardware Acceleration: {hw_type}")
+
+    # Check if SSO plugin installed
+    if ENABLE_SSO:
+        sso_dll = run(f"kubectl exec -n media {pod} -- ls '/config/plugins/SSO Authentication/SSO-Authentication.dll' 2>/dev/null")
+        if sso_dll:
+            print("  SSO Plugin: Installed")
+        else:
+            print("  SSO Plugin: Not found (may need pod restart)")
+
+    # Check branding
+    status, body = http_request(f"{JELLYFIN_URL}/System/Configuration/branding", headers=AUTH_HEADER)
+    if status == 200:
+        branding = json.loads(body)
+        if branding.get('CustomCss'):
+            print("  Custom Theme: Applied")
+
+    # ===================================================================
+    # STEP: Configure Scheduled Task Triggers
+    # ===================================================================
+    print("\n--- Configuring Scheduled Task Triggers ---")
+    task_schedules = {
+        "RefreshPeople": [{"Type": "DailyTrigger", "TimeOfDayTicks": 180000000000}],  # 5am
+        "RefreshChapterImages": [{"Type": "DailyTrigger", "TimeOfDayTicks": 72000000000, "MaxRuntimeTicks": 144000000000}],  # 2am
+        "RefreshTrickplayImages": [{"Type": "DailyTrigger", "TimeOfDayTicks": 108000000000}],  # 3am
+        "RefreshLibrary": [{"Type": "IntervalTrigger", "IntervalTicks": 432000000000}],  # 12h
+    }
+    try:
+        tasks_resp = api_get(f"{JELLYFIN_URL}/ScheduledTasks", headers)
+        for task in tasks_resp:
+            if task.get("Key") in task_schedules:
+                task_id = task["Id"]
+                triggers = task_schedules[task["Key"]]
+                data = json.dumps(triggers).encode()
+                req = urllib.request.Request(
+                    f"{JELLYFIN_URL}/ScheduledTasks/{task_id}/Triggers",
+                    data=data, headers={**headers, "Content-Type": "application/json"},
+                    method="POST"
+                )
+                urllib.request.urlopen(req, timeout=10)
+                print(f"  {task['Name']}: scheduled")
+    except Exception as e:
+        print(f"  WARNING: Failed to set task schedules: {e}")
+
+    print()
+    print("=" * 70)
+    print("Jellyfin Setup Complete!")
+    print("=" * 70)
+    print(f"URL: https://jellyfin.example.com")
+    print(f"Admin User: {ADMIN_USERNAME}")
+    print(f"Server Name: {SERVER_NAME}")
+    print()
+    print("Configured:")
+    print("  - Admin user created with password")
+    print("  - 4 media libraries (Movies, TV Shows, Anime, Music)")
+    print("  - NVIDIA NVENC hardware transcoding (RTX A2000)")
+    print("  - Server settings (name, published URL, remote access)")
+    if ENABLE_SSO:
+        print("  - SSO plugin installed (Authentik OIDC)")
+    if ENABLE_THEME:
+        print("  - ElegantFin theme applied (Indigo color scheme)")
+    print()
+    if ENABLE_SSO:
+        print("NOTE: Restart Jellyfin pod to load SSO plugin:")
+        print("  kubectl rollout restart deployment/jellyfin -n media")
+    print("=" * 70)

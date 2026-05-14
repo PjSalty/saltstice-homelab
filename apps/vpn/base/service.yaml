@@ -1,0 +1,35 @@
+---
+# Service pointing to external wg-easy VM
+# Uses manual Endpoints since wg-easy runs outside K8s cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: wg-easy
+  namespace: vpn
+  labels:
+    app.kubernetes.io/name: wg-easy
+    app.kubernetes.io/component: wireguard
+spec:
+  ports:
+    - name: http
+      port: 51821
+      targetPort: 51821
+      protocol: TCP
+  # No selector - using manual Endpoints
+---
+# Manual Endpoints pointing to VPN VM (DMZ VLAN 60)
+# IP from config/network.yaml vpn.wireguard.server_ip
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: wg-easy
+  namespace: vpn
+  labels:
+    app.kubernetes.io/name: wg-easy
+subsets:
+  - addresses:
+      - ip: <internal-ip>  # VPN VM on DMZ VLAN 60
+    ports:
+      - name: http
+        port: 51821
+        protocol: TCP

@@ -1,0 +1,404 @@
+---
+# =============================================================================
+# Infrastructure Components - Managed by FluxCD
+# SSOT: All infrastructure uses postBuild for variable substitution
+# =============================================================================
+
+# MetalLB Infrastructure
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: metallb
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/controllers/metallb
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# MetalLB Configuration (IPAddressPool, L2Advertisement)
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: metallb-config
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/configs/metallb
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: metallb
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# NFS Storage Infrastructure
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: nfs-storage
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/storage
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Democratic-CSI - iSCSI CSI Driver for TrueNAS
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: democratic-csi
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/democratic-csi
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: nfs-storage  # Depends on storage infrastructure
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Cert-Manager Infrastructure
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cert-manager
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/controllers/cert-manager
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# VM Certificates (for infrastructure VMs: GitLab, Harbor, TrueNAS, Proxmox)
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: vm-certificates
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/cert-manager/vm-certificates
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: cert-manager
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# External DNS - AdGuard DNS management
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: external-dns
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/external-dns/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# GitLab Runner - CI/CD pipeline executor
+# Uses SeaweedFS for S3 cache
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: gitlab-runner
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/gitlab-runner/base
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: seaweedfs  # S3 cache backend
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# VPA - Vertical Pod Autoscaler
+# Researched: 2026-02-10 - Fairwinds VPA v4.10.1
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: vpa
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/controllers/vpa
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Goldilocks - VPA Recommendations Dashboard
+# Researched: 2026-02-10 - Fairwinds Goldilocks v10.2.0
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: goldilocks
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/controllers/goldilocks
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: vpa  # Needs VPA CRDs
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Karpenter Provider Proxmox - Node Autoscaler
+# Researched: 2026-02-10 - Chart v0.4.4 / App v0.9.0
+# Prerequisites: Proxmox API token + Debian 13 cloud-init template
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: karpenter
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/karpenter
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: cert-manager  # Needs cert-manager for webhook certs
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Karpenter NodePool + NodeClass configuration
+# Separated from controller to ensure CRDs are installed first
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: karpenter-config
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/karpenter/config
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: karpenter  # CRDs must be installed by HelmRelease first
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Kyverno - Policy Management Controller
+# Researched: 2025-12-05 - Version 3.6.1
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kyverno
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/controllers/kyverno
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+---
+# Loki - Centralized Log Aggregation
+# Researched: 2025-12-06 - Version 6.46.0 (monolithic mode)
+# Source: https://artifacthub.io/packages/helm/grafana/loki
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: loki
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/loki
+  prune: true
+  wait: true
+  timeout: 10m
+  retryInterval: 2m
+  dependsOn:
+    - name: nfs-storage  # Requires NFS storage for persistence
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: loki
+      namespace: loki
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: alloy
+      namespace: loki
+---
+# Tempo - Distributed Tracing
+# Researched: 2026-01-31 - Version 2.9.1
+# Source: https://grafana.com/docs/tempo/latest/
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tempo
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/tempo
+  prune: true
+  wait: true
+  timeout: 5m
+  retryInterval: 2m
+  dependsOn:
+    - name: nfs-storage  # Requires NFS for persistence
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: image-versions
+      - kind: ConfigMap
+        name: network-config
