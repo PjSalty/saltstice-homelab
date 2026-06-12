@@ -24,8 +24,8 @@ that node.
 ## Root cause
 
 Cilium 1.x's liveness probe is hardcoded with `brief=true` and
-`require-k8s-connectivity=false`. It checks "is the agent process responding"
-— not "is the agent forwarding traffic." If the BPF datapath gets into a
+`require-k8s-connectivity=false`. It checks "is the agent process responding",
+not "is the agent forwarding traffic." If the BPF datapath gets into a
 degraded state but the agent's RPC server is still alive, the probe stays
 green and kubelet never restarts the pod.
 

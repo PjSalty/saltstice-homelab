@@ -16,7 +16,7 @@ deterministic boot order.
 
 Tripp Lite SMART1500LCD, 1500VA / 900W, 2U rack mount, USB + serial
 monitoring. Supported by NUT via the `tripplite_usb` driver. Runtime
-at expected ~300W load: 10–15 minutes, ample margin for the cascade
+at expected ~300W load: 10-15 minutes, ample margin for the cascade
 below.
 
 ## Architecture

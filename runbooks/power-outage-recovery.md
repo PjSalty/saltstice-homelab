@@ -27,7 +27,7 @@ earlier blocker.
 ### 1. Restore Traefik VIP
 
 Without Traefik, nothing else you do via `*.example.com` will
-work. K8s node IPs `10.x0.10–22` stay reachable directly, use them.
+work. K8s node IPs `10.x0.10-22` stay reachable directly, use them.
 
 ```bash
 ssh debian@10.x0.10
