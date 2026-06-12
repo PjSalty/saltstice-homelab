@@ -2,7 +2,6 @@
 
 ## Overview
 
-This runbook covers backup verification and restoration procedures for all critical data in the Salty Homelab.
 
 ## Backup Architecture
 

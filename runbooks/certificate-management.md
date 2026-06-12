@@ -2,7 +2,6 @@
 
 ## Overview
 
-This runbook covers TLS certificate monitoring, renewal, and troubleshooting for the Salty Homelab.
 
 **Certificate Authority**: Let's Encrypt (via cert-manager)
 **DNS Provider**: Cloudflare (DNS-01 challenge)
@@ -10,7 +9,7 @@ This runbook covers TLS certificate monitoring, renewal, and troubleshooting for
 
 ## Monitoring Infrastructure
 
-### Prometheus Alerts
+### Prometheus alerts
 
 Certificates are automatically monitored via Prometheus alerts defined in:
 `kubernetes/monitoring/prometheus/base/rules/infrastructure-alerts.yaml`
@@ -21,7 +20,7 @@ Certificates are automatically monitored via Prometheus alerts defined in:
 | `CertificateExpiryCritical` | < 24 hours | Critical | Manual intervention required |
 | `CertificateNotReady` | Not ready > 30 min | Warning | Check cert-manager logs |
 
-### Loki Log Alerts
+### Loki log alerts
 
 Additional log-based monitoring in:
 `kubernetes/infrastructure/loki/logql-alerting-rules.yaml`
@@ -53,7 +52,7 @@ Additional log-based monitoring in:
 
 ## Checking Certificate Status
 
-### Kubernetes Certificates
+### Kubernetes certificates
 
 ```bash
 # List all certificates
@@ -72,7 +71,7 @@ kubectl logs -n cert-manager -l app=cert-manager --tail=100
 kubectl get certificaterequest -A
 ```
 
-### Traefik Wildcard Certificate
+### Traefik wildcard certificate
 
 ```bash
 # Check the main wildcard cert
@@ -82,7 +81,7 @@ kubectl get certificate wildcard-salt-saltstice-com -n traefik
 kubectl get secret wildcard-salt-saltstice-com-tls -n traefik -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -dates
 ```
 
-### External Service Check
+### External service check
 
 ```bash
 # Check certificate from outside
@@ -91,7 +90,7 @@ echo | openssl s_client -connect grafana.example.com:443 -servername grafana.exa
 
 ## Renewal Procedures
 
-### Automatic Renewal (Normal Operation)
+### Automatic renewal (normal operation)
 
 Cert-manager automatically renews certificates when:
 
@@ -138,7 +137,7 @@ kubectl create secret tls wildcard-salt-saltstice-com-tls \
 
 ## Troubleshooting
 
-### Certificate Not Renewing
+### Certificate not renewing
 
 1. **Check cert-manager controller logs**:
 
@@ -159,7 +158,7 @@ kubectl get challenges -A
 kubectl describe challenge <name> -n <namespace>
 ```
 
-### DNS-01 Challenge Failing
+### DNS-01 challenge failing
 
 1. **Verify Cloudflare API token**:
 
@@ -178,7 +177,7 @@ dig TXT _acme-challenge.example.com
  - Zone ID incorrect in ClusterIssuer
  - DNS propagation delay (wait 5-10 minutes)
 
-### Certificate Shows as Not Ready
+### Certificate shows as not ready
 
 1. **Check certificate events**:
 
