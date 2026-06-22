@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers common Kubernetes pod issues including CrashLoopBackOff, ImagePullBackOff, Pending pods, and OOMKilled containers.
+Common pod failures: CrashLoopBackOff, ImagePullBackOff, Pending, and OOMKilled.
 
 ## Quick Reference
 

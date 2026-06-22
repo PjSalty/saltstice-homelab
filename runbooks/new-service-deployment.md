@@ -1,10 +1,6 @@
 # New Service Deployment Checklist
 
-## Overview
-
-This checklist covers everything required to deploy a new Kubernetes application
-to the Salty Homelab. Follow these steps in order, skipping steps leads to
-incomplete deployments that require cleanup.
+Everything needed to deploy a new Kubernetes app, in order. Skip a step and you get an incomplete deployment that needs cleanup.
 
 ## Pre-Deployment Checklist
 

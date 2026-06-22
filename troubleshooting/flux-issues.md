@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers FluxCD reconciliation failures, HelmRelease issues, and GitOps problems in the Salty Homelab.
+FluxCD reconciliation failures, broken HelmReleases, and GitOps problems.
 
 ## Quick Reference
 

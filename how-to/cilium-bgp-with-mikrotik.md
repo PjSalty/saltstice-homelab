@@ -154,4 +154,4 @@ advertisement. MetalLB still handles IP allocation from the pool.
 you just don't run its speaker DaemonSet.
 
 `gracefulRestart` must be enabled on both sides for failover to be
-seamless during Cilium agent restarts. RouterOS supports it natively.
+uninterrupted during Cilium agent restarts. RouterOS supports it natively.

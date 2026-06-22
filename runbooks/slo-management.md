@@ -1,6 +1,6 @@
 # Service Level Objectives (SLOs)
 
-This document defines the SLOs for critical homelab services.
+SLOs for the critical homelab services.
 
 ## SLO Definitions
 

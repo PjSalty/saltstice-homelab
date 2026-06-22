@@ -1,9 +1,8 @@
 # Credential Format Requirements
 
-**Document Purpose**: Define password policies, API key formats, and character restrictions for all services in the homelab SSOT to prevent lockouts during credential rotation.
+Password policies, API key formats, and character restrictions for every service in the SSOT, so credential rotation doesn't lock you out.
 
 **Last Updated**: 2026-01-03
-**Session**: Ralph maintenance - credential-format-research
 
 ---
 

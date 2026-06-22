@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers SSO and authentication issues with Authentik, OIDC integrations, and service-specific authentication problems.
+SSO and auth problems: Authentik, OIDC integrations, and service-specific login failures.
 
 ## Architecture
 

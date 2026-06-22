@@ -2,7 +2,7 @@
 
 ## Overview
 
-This runbook covers disaster recovery procedures for the Salty Homelab infrastructure. The homelab is designed for single-bootstrap rebuildability - any component can be rebuilt from scratch using Terraform, Ansible, and FluxCD.
+Disaster recovery for the whole homelab. Everything is single-bootstrap rebuildable: any component comes back from scratch via Terraform, Ansible, and FluxCD.
 
 ## Recovery Priority Order
 

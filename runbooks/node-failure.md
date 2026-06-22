@@ -2,7 +2,7 @@
 
 ## Overview
 
-This runbook covers procedures for handling Kubernetes node failures in the Salty Homelab RKE2 cluster.
+What to do when an RKE2 node fails.
 
 ## Cluster Architecture
 

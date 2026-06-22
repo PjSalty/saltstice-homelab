@@ -2,7 +2,7 @@
 
 ## Overview
 
-This runbook covers TrueNAS and ZFS storage failure scenarios. Storage is critical infrastructure - all Kubernetes persistent volumes and VM data depend on it.
+TrueNAS and ZFS failure scenarios. Every K8s persistent volume and VM disk depends on this storage, so treat it as critical.
 
 ## Architecture
 

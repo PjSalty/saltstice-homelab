@@ -184,7 +184,7 @@ probe. Options:
  kube-DNS for its resolution. (Even with this, i still fail closed
  if the internet is down on bring-up.)
 
-Option 1 is the robust choice. Tracked as a follow-up MR.
+Option 1 is the safer choice. Tracked as a follow-up MR.
 
 ### H2. Back up Harbor's PostgreSQL, not just the filesystem
 

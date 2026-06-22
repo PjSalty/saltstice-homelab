@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers Kubernetes storage issues including PVC mounting problems, NFS issues, and iSCSI connectivity problems.
+Kubernetes storage problems: PVC mounts, NFS, and iSCSI connectivity.
 
 ## Quick Reference
 

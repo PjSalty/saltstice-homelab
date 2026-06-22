@@ -2,7 +2,7 @@
 
 ## Overview
 
-This runbook provides procedures for restarting services in the Salty Homelab. Services are categorized by their deployment method: VM-based (Ansible managed) or Kubernetes (FluxCD managed).
+How to restart services. They split by deployment method: VM-based (Ansible) or Kubernetes (FluxCD).
 
 ## Quick Reference
 

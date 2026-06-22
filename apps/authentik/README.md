@@ -89,7 +89,7 @@ The Traefik middleware chain uses `default-chain-with-ratelimit`
 ## Cookie domain
 
 `AUTHENTIK_COOKIE_DOMAIN=example.com`, cookies share across
-every subdomain in the homelab so SSO works seamlessly across all
+every subdomain in the homelab so SSO works across all
 integrated apps.
 
 ## Required secrets (from `infrastructure/secrets`)

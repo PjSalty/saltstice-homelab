@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers network connectivity issues, DNS problems, and firewall troubleshooting specific to application-level issues (for infrastructure network issues, see [runbooks/network-troubleshooting.md](../runbooks/network-troubleshooting.md)).
+App-level network problems: connectivity, DNS, and firewall. For infrastructure network issues see [runbooks/network-troubleshooting.md](../runbooks/network-troubleshooting.md).
 
 ## Quick Reference
 

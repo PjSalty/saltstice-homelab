@@ -2,8 +2,7 @@
 
 ## Overview
 
-This guide covers GitLab CI/CD pipeline failures in the Salty Homelab. All infrastructure
-changes flow through CI pipelines, this is the first place to check when a deployment fails.
+GitLab CI/CD pipeline failures. All infrastructure changes flow through CI, so this is the first place to check when a deploy fails.
 
 ## Quick Diagnosis
 

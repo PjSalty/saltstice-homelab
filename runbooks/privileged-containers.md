@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document tracks all containers running with elevated privileges in the Salty Homelab Kubernetes cluster. Each privileged container requires documented justification.
+Every container running with elevated privileges in the cluster, each with its justification.
 
 ## Current Privileged Containers
 

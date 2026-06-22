@@ -2,7 +2,7 @@
 
 ## Overview
 
-This runbook covers network troubleshooting for the Salty Homelab, including DNS issues, connectivity problems, and firewall/VLAN configuration.
+Network troubleshooting: DNS, connectivity, and firewall/VLAN config.
 
 ## Network Architecture
 
