@@ -62,7 +62,7 @@ curl -sk -u admin:<HARBOR_ADMIN_PASSWORD from harbor.yml> \
 # If 401, admin password hash may be corrupted. Reset from the env var:
 ssh debian@<internal-ip>
 sudo docker exec harbor-db psql -U postgres -d registry \
-  -c "-- redacted --
+  -c "-- redacted: rotate the Harbor admin credential via the credential playbook --"
 sudo docker restart harbor-core
 # Core re-initializes admin password from HARBOR_ADMIN_PASSWORD env var.
 

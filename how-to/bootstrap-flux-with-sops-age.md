@@ -158,8 +158,8 @@ forget to pre-create, easy hour to lose.
 
 Every repo (apps and secrets) runs gitleaks + a custom PII scanner
 on staged changes. Loaded from a gitignored `.pii-patterns` file
-that lists maintainer-specific tokens (real name, personal email,
-WAN IP) the scanner blocks on. No `git push` should ever surface a
+that lists maintainer-specific tokens (personal and infrastructure
+identifiers) the scanner blocks on. No `git push` should ever surface a
 plaintext secret because it never makes it past `git commit`.
 
 ## 10. Rotate
