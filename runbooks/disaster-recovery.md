@@ -291,14 +291,6 @@ sops -d secrets/credentials.sops.yaml > /dev/null && echo "SOPS OK"
 4. Document any issues
 5. Update runbook as needed
 
-## Emergency Contacts
-
-| Role | Contact | When to Escalate |
-|------|---------|------------------|
-| Primary Admin | (contact) | Any P1 incident |
-| Hardware Support | (contact) | Physical failures |
-| ISP | (contact) | Network outages |
-
 ## Post-Incident
 
 After any disaster recovery:
