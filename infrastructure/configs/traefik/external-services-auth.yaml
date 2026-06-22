@@ -212,7 +212,7 @@ spec:
     secretName: wildcard-tls
 ---
 # Proxmox Endpoints and Service
-# Proxmox is reachable on K8s VLAN (10.x0.100) for Traefik backend access
+# Proxmox is reachable on K8s VLAN (<internal-ip>) for Traefik backend access
 apiVersion: v1
 kind: Endpoints
 metadata:
@@ -220,7 +220,7 @@ metadata:
   namespace: traefik
 subsets:
   - addresses:
-      - ip: 10.x0.100
+      - ip: <internal-ip>
     ports:
       - port: 8006
         name: https

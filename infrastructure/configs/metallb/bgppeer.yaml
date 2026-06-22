@@ -11,7 +11,7 @@ metadata:
 spec:
   myASN: <asn>          # MetalLB ASN (private AS number)
   peerASN: <asn>        # MikroTik router ASN
-  peerAddress: 10.x0.1   # MikroTik router - VLAN 30 Kubernetes gateway
+  peerAddress: <internal-ip>   # MikroTik router - VLAN 30 Kubernetes gateway
   # BGP MD5 auth — MikroTik tcp-md5-key set on all /routing/bgp/connection entries
   passwordSecret:
     name: bgp-peer-password

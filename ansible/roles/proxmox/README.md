@@ -27,9 +27,9 @@ Proxmox VE hypervisor hardening and performance tuning. Configures IOMMU for GPU
 | `proxmox_zfs_autotrim` | `true` | Enable ZFS SSD TRIM |
 | `proxmox_ssd_devices` | `[sdm, sdn]` | SSD block devices for i/O scheduler tuning |
 | `proxmox_traefik_vip` | `<internal-ip>` | Traefik MetalLB VIP |
-| `proxmox_traefik_gateway` | `10.x0.20` | K8s worker for Traefik routing |
+| `proxmox_traefik_gateway` | `<internal-ip>` | K8s worker for Traefik routing |
 | `proxmox_traefik_dev` | `vmbr1.30` | Network interface for Traefik route |
-| `proxmox_traefik_src` | `10.x0.100` | Source IP for Traefik route |
+| `proxmox_traefik_src` | `<internal-ip>` | Source IP for Traefik route |
 
 ### Sysctl Highlights
 

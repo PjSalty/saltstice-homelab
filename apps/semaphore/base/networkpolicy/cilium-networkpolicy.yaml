@@ -45,7 +45,7 @@ spec:
     # SSH to infrastructure VMs (Ansible deploy)
     - toCIDR:
         - <vlan-cidr>
-        - 10.x0.0/24
+        - <vlan-cidr>
         - <mgmt-ip>/24
       toPorts:
         - ports:

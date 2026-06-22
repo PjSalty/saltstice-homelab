@@ -48,7 +48,7 @@ Per-group variable files that customize role behavior for each host group.
 ### Fail2ban
 
 - Max retries: 3, ban time: 3600s, find time: 600s
-- Ignored subnets: localhost, infrastructure (<vlan-cidr>), Kubernetes (10.x0.0/24)
+- Ignored subnets: localhost, infrastructure (<vlan-cidr>), Kubernetes (<vlan-cidr>)
 
 ### Sudo
 

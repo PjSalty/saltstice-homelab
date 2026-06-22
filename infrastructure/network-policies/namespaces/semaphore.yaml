@@ -72,7 +72,7 @@ spec:
     # Allow SSH to managed hosts (all infrastructure VLANs)
     - toCIDR:
         - <vlan-cidr>
-        - 10.x0.0/24
+        - <vlan-cidr>
         - <vlan-cidr>
         - <vlan-cidr>
         - <mgmt-ip>/24

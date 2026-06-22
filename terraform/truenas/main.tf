@@ -197,7 +197,7 @@ resource "truenas_share_nfs" "kubernetes" {
   comment      = "Kubernetes PV storage"
   mapall_user  = "root"
   mapall_group = "root"
-  networks     = ["<mgmt-ip>/24", "<vlan-cidr>", "10.x0.0/24", "<vlan-cidr>", "<vlan-cidr>"]
+  networks     = ["<mgmt-ip>/24", "<vlan-cidr>", "<vlan-cidr>", "<vlan-cidr>", "<vlan-cidr>"]
 }
 
 resource "truenas_share_nfs" "media" {
@@ -205,7 +205,7 @@ resource "truenas_share_nfs" "media" {
   comment      = "Media NFS share"
   mapall_user  = "root"
   mapall_group = "root"
-  networks     = ["<mgmt-ip>/24", "<vlan-cidr>", "10.x0.0/24", "<vlan-cidr>", "<vlan-cidr>"]
+  networks     = ["<mgmt-ip>/24", "<vlan-cidr>", "<vlan-cidr>", "<vlan-cidr>", "<vlan-cidr>"]
 }
 
 resource "truenas_share_nfs" "media_drop" {
@@ -226,7 +226,7 @@ resource "truenas_share_nfs" "backups_seaweedfs" {
   comment      = "SeaweedFS backup for K8s CronJob"
   mapall_user  = "nobody"
   mapall_group = "nogroup"
-  networks     = ["10.x0.0/24", "<vlan-cidr>"]
+  networks     = ["<vlan-cidr>", "<vlan-cidr>"]
 }
 
 # =============================================================================

@@ -24,7 +24,7 @@ firewall_extra_ports:
   - { port: 111, proto: udp, comment: "RPC (NFS)" }
 
 # Fail2ban — ignore K8s and infra subnets
-fail2ban_ignoreip: "127.0.0.1/8 ::1 <mgmt-ip>/24 <vlan-cidr> 10.x0.0/24"
+fail2ban_ignoreip: "127.0.0.1/8 ::1 <mgmt-ip>/24 <vlan-cidr> <vlan-cidr>"
 
 # SSH Authorized Keys
 ssh_authorized_keys_root:

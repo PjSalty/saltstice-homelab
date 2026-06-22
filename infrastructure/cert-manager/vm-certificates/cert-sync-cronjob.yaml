@@ -141,16 +141,16 @@ data:
       fi
     fi
 
-    # --- Proxmox (10.x0.100) ---
+    # --- Proxmox (<internal-ip>) ---
     echo ""
     echo "--- Proxmox ---"
-    REMOTE_SERIAL=$$(echo | timeout 5 openssl s_client -connect 10.x0.100:8006 2>/dev/null \
+    REMOTE_SERIAL=$$(echo | timeout 5 openssl s_client -connect <internal-ip>:8006 2>/dev/null \
       | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || echo "NONE")
     if [ "$${REMOTE_SERIAL}" = "$${SERIAL}" ]; then
       echo "SKIP: Already current"
     else
-      if scp $${SSH_OPTS} /tmp/wildcard.crt /tmp/wildcard.key root@10.x0.100:/tmp/ 2>/dev/null && \
-         ssh $${SSH_OPTS} root@10.x0.100 "\
+      if scp $${SSH_OPTS} /tmp/wildcard.crt /tmp/wildcard.key root@<internal-ip>:/tmp/ 2>/dev/null && \
+         ssh $${SSH_OPTS} root@<internal-ip> "\
            cp /tmp/wildcard.crt /etc/pve/local/pveproxy-ssl.pem && \
            cp /tmp/wildcard.key /etc/pve/local/pveproxy-ssl.key && \
            rm -f /tmp/wildcard.crt /tmp/wildcard.key && \

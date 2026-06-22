@@ -87,11 +87,11 @@ spec:
     # Allow pve-exporter to reach Proxmox API (port 8006)
     # Allow blackbox probes to reach VM web UIs (port 80 for AdGuard HTTP)
     # Allow blackbox-nfs probe to reach TrueNAS NFS (port 2049)
-    # K8s nodes (10.x0.0/24) covered by toEntities: remote-node above
+    # K8s nodes (<vlan-cidr>) covered by toEntities: remote-node above
     - toCIDR:
         - <vlan-cidr>
         - <vlan-cidr>
-        - 10.x0.100/32  # Proxmox (bare metal, not a K8s node)
+        - <host>/32  # Proxmox (bare metal, not a K8s node)
       toPorts:
         - ports:
             - port: "80"

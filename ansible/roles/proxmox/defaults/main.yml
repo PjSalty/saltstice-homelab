@@ -45,9 +45,9 @@ proxmox_ssd_devices:
 # Static route: Traefik VIP via K8s VLAN 30 (bypasses MikroTik forwarding
 # which breaks TLS due to conntrack/fasttrack packet mangling)
 proxmox_traefik_vip: "<internal-ip>"
-proxmox_traefik_gateway: "10.x0.10"
+proxmox_traefik_gateway: "<internal-ip>"
 proxmox_traefik_dev: "vmbr1.30"
-proxmox_traefik_src: "10.x0.100"
+proxmox_traefik_src: "<internal-ip>"
 
 # Authentik SSO — OpenID Connect realm
 proxmox_oidc_enabled: true

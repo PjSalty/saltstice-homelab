@@ -34,7 +34,7 @@ spec:
     - localASN: <asn>
       exportPodCIDR: true
       neighbors:
-        - peerAddress: 10.x0.1/32
+        - peerAddress: <host>/32
           peerASN: <asn>
           authSecretRef: cilium-bgp-md5
           eBGPMultihopTTL: 1
@@ -74,8 +74,8 @@ Reference it from the peering policy via `authSecretRef`.
 /routing bgp connection
 add as=<asn> \
     name=cluster-master-1 \
-    remote.address=10.x0.10 remote.as=<asn> \
-    local.address=10.x0.1 \
+    remote.address=<internal-ip> remote.as=<asn> \
+    local.address=<internal-ip> \
     input.filter=accept-cluster-routes \
     output.filter=advertise-no-routes \
     multihop=no \

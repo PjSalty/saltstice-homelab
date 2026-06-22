@@ -107,6 +107,6 @@ spec:
         # AdGuard Home web UI (HTTP on port 80)
         - http://<internal-ip>
         # Proxmox VE web UI (HTTPS on port 8006, self-signed cert)
-        - https://10.x0.100:8006
+        - https://<internal-ip>:8006
       labels:
         probe_type: vm-direct

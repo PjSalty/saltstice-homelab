@@ -27,7 +27,7 @@
   hosts: localhost
   gather_facts: false
   vars:
-    proxmox_api_url: "https://10.x0.100:8006"
+    proxmox_api_url: "https://<internal-ip>:8006"
     proxmox_node: "salty"
     proxmox_token: "{{ lookup('env', 'PROXMOX_API_TOKEN') }}"
     base_template_vmid: 9000
@@ -39,8 +39,8 @@
     vlan_tag: 30
     storage: "local-zfs"
     # Static IP for builder VM — avoids guest agent dependency for IP detection
-    builder_ip: "10.x0.199"
-    builder_gw: "10.x0.1"
+    builder_ip: "<internal-ip>"
+    builder_gw: "<internal-ip>"
     builder_cidr: 24
     ssh_public_key: "{{ lookup('file', '~/.ssh/automation-key.pub') }}"
     ssh_private_key: "{{ lookup('env', 'HOME') }}/.ssh/automation-key"

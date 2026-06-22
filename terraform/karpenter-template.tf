@@ -37,7 +37,7 @@ resource "proxmox_virtual_environment_vm" "karpenter_template" {
     dedicated = 2048
   }
 
-  # VLAN 30 — K8s network (10.x0.0/24)
+  # VLAN 30 — K8s network (<vlan-cidr>)
   network_device {
     bridge  = "vmbr1"
     vlan_id = 30

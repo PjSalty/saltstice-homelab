@@ -61,8 +61,8 @@ module "k8s_worker" {
   cpu_cores   = 4
   memory_mb   = 8192
   disk_size_gb = 50
-  ip_address  = "10.x0.21"
-  gateway     = "10.x0.1"
+  ip_address  = "<internal-ip>"
+  gateway     = "<internal-ip>"
   nameserver  = "<internal-ip>"
   ssh_keys    = var.ssh_public_key
   vlan_id     = 30

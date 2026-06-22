@@ -17,16 +17,16 @@ The primary inventory file used by `site.yml` and all day-2 operations. Organize
 
 | Group | VLAN | Subnet | Hosts |
 |-------|------|--------|-------|
-| `proxmox` | 30 | 10.x0.0/24 | Proxmox-salty (10.x0.100) |
+| `proxmox` | 30 | <vlan-cidr> | Proxmox-salty (<internal-ip>) |
 | `dns` | 20 | <vlan-cidr> | AdGuard (<internal-ip>) |
 | `infrastructure` | 20 | <vlan-cidr> | GitLab, Harbor, NetBox |
 | `ci_runner` | 20 | <vlan-cidr> | ci-runner (<internal-ip>) |
 | `amp_servers` | 20 | <vlan-cidr> | amp (<internal-ip>) |
 | `load_balancers` | 20 | <vlan-cidr> | HAProxy-1 (<internal-ip>), HAProxy-2 (<internal-ip>) |
-| `k8s_cluster` | 30 | 10.x0.0/24 | masters + workers (parent group) |
-| `masters` | 30 | 10.x0.0/24 | K8s-master-1/2/3 (10.x0.10-12) |
-| `workers` | 30 | 10.x0.0/24 | K8s-worker-1/2/3 (10.x0.20-22) |
-| `gpu_workers` | 30 | 10.x0.0/24 | K8s-worker-1 (has_gpu: true) |
+| `k8s_cluster` | 30 | <vlan-cidr> | masters + workers (parent group) |
+| `masters` | 30 | <vlan-cidr> | K8s-master-1/2/3 (<internal-ip>-12) |
+| `workers` | 30 | <vlan-cidr> | K8s-worker-1/2/3 (<internal-ip>-22) |
+| `gpu_workers` | 30 | <vlan-cidr> | K8s-worker-1 (has_gpu: true) |
 | `storage` | 40 | <vlan-cidr> | TrueNAS (<internal-ip>) |
 | `vpn_servers` | 60 | <vlan-cidr> | vpn (<internal-ip>) |
 

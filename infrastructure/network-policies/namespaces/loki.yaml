@@ -33,7 +33,7 @@ spec:
     # Restricted to infrastructure VLAN only (not open to all networks)
     - fromCIDR:
         - <vlan-cidr>   # Infrastructure VMs (GitLab, Harbor, NetBox, etc.)
-        - 10.x0.0/24   # K8s nodes (for MetalLB traffic path)
+        - <vlan-cidr>   # K8s nodes (for MetalLB traffic path)
       toPorts:
         - ports:
             - port: "3100"

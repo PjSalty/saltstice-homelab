@@ -20,7 +20,7 @@ spec:
       path: /pve
       params:
         target:
-          - 10.x0.100
+          - <internal-ip>
         cluster:
           - "1"
         node:

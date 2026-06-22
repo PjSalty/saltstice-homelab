@@ -9,9 +9,9 @@
 | infrastructure | GitLab, Harbor, NetBox | 20 | <vlan-cidr> |
 | load_balancers | HAProxy-1 (<internal-ip>), HAProxy-2 (<internal-ip>) | 20 | <vlan-cidr> |
 | amp_servers | amp (<internal-ip>) | 20 | <vlan-cidr> |
-| masters | K8s-master-1/2/3 (10.x0.10-12) | 30 | 10.x0.0/24 |
-| workers | K8s-worker-1/2/3 (10.x0.20-22) | 30 | 10.x0.0/24 |
-| k8s_cluster | masters + workers | 30 | 10.x0.0/24 |
+| masters | K8s-master-1/2/3 (<internal-ip>-12) | 30 | <vlan-cidr> |
+| workers | K8s-worker-1/2/3 (<internal-ip>-22) | 30 | <vlan-cidr> |
+| k8s_cluster | masters + workers | 30 | <vlan-cidr> |
 | storage | TrueNAS (<internal-ip>) | 40 | <vlan-cidr> |
 | vpn_servers | vpn (<internal-ip>) | 60 | <vlan-cidr> |
 

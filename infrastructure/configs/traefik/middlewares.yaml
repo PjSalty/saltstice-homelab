@@ -166,7 +166,7 @@ spec:
       crowdsecLapiKey: "${CROWDSEC_BOUNCER_KEY}"
       forwardedHeadersTrustedIPs:
         - <vlan-cidr>
-        - 10.x0.0/24
+        - <vlan-cidr>
         - <vlan-cidr>
 ---
 # Middleware Chain - Forward Auth with Default

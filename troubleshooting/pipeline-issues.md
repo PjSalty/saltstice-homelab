@@ -166,7 +166,7 @@ glab api "projects/<project>/jobs/<id>/trace"
 
 ```bash
 # Check containerd mirrors configuration on worker nodes
-ssh debian@10.x0.20 "cat /etc/containerd/config.toml | grep -A5 registry"
+ssh debian@<internal-ip> "cat /etc/containerd/config.toml | grep -A5 registry"
 
 # Restart containerd if needed (do via Ansible, not manually)
 # Use: ansible-playbook ansible/playbooks/restart-containerd.yml

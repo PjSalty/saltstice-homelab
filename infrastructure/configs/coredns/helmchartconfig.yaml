@@ -39,7 +39,7 @@ spec:
               <internal-ip> netbox.example.com
               <internal-ip> adguard.example.com
               <internal-ip> truenas.example.com
-              10.x0.100 proxmox.example.com
+              <internal-ip> proxmox.example.com
               # --- K8s Services (via Traefik VIP) ---
               <internal-ip> auth.example.com
               <internal-ip> jellyfin.example.com

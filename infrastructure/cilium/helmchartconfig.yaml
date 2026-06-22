@@ -11,7 +11,7 @@ metadata:
 spec:
   valuesContent: |-
     kubeProxyReplacement: true
-    k8sServiceHost: 10.x0.10
+    k8sServiceHost: <internal-ip>
     k8sServicePort: 6443
     routingMode: native
     autoDirectNodeRoutes: true

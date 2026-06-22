@@ -11,7 +11,7 @@ proxmox_maintenance_ssh_key: /root/.ssh/automation-key
 proxmox_maintenance_ssh_user: automation
 
 # K8s master to delegate kubectl commands to (first master)
-proxmox_maintenance_k8s_master: 10.x0.10
+proxmox_maintenance_k8s_master: <internal-ip>
 
 # RKE2 paths on K8s masters
 proxmox_maintenance_kubectl: /var/lib/rancher/rke2/bin/kubectl
@@ -84,5 +84,5 @@ proxmox_maintenance_iscsi_workloads:
 
 # Workers with iSCSI sessions that must be verified clear
 proxmox_maintenance_iscsi_workers:
-  - 10.x0.20   # worker-1
-  - 10.x0.22   # worker-3
+  - <internal-ip>   # worker-1
+  - <internal-ip>   # worker-3

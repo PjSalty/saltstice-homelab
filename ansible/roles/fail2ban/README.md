@@ -16,7 +16,7 @@ Brute force protection using fail2ban with UFW ban action integration. Monitors 
 | `fail2ban_maxretry` | `5` | Failed attempts before ban (overridden to 3 in all.yml) |
 | `fail2ban_bantime` | `3600` | Ban duration in seconds (1 hour) |
 | `fail2ban_findtime` | `600` | Window for counting failures (10 minutes) |
-| `fail2ban_ignoreip` | `127.0.0.1/8 ::1 <vlan-cidr> 10.x0.0/24` | IPs excluded from banning |
+| `fail2ban_ignoreip` | `127.0.0.1/8 ::1 <vlan-cidr> <vlan-cidr>` | IPs excluded from banning |
 
 ## Templates
 

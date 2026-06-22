@@ -19,7 +19,7 @@ spec:
     - toCIDR:
         - <host>/32
         - <host>/32
-        - 10.x0.100/32
+        - <host>/32
       toPorts:
         - ports:
             - port: "22"

@@ -67,8 +67,8 @@ module "k8s_worker_1_gpu" {
   cores         = 4
   memory        = 16384
   disk_size     = 50
-  ip_address    = "10.x0.21/24"
-  gateway       = "10.x0.1"
+  ip_address    = "<internal-ip>/24"
+  gateway       = "<internal-ip>"
   vlan_tag      = 30
   ssh_keys      = [var.ssh_public_key]
   pci_device_id = "0000:01:00"

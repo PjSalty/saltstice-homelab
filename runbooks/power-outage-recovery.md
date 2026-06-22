@@ -27,10 +27,10 @@ earlier blocker.
 ### 1. Restore Traefik VIP
 
 Without Traefik, nothing else you do via `*.example.com` will
-work. K8s node IPs `10.x0.10-22` stay reachable directly, use them.
+work. K8s node IPs `<internal-ip>-22` stay reachable directly, use them.
 
 ```bash
-ssh debian@10.x0.10
+ssh debian@<internal-ip>
 export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
 sudo -E /var/lib/rancher/rke2/bin/kubectl -n traefik get pods
 # Expect CrashLoopBackOff. Check logs for plugin download errors.
@@ -122,7 +122,7 @@ re-clone by `kubectl -n <ns> delete secret harbor-pull-secret`.
 ssh root@<mgmt-ip>
 # Source IP must be on VLAN 30 so MikroTik conntrack doesn't see
 # asymmetric return paths
-ip route replace <host>/32 via 10.x0.10 dev vmbr1.30 src 10.x0.100
+ip route replace <host>/32 via <internal-ip> dev vmbr1.30 src <internal-ip>
 systemctl restart pvedaemon
 ```
 

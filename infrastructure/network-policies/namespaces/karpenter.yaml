@@ -19,7 +19,7 @@ spec:
   egress:
     # Allow Proxmox API for VM provisioning
     - toCIDR:
-        - 10.x0.100/32
+        - <host>/32
       toPorts:
         - ports:
             - port: "8006"

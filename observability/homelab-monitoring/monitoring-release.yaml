@@ -123,7 +123,7 @@ spec:
                             vlan: "40"
                         - targets:
                             # Proxmox (K8s VLAN interface)
-                            - 10.x0.100:9100
+                            - <internal-ip>:9100
                           labels:
                             group: hypervisor
                             vlan: "30"
@@ -165,7 +165,7 @@ spec:
                           replacement: truenas
                         - source_labels:
                             - __address__
-                          regex: 10.x0.100:.*
+                          regex: <internal-ip>:.*
                           target_label: instance
                           replacement: proxmox
                     # HAProxy exporter - scrape haproxy_exporter on port 9101
