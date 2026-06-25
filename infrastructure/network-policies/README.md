@@ -28,7 +28,7 @@ Each file in `namespaces/` defines a `CiliumNetworkPolicy` scoped to one namespa
 |------|-----------|------------|
 | `flux-system.yaml` | Flux-system | Egress to GitLab (SSH), Helm repos (HTTPS), kube-apiserver |
 | `cert-manager.yaml` | cert-manager | Egress to ACME servers, DNS for validation, kube-apiserver |
-| `democratic-csi.yaml` | democratic-CSI | Egress to TrueNAS API (iSCSI), kubelet communication |
+| `truenas-csi.yaml` | truenas-csi | Egress to TrueNAS WebSocket JSON-RPC API (iSCSI block + NFS), kubelet communication |
 | `metallb-system.yaml` | MetalLB-system | BGP peering with MikroTik router (port 179), memberlist |
 | `monitoring.yaml` | monitoring | Scrape targets across all namespaces, Grafana ingress, AlertManager to ntfy |
 | `traefik.yaml` | Traefik | Ingress from all sources, egress to all service backends |

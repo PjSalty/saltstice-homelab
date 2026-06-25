@@ -300,7 +300,7 @@ kubectl get pvc -n <namespace>
 showmount -e truenas.example.com
 
 # Restart CSI driver
-kubectl rollout restart deployment/democratic-csi-controller -n democratic-csi
+kubectl rollout restart deployment/truenas-csi-controller -n truenas-csi
 ```
 
 **Secret not found**:

@@ -32,7 +32,7 @@ spec:
       data:
         type: persistentVolumeClaim
         size: 500Gi
-        storageClass: iscsi-csi
+        storageClass: truenas-iscsi
     s3:
       enabled: true
       replicas: 1
@@ -40,8 +40,9 @@ spec:
       enabled: true
 ```
 
-The volume server's PVC is RWO iSCSI from `democratic-csi`. ZFS on
-the TrueNAS side provides snapshots and durability.
+The volume server's PVC is RWO iSCSI from `truenas-csi`
+(provisioner `csi.truenas.io`). ZFS on the TrueNAS side provides
+snapshots and durability.
 
 ## 2. Create the bucket and credentials
 

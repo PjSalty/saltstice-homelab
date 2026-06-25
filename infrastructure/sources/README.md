@@ -29,7 +29,7 @@ All repositories use a 1-hour polling interval.
 
 - The Bitnami Helm Repository has been removed due to Broadcom acquisition making public repos unmaintained. External-DNS now uses `registry.k8s.io` images directly.
 - The `karpenter-proxmox` repository uses OCI format (`type: oci`) rather than traditional HTTP.
-- The democratic-CSI HelmRepository is defined within `infrastructure/democratic-csi/base/helmrepository.yaml` rather than here, as it is deployed by a separate Flux Kustomization.
+- The truenas-csi HelmRepository is defined within `infrastructure/truenas-csi/base/helmrepository.yaml` rather than here, as it is deployed by a separate Flux Kustomization.
 
 ## Kustomization
 

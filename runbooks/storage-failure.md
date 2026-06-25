@@ -29,7 +29,7 @@ TrueNAS and ZFS failure scenarios. Every K8s persistent volume and VM disk depen
       ┌▼┐       ┌▼┐       ┌▼┐
        Kubernetes          Kubernetes             VMs/     
        NFS PVCs            iSCSI PVCs            Clients   
-       (democratic         (democratic                     
+       (truenas            (truenas                        
           -csi)               -csi)                        
       ┘       ┘       ┘
 ```
@@ -241,11 +241,11 @@ ssh k8s-worker-1 "mount | grep nfs"
    ssh <node> "umount -f /path/to/mount"
    ```
 
-3. **Restart democratic-CSI**:
+3. **Restart truenas-csi**:
 
    ```bash
-   kubectl rollout restart deployment/democratic-csi-controller -n democratic-csi
-   kubectl rollout restart daemonset/democratic-csi-node -n democratic-csi
+   kubectl rollout restart deployment/truenas-csi-controller -n truenas-csi
+   kubectl rollout restart daemonset/truenas-csi-node -n truenas-csi
    ```
 
 4. **Recreate affected pods**:
@@ -382,5 +382,5 @@ After any storage incident:
 | `ansible/playbooks/01-import-truenas-pool.yml` | Pool import |
 | `ansible/playbooks/11-configure-truenas-k8s-nfs.yml` | NFS setup |
 | `ansible/playbooks/12-configure-truenas-iscsi.yml` | iSCSI setup |
-| `kubernetes/infrastructure/democratic-csi/` | CSI driver config |
+| `kubernetes/infrastructure/truenas-csi/` | CSI driver config (csi.truenas.io) |
 | `docs/runbooks/disaster-recovery.md` | Full DR procedures |

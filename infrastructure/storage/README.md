@@ -21,11 +21,13 @@ Deployed by the `nfs-storage` Flux Kustomization from `clusters/homelab/infrastr
 
 ## Storage Architecture
 
-The cluster uses two storage backends:
+The cluster uses these storage backends:
 
 | StorageClass | Provider | Backend | Use Case |
 |-------------|----------|---------|----------|
-| `nfs-client` (default) | NFS-subdir-external-provisioner | TrueNAS NFS `/mnt/tank/kubernetes` | General storage, configs, media, logs |
-| `iscsi-csi` | democratic-CSI | TrueNAS iSCSI | PostgreSQL and stateful workloads requiring block storage (fsync semantics) |
+| `nfs-client` (default) | nfs-subdir-external-provisioner | TrueNAS NFS `/mnt/tank/kubernetes` | General storage, configs, media, logs |
+| `truenas-iscsi` | csi.truenas.io | TrueNAS iSCSI | PostgreSQL and stateful workloads requiring block storage (fsync semantics) |
+| `truenas-nfs` | csi.truenas.io | TrueNAS NFS | RWX volumes provisioned through the official driver |
+| `iscsi-csi` (legacy) | org.democratic-csi.iscsi | TrueNAS iSCSI | Decommissioned, being removed after migration cleanup |
 
-NFS is unsuitable for PostgreSQL because it breaks fsync semantics. All database workloads use the `iscsi-csi` StorageClass defined in `infrastructure/democratic-csi/`.
+NFS is unsuitable for PostgreSQL because it breaks fsync semantics. All database workloads use the `truenas-iscsi` StorageClass provisioned by the official TrueNAS CSI driver (`csi.truenas.io`), defined in `infrastructure/truenas-csi/`. The legacy `iscsi-csi` class (`org.democratic-csi.iscsi`) is being decommissioned now that data has migrated, since TrueNAS 26 removes the REST API the democratic-csi driver depended on.

@@ -90,7 +90,7 @@ Traefik IngressRoute with:
 | PVC | Size | StorageClass | Purpose |
 |-----|------|--------------|---------|
 | `unifi-config` | 5Gi | NFS (static) | Controller configuration and automation marker |
-| `unifi-db` | 10Gi | `iscsi-csi` | MongoDB data (block storage required for database) |
+| `unifi-db` | 10Gi | `truenas-iscsi` | MongoDB data (block storage required for database) |
 
 ## Secrets
 
@@ -110,6 +110,6 @@ Traefik IngressRoute with:
 - NetBox VM at <internal-ip> (AP inventory source of truth)
 - MetalLB (LoadBalancer IP assignment)
 - Authentik (SSO forward-auth for web UI)
-- democratic-CSI (iSCSI storage for MongoDB)
+- truenas-csi (iSCSI storage for MongoDB, provisioner csi.truenas.io)
 - TrueNAS NFS (config storage)
 - Wildcard TLS certificate (`wildcard-tls`)

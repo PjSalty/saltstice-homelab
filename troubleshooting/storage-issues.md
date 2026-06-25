@@ -44,29 +44,29 @@ kubectl get pvc <pvc-name> -n <namespace> -o yaml | grep storageClassName
 **CSI driver not running**:
 
 ```bash
-# Check democratic-csi pods
-kubectl get pods -n democratic-csi
+# Check truenas-csi pods
+kubectl get pods -n truenas-csi
 
 # Check CSI driver logs
-kubectl logs -n democratic-csi deployment/democratic-csi-controller
+kubectl logs -n truenas-csi deployment/truenas-csi-controller
 
 # Restart CSI driver
-kubectl rollout restart deployment/democratic-csi-controller -n democratic-csi
-kubectl rollout restart daemonset/democratic-csi-node -n democratic-csi
+kubectl rollout restart deployment/truenas-csi-controller -n truenas-csi
+kubectl rollout restart daemonset/truenas-csi-node -n truenas-csi
 ```
 
 **TrueNAS API unavailable**:
 
 ```bash
-# Check TrueNAS is reachable
-curl -s https://truenas.example.com/api/v2.0/system/info
+# Check TrueNAS is reachable (truenas-csi uses WebSocket JSON-RPC)
+curl -s -I https://truenas.example.com/api/current
 
 # Check CSI secret has correct credentials
-kubectl get secret -n democratic-csi truenas-api-key -o yaml
+kubectl get secret -n truenas-csi truenas-api-key -o yaml
 
-# Verify API token works
-curl -s -H "Authorization: Bearer $TOKEN" \
-  https://truenas.example.com/api/v2.0/pool
+# Verify the API key works over the WebSocket endpoint
+# truenas-csi connects to wss://truenas.example.com/api/current
+websocat wss://truenas.example.com/api/current
 ```
 
 **Quota exceeded**:
@@ -170,7 +170,7 @@ ssh <node> "umount -l /path/to/mount"
 kubectl delete pod <pod-name> -n <namespace> --force --grace-period=0
 
 # Restart CSI node pod on affected node
-kubectl delete pod -n democratic-csi -l app=democratic-csi-node --field-selector spec.nodeName=<node>
+kubectl delete pod -n truenas-csi -l app.kubernetes.io/component=node --field-selector spec.nodeName=<node>
 ```
 
 ### Read-Only Mount
@@ -232,7 +232,7 @@ ssh truenas "targetcli ls"
 
 ```bash
 # Check CHAP credentials in CSI config
-kubectl get secret -n democratic-csi truenas-iscsi-creds -o yaml
+kubectl get secret -n truenas-csi truenas-iscsi-creds -o yaml
 
 # Verify credentials match TrueNAS configuration
 ```
@@ -307,7 +307,7 @@ kubectl describe pvc <pvc-name> -n <namespace>
 
 ```bash
 # Check CSI driver logs
-kubectl logs -n democratic-csi deployment/democratic-csi-controller
+kubectl logs -n truenas-csi deployment/truenas-csi-controller
 
 # Some volumes require pod restart to recognize new size
 kubectl delete pod <pod-using-pvc> -n <namespace>
@@ -329,7 +329,7 @@ metadata:
   name: my-snapshot
   namespace: <namespace>
 spec:
-  volumeSnapshotClassName: democratic-csi-snapshotclass
+  volumeSnapshotClassName: truenas-csi-snapshotclass
   source:
     persistentVolumeClaimName: <pvc-name>
 EOF
@@ -372,10 +372,10 @@ kubectl get pvc -A
 kubectl get pv
 
 # Check CSI driver pods
-kubectl get pods -n democratic-csi
+kubectl get pods -n truenas-csi
 
 # Check CSI driver logs
-kubectl logs -n democratic-csi deployment/democratic-csi-controller
+kubectl logs -n truenas-csi deployment/truenas-csi-controller
 
 # Check node CSI registration
 kubectl get csinode
@@ -388,7 +388,7 @@ kubectl get volumeattachment
 
 | File | Purpose |
 |------|---------|
-| `kubernetes/infrastructure/democratic-csi/` | CSI driver config |
+| `kubernetes/infrastructure/truenas-csi/` | CSI driver config |
 | `ansible/playbooks/11-configure-truenas-k8s-nfs.yml` | NFS setup |
 | `ansible/playbooks/12-configure-truenas-iscsi.yml` | iSCSI setup |
 | [runbooks/storage-failure.md](../runbooks/storage-failure.md) | Storage failure recovery |

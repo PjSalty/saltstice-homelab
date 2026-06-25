@@ -18,14 +18,23 @@ database iSCSI extents).
 
 ## CSI
 
-`democratic-csi` against the TrueNAS API. Two storage classes:
+`truenas-csi` (provisioner `csi.truenas.io`), the official iX driver,
+talking to TrueNAS over WebSocket-native JSON-RPC at
+`wss://truenas.salt.saltstice.com/api/current`. Two storage classes:
 
-- `iscsi-csi`, RWO block, dynamic provisioning of iSCSI extents
-- `nfs-csi`, RWX file, dynamic provisioning of NFS shares
+- `truenas-iscsi`, RWO block, dynamic provisioning of iSCSI extents
+- `truenas-nfs`, RWX file, dynamic provisioning of NFS shares
 
-The driver's bundled liveness probe has a hardcoded 5s gRPC timeout
-that fails under TrueNAS API load spikes. The HelmRelease uses a
-`postRenderer` patch to swap it for a process check on the CSI socket.
+The legacy `iscsi-csi` class (provisioner `org.democratic-csi.iscsi`,
+legacy REST `/api/v2.0`) is being decommissioned. TrueNAS 26 removes
+the REST API and democratic-csi never added WebSocket support, so the
+data moved to `truenas-csi`. Data's already migrated.
+
+The driver runs in the `truenas-csi` namespace:
+
+```bash
+kubectl get pods -n truenas-csi
+```
 
 ## Why iSCSI for databases
 

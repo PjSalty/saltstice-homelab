@@ -11,7 +11,7 @@ Cluster-wide concerns. Anything not specific to a single application.
 | `controllers/traefik/` | ingress controller, ConfigMap-driven values |
 | `controllers/velero/` | backup with Kopia + SeaweedFS S3 |
 | `controllers/falco/` | runtime security, modern eBPF, Falcosidekick |
-| `democratic-csi/` | iSCSI + NFS CSI drivers against TrueNAS |
+| `truenas-csi/` | official iX CSI driver (`csi.truenas.io`), iSCSI + NFS against TrueNAS over WebSocket JSON-RPC |
 | `karpenter/` | node autoscaling on Proxmox |
 | `loki/`, `tempo/` | log + trace backends, S3-backed |
 | `network-policies/` | cluster-wide default-deny + per-namespace policies |
