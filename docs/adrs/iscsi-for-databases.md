@@ -2,6 +2,11 @@
 
 **Status:** Accepted
 
+_Update, 2026-06: the CSI driver has since moved from democratic-csi to the
+official truenas-csi (`csi.truenas.io`, WebSocket-native), because TrueNAS 26
+removes the REST API democratic-csi depends on. The decision below, iSCSI block
+for databases and NFS for shared, is unchanged. Only the driver changed._
+
 ## Context
 
 Postgres, Mongo, anything with WAL. The CSI driver

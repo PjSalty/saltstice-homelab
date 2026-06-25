@@ -1,5 +1,7 @@
 # Democratic-CSI (iSCSI)
 
+> **DEPRECATED:** replaced by the official WebSocket-native truenas-csi driver (`csi.truenas.io`). Kept here for history while the migration cleanup completes.
+
 iSCSI CSI driver for TrueNAS, providing block storage for stateful workloads that require proper fsync semantics (primarily PostgreSQL). Deployed as a HelmRelease with a standalone StorageClass.
 
 Deployed by the `democratic-csi` Flux Kustomization from `clusters/homelab/infrastructure-kustomizations.yaml`, which depends on `nfs-storage` and uses SOPS decryption for TrueNAS credentials.

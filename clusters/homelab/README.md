@@ -58,7 +58,7 @@ flux-system Kustomization (watches clusters/homelab/)
          |
          +-- infrastructure-kustomizations.yaml  Per-component:
          |     metallb, cert-manager, vpa, goldilocks, karpenter,
-         |     democratic-csi, nfs-storage, loki, tempo, kyverno, etc.
+         |     truenas-csi, nfs-storage, loki, tempo, kyverno, etc.
          |
          +-- secrets.yaml         SOPS secrets (from secrets repo)
          |

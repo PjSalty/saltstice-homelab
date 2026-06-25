@@ -13,7 +13,7 @@ Persistent storage for the Prometheus time-series database.
 | Property | Value |
 |----------|-------|
 | Name | `prometheus-data` |
-| Storage class | `nfs-client` (NFS via democratic-CSI on TrueNAS) |
+| Storage class | `nfs-client` (NFS via the nfs-subdir-external-provisioner on TrueNAS) |
 | Size | 50Gi |
 | Access mode | ReadWriteOnce |
 | Mount path | `/prometheus` (in the Deployment) |

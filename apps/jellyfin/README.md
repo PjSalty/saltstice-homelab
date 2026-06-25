@@ -108,7 +108,7 @@ jellyfin/
 
 - NVIDIA GPU node with `nvidia.com/gpu.present` label and `nvidia` RuntimeClass
 - `nvidia-device-plugin` DaemonSet
-- democratic-CSI (iSCSI driver) for config/cache
+- truenas-csi (csi.truenas.io WebSocket-native iSCSI driver) for config/cache
 - NAS NFS server for media
 - MetalLB for LoadBalancer IPs
 - Traefik ingress controller + wildcard cert

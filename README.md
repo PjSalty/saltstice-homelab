@@ -15,7 +15,7 @@ onedr0p, bjw-s) but pushed harder on *why* and *what broke*.
 | LoadBalancer | MetalLB, BGP-advertised |
 | Ingress | Traefik with Authentik forward-auth |
 | Identity | Authentik 2025.10 |
-| Storage CSI | democratic-CSI (TrueNAS iSCSI for RWO, NFS for RWX) |
+| Storage CSI | truenas-csi (csi.truenas.io, WebSocket-native; iSCSI for RWO, NFS for RWX) |
 | GitOps | Flux v2 multi-source |
 | Secrets | SOPS-Age + External Secrets Operator |
 | Backup | Velero, Kopia uploader, in-cluster SeaweedFS S3 |

@@ -17,7 +17,7 @@ Deployed by the `infrastructure-psa-labels` Flux Kustomization with `force: true
 Unrestricted policy for system namespaces and workloads requiring host access:
 
 - `kube-system` -- Core Kubernetes components
-- `democratic-csi` -- iSCSI CSI driver needs host access for block device management
+- `truenas-csi` -- TrueNAS CSI driver (csi.truenas.io) needs host access for block device management
 - `falco` -- Runtime security requires eBPF/syscall access
 - `crowdsec` -- IPS/IDS needs network-level access
 - `nvidia-device-plugin` -- GPU device plugin requires host device access

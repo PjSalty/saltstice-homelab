@@ -112,8 +112,9 @@ kubectl get all,pvc -n "$NAMESPACE"
  the CRDs need to exist first. Velero restores CRDs by default; if
  you scoped the restore narrowly, you may need to re-include them.
 - **PVC StorageClass must exist**: you can't restore an iSCSI PVC
- into a cluster that doesn't have democratic-CSI installed. Same
- for NFS.
+ into a cluster that doesn't have truenas-csi (csi.truenas.io)
+ installed. The block class is truenas-iscsi; the RWX class is
+ truenas-nfs. Same for NFS.
 - **Hooks**: pre-/post-restore hooks defined on the original Backup
  spec run on restore unless you `--exclude-hooks`. Check what
  hooks the backup carried.

@@ -13,7 +13,7 @@ Persistent storage for Grafana data (SQLite database, plugins, session data).
 | Property | Value |
 |----------|-------|
 | Name | `grafana-data` |
-| Storage class | `nfs-client` (NFS via democratic-CSI on TrueNAS) |
+| Storage class | `nfs-client` (NFS via the nfs-subdir-external-provisioner on TrueNAS) |
 | Size | 10Gi |
 | Access mode | ReadWriteOnce |
 | Mount path | `/var/lib/grafana` (in the Deployment) |

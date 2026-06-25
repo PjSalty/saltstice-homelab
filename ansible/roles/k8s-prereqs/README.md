@@ -10,7 +10,7 @@ Prepares Debian VMs for RKE2 Kubernetes cluster membership. Installs required pa
 4. Apply Kubernetes sysctl settings (bridge-nf-call, ip_forward, inotify, memory tuning)
 5. Set transparent hugepages to `madvise` (runtime + persist via tmpfiles.d)
 6. Disable swap and remove from fstab
-7. Enable the iscsid service (for iSCSI PVs via democratic-CSI)
+7. Enable the iscsid service (for iSCSI PVs via truenas-csi)
 8. Create RKE2 server manifests directory (masters only)
 9. Deploy RKE2 Cilium HelmChartConfig (masters only)
 10. Deploy RKE2 CoreDNS HelmChartConfig (masters only)
