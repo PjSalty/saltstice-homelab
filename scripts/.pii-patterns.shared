@@ -1,0 +1,25 @@
+# Shared scan patterns. TRACKED so CI enforces them.
+#
+# Only patterns that are safe to publish belong here: shapes, not values.
+# Anything that is itself sensitive (real names, SSIDs, MAC addresses, the
+# WAN IP) goes in scripts/.pii-patterns, which is gitignored and therefore
+# only ever applied on a maintainer's machine.
+#
+# One PCRE per line. Every pattern here must have zero hits on a clean tree,
+# otherwise the scan is red by default and stops meaning anything.
+
+# Real SOPS ciphertext. Requires actual base64 after `data:` so the
+# documented placeholders (`<encrypted-bytes>`, `...`) do not match.
+ENC\[AES256_GCM,data:[A-Za-z0-9+/=]{8,}
+
+# Age recipient public keys.
+\bage1[a-z0-9]{58}\b
+
+# Internal service subdomains. The bare apex is the public site and is fine;
+# subdomains enumerate the service map.
+\b[a-zA-Z0-9-]+\.saltstice\.com\b
+
+# Internal VLAN prefixes. RKE2's own 10.43.0.0/16 is deliberately absent,
+# it is identical on every install and redacting it only hurts the writing.
+\b10\.10\.[0-9]{1,3}\.
+\b192\.168\.1\.
