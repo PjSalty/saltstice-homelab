@@ -16,6 +16,7 @@
 
 set -euo pipefail
 
+SHARED_PATTERNS_FILE="${SHARED_PATTERNS_FILE:-$(dirname "$0")/.pii-patterns.shared}"
 PATTERNS_FILE="${PATTERNS_FILE:-$(dirname "$0")/.pii-patterns}"
 
 # Default patterns — extend by writing to .pii-patterns (one regex per line)
@@ -40,16 +41,34 @@ DEFAULT_PATTERNS=(
 # Files exempt from scanning (they DEFINE the patterns and would always match)
 EXEMPT_FILES=(
   'scripts/pii-scan.sh'
+  'scripts/.pii-patterns'
+  'scripts/.pii-patterns.shared'
+  'scripts/.pii-patterns.example'
   '.githooks/pre-commit'
   '.gitleaks.toml'
 )
 
-# Load custom patterns if file exists
-if [[ -f "$PATTERNS_FILE" ]]; then
+load_patterns() {
+  local f="$1" line
   while IFS= read -r line; do
     [[ -z "$line" || "$line" =~ ^# ]] && continue
     DEFAULT_PATTERNS+=("$line")
-  done < "$PATTERNS_FILE"
+  done < "$f"
+}
+
+# Shared patterns are tracked, so they are present everywhere including CI.
+# Missing means the scan would silently degrade to the generic defaults and
+# report a false green — fail loudly instead.
+if [[ ! -f "$SHARED_PATTERNS_FILE" ]]; then
+  echo "✗ missing $SHARED_PATTERNS_FILE — refusing to report a partial scan as clean." >&2
+  exit 2
+fi
+load_patterns "$SHARED_PATTERNS_FILE"
+
+# Maintainer-specific patterns are gitignored, so they are expected to be
+# absent in CI. Their absence is normal and does not weaken the shared set.
+if [[ -f "$PATTERNS_FILE" ]]; then
+  load_patterns "$PATTERNS_FILE"
 fi
 
 # Determine scope
@@ -59,6 +78,7 @@ if [[ "${1:-}" == "--staged" ]]; then
   mode="staged"
   mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR)
 elif [[ "${1:-}" == "--paths" ]]; then
+  mode="paths"
   shift
   files=("$@")
 fi
