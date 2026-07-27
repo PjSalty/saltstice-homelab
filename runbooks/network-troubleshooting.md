@@ -26,7 +26,7 @@ Network troubleshooting: DNS, connectivity, and firewall/VLAN config.
 ┌▼┐ ┌▼┐    ┌▼┐  ┌▼┐ ┌▼┐
  VLAN 1    VLAN 20       VLAN 30      VLAN 40  VLAN 60
 Management Infra       Kubernetes     Storage    DMZ  
-192.168.1  <internal-net>      <internal-net>       10.10.40 10.10.60
+<mgmt-net>  <internal-net>      <internal-net>       <internal-net> <internal-net>
 ┘ ┘    ┘  ┘ ┘
 ```
 

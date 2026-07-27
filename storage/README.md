@@ -20,7 +20,7 @@ database iSCSI extents).
 
 `truenas-csi` (provisioner `csi.truenas.io`), the official iX driver,
 talking to TrueNAS over WebSocket-native JSON-RPC at
-`wss://truenas.salt.saltstice.com/api/current`. Two storage classes:
+`wss://truenas.example.com/api/current`. Two storage classes:
 
 - `truenas-iscsi`, RWO block, dynamic provisioning of iSCSI extents
 - `truenas-nfs`, RWX file, dynamic provisioning of NFS shares
