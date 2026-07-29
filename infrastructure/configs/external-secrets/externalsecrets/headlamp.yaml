@@ -1,6 +1,8 @@
-# headlamp-oidc-secret: OIDC client secrets for Headlamp + K8s API OIDC
-# client-secret is the K8s API OIDC secret (static config value)
-# OIDC_CLIENT_SECRET is the Headlamp app SSO secret (from CRED)
+# headlamp-oidc-secret: OIDC client secret for Headlamp.
+#
+# The client secret is sourced from the credential store rather than being
+# written inline, so it is managed and rotatable in one place alongside
+# every other SSO integration.
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
@@ -24,7 +26,6 @@ spec:
           app.kubernetes.io/name: "headlamp"
           app.kubernetes.io/component: "oidc"
       data:
-        client-secret: "KubernetesSSO2025SecureKey"
         OIDC_CLIENT_SECRET: "{{ .oidc_client_secret }}"
   data:
   - secretKey: oidc_client_secret
