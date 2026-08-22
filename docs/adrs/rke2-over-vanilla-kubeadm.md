@@ -1,6 +1,9 @@
 # ADR: RKE2 over vanilla kubeadm
 
-**Status:** Accepted
+**Status:** Accepted, superseded for new clusters by
+[kubeadm-over-rke2-for-cluster-api](kubeadm-over-rke2-for-cluster-api.md).
+Still the live decision for the existing cluster until it drains. The
+trigger was this ADR's own last reconsider bullet.
 
 ## Context
 
