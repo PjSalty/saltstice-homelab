@@ -70,6 +70,11 @@ spec:
     spec:
       containers:
       - name: redis
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: ${IMAGE_REDIS}
         ports:
         - containerPort: 6379
@@ -133,6 +138,11 @@ spec:
             name: netbox-config
       containers:
       - name: netbox
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: harbor.example.com/homelab/netbox:v4.4.6-dns
         ports:
         - containerPort: 8080
@@ -208,6 +218,11 @@ spec:
     spec:
       containers:
       - name: netbox-worker
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: harbor.example.com/homelab/netbox:v4.4.6-dns
         command:
         - /opt/netbox/venv/bin/python
@@ -253,6 +268,11 @@ spec:
     spec:
       containers:
       - name: postgres
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: ${IMAGE_POSTGRES_16}
         env:
         - name: POSTGRES_DB

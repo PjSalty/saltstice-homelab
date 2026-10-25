@@ -38,6 +38,11 @@ spec:
           echo "NetBox is ready!"
       containers:
       - name: populate
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: ${IMAGE_PYTHON_SLIM}
         resources:
           requests:

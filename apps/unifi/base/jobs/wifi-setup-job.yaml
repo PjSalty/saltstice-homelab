@@ -65,6 +65,11 @@ spec:
               exit 1
       containers:
         - name: wifi-setup
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_ALPINE}
           command:
             - /bin/sh

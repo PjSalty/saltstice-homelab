@@ -242,6 +242,11 @@ spec:
       restartPolicy: OnFailure
       containers:
       - name: setup
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: ${IMAGE_PYTHON_SLIM}
         command: ["python", "/scripts/setup.py"]
         resources:

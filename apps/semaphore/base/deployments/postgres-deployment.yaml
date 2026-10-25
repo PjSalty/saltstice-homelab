@@ -23,6 +23,11 @@ spec:
           type: RuntimeDefault
       containers:
       - name: postgres
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: ${IMAGE_POSTGRES_15}
         lifecycle:
           postStart:

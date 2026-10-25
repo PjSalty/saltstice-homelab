@@ -23,6 +23,11 @@ spec:
           type: RuntimeDefault
       containers:
       - name: gitlab-runner
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: ${IMAGE_GITLAB_RUNNER}
         imagePullPolicy: IfNotPresent
         command:

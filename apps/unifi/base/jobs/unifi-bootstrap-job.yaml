@@ -41,6 +41,11 @@ spec:
               exit 1
       containers:
         - name: bootstrap
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           # Version managed by config/versions.yaml via Flux substituteFrom
           image: ${IMAGE_UNIFI_MONGODB}
           resources:

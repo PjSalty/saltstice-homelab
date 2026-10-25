@@ -30,6 +30,11 @@ spec:
         runAsNonRoot: true
       containers:
         - name: grafana
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_GRAFANA}
           imagePullPolicy: IfNotPresent
           ports:

@@ -20,6 +20,11 @@ spec:
           restartPolicy: OnFailure
           containers:
           - name: ip-discovery
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                  - ALL
             image: ${IMAGE_PYTHON_SLIM}
             resources:
               requests:

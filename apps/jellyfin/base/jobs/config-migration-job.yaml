@@ -21,6 +21,11 @@ spec:
         supplementalGroups: [44, 109]
       containers:
         - name: migrate
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_ALPINE}
           command:
             - /bin/sh
