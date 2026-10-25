@@ -35,15 +35,20 @@ else
   exit 1
 fi
 
-if command -v gitleaks >/dev/null 2>&1; then
-  echo "→ gitleaks detect (no-git)"
-  gitleaks detect --source "$WORK" --no-git --no-banner --redact || {
-    echo "gitleaks blocked. fix the source." >&2
-    exit 1
-  }
-else
-  echo "warn: gitleaks not installed; skipping secret scan"
+# Fails closed: nothing is published without a secret scan.
+GITLEAKS_BIN="$(command -v gitleaks 2>/dev/null || true)"
+for candidate in "$HOME/.local/bin/gitleaks" "$HOME/go/bin/gitleaks"; do
+  [[ -z "$GITLEAKS_BIN" && -x "$candidate" ]] && GITLEAKS_BIN="$candidate"
+done
+if [[ -z "$GITLEAKS_BIN" ]]; then
+  echo "gitleaks not found; refusing to continue without a secret scan." >&2
+  exit 1
 fi
+echo "→ gitleaks detect (no-git)"
+"$GITLEAKS_BIN" detect --source "$WORK" --no-git --no-banner --redact || {
+  echo "gitleaks blocked. fix the source." >&2
+  exit 1
+}
 
 if [[ -x "$REPO_ROOT/scripts/pii-scan.sh" ]]; then
   echo "→ pii-scan"

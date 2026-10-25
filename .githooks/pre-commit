@@ -5,17 +5,23 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 
-# 1. gitleaks on staged changes
-if command -v gitleaks >/dev/null 2>&1; then
-  echo "→ gitleaks protect --staged"
-  gitleaks protect --staged --no-banner --redact || {
-    echo "✗ gitleaks blocked the commit."
-    exit 1
-  }
-else
-  echo "⚠ gitleaks not installed — skipping secret scan."
-  echo "  Install: go install github.com/zricethezav/gitleaks/v8@latest"
+# 1. gitleaks on staged changes. Fails closed: a commit without a secret scan
+# is refused, not waved through. Looks past PATH in the usual user install
+# dirs, because some shells (IDE and agent tool shells) leave them off PATH.
+gitleaks_bin="$(command -v gitleaks 2>/dev/null || true)"
+for candidate in "$HOME/.local/bin/gitleaks" "$HOME/go/bin/gitleaks"; do
+  [[ -z "$gitleaks_bin" && -x "$candidate" ]] && gitleaks_bin="$candidate"
+done
+if [[ -z "$gitleaks_bin" ]]; then
+  echo "✗ gitleaks not found; refusing to commit without a secret scan."
+  echo "  Install it (pacman -S gitleaks, or go install github.com/zricethezav/gitleaks/v8@latest)."
+  exit 1
 fi
+echo "→ gitleaks protect --staged"
+"$gitleaks_bin" protect --staged --no-banner --redact || {
+  echo "✗ gitleaks blocked the commit."
+  exit 1
+}
 
 # 2. PII scan on staged changes
 if [[ -x "$repo_root/scripts/pii-scan.sh" ]]; then
