@@ -99,6 +99,11 @@ spec:
               memory: 256Mi
       containers:
         - name: unifi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           # Version managed by config/versions.yaml via Flux substituteFrom
           image: ${IMAGE_UNIFI_CONTROLLER}
           ports:
@@ -158,6 +163,11 @@ spec:
             failureThreshold: 5
         # Automation sidecar - runs bootstrap + WiFi setup then sleeps
         - name: automation
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           # Version managed by config/versions.yaml via Flux substituteFrom
           image: ${IMAGE_UNIFI_MONGODB}
           env:

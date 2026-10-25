@@ -107,6 +107,11 @@ spec:
                       mountPath: /config
             containers:
                 - name: jellyfin
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    capabilities:
+                      drop:
+                        - ALL
                   image: ${IMAGE_JELLYFIN}
                   imagePullPolicy: IfNotPresent
                   ports:

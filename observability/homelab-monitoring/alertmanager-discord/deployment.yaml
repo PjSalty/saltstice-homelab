@@ -25,6 +25,11 @@ spec:
     spec:
       containers:
         - name: alertmanager-discord
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_ALERTMANAGER_DISCORD}
           ports:
             - containerPort: 9094
@@ -67,6 +72,11 @@ spec:
     spec:
       containers:
         - name: alertmanager-discord
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_ALERTMANAGER_DISCORD}
           ports:
             - containerPort: 9094
@@ -109,6 +119,11 @@ spec:
     spec:
       containers:
         - name: alertmanager-discord
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_ALERTMANAGER_DISCORD}
           ports:
             - containerPort: 9094

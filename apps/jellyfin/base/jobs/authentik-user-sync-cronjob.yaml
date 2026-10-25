@@ -281,6 +281,11 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: sync
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
               image: ${IMAGE_PYTHON_SLIM}
               command:
                 - python3

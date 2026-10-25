@@ -34,6 +34,11 @@ spec:
           echo "Semaphore API is ready!"
       containers:
       - name: configure-repo
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: ${IMAGE_CURL}
         resources:
           requests:

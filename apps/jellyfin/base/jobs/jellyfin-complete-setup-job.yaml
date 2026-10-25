@@ -73,6 +73,11 @@ spec:
       serviceAccountName: jellyfin-setup
       containers:
         - name: setup
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_PYTHON_SLIM}
           command:
             - /bin/bash

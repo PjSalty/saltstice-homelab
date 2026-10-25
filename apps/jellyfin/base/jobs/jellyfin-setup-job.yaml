@@ -125,6 +125,11 @@ spec:
       restartPolicy: OnFailure
       containers:
       - name: setup
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         image: ${IMAGE_CURL}
         command:
           - /bin/sh

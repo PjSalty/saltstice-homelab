@@ -35,6 +35,11 @@ spec:
           type: RuntimeDefault
       containers:
         - name: prometheus
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_PROMETHEUS}
           imagePullPolicy: IfNotPresent
           args:
@@ -79,6 +84,11 @@ spec:
             - name: data
               mountPath: /prometheus
         - name: configmap-reload
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_CONFIGMAP_RELOAD}
           imagePullPolicy: IfNotPresent
           args:

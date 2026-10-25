@@ -51,6 +51,7 @@ spec:
               memory: "128Mi"
               cpu: "200m"
           securityContext:
+            allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 65534
             readOnlyRootFilesystem: true
@@ -113,6 +114,7 @@ spec:
               memory: "64Mi"
               cpu: "100m"
           securityContext:
+            allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 65534
             readOnlyRootFilesystem: true

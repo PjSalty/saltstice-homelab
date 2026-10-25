@@ -21,6 +21,11 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: create-dirs
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_BUSYBOX}
           command:
             - /bin/sh

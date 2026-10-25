@@ -21,6 +21,11 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: init-storage
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_BUSYBOX}
           resources:
             requests:

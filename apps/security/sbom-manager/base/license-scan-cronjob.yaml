@@ -49,6 +49,11 @@ spec:
                   mountPath: /shared
           containers:
             - name: license-scanner
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
               image: ${IMAGE_TRIVY}
               command:
                 - /bin/sh

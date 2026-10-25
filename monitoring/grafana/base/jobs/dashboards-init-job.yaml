@@ -20,6 +20,11 @@ spec:
       serviceAccountName: default
       containers:
         - name: dashboards-init
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: ${IMAGE_BUSYBOX}
           imagePullPolicy: IfNotPresent
           command:

@@ -82,6 +82,11 @@ spec:
           type: RuntimeDefault
       containers:
         - name: trivy-operator
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           # Version managed by config/versions.yaml via Flux substituteFrom
           image: ${IMAGE_TRIVY_OPERATOR}
           imagePullPolicy: IfNotPresent

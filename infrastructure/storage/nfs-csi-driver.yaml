@@ -96,6 +96,11 @@ spec:
       serviceAccountName: nfs-client-provisioner
       containers:
       - name: nfs-client-provisioner
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         # Version managed by config/versions.yaml via Flux substituteFrom
         image: ${IMAGE_NFS_PROVISIONER}
         resources:
